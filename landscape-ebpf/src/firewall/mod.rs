@@ -1,7 +1,4 @@
-use libbpf_rs::{
-    skel::{OpenSkel, SkelBuilder},
-    TC_EGRESS, TC_INGRESS,
-};
+use libbpf_rs::skel::{OpenSkel, SkelBuilder};
 
 pub(crate) mod firewall_bpf {
     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bpf_rs/firewall.skel.rs"));
@@ -9,17 +6,20 @@ pub(crate) mod firewall_bpf {
 
 use firewall_bpf::*;
 
+use crate::pipeline::wan_tc::{
+    wan_tc_pipeline_egress_path, wan_tc_pipeline_ingress_path, WanTcPipelineHandle,
+};
 use crate::{
     bpf_error::LdEbpfResult,
-    landscape::{pin_and_reuse_map, OwnedOpenObject, TcHookProxy},
-    FIREWALL_EGRESS_PRIORITY, FIREWALL_INGRESS_PRIORITY, MAP_PATHS,
+    landscape::{pin_and_reuse_map, OwnedOpenObject},
+    map_setting::reuse_pinned_map_or_recreate,
+    MAP_PATHS,
 };
 
 pub struct FirewallHandle {
     _backing: OwnedOpenObject,
     skel: Option<FirewallSkel<'static>>,
-    ingress_hook: Option<TcHookProxy>,
-    egress_hook: Option<TcHookProxy>,
+    pipeline: Option<WanTcPipelineHandle>,
 }
 
 unsafe impl Send for FirewallHandle {}
@@ -37,8 +37,10 @@ impl FirewallHandle {
 
 impl Drop for FirewallHandle {
     fn drop(&mut self) {
-        self.ingress_hook.take();
-        self.egress_hook.take();
+        if let Some(pipeline) = self.pipeline.as_ref() {
+            pipeline.unregister_firewall();
+        }
+        self.pipeline.take();
         self.skel.take();
     }
 }
@@ -83,25 +85,18 @@ pub fn new_firewall(ifindex: i32, has_mac: bool) -> LdEbpfResult<FirewallHandle>
         ),
         "firewall prepare firewall_allow_rules_map failed"
     )?;
+    let ingress_pipeline_path = wan_tc_pipeline_ingress_path(ifindex as u32);
+    let egress_pipeline_path = wan_tc_pipeline_egress_path(ifindex as u32);
+    reuse_pinned_map_or_recreate(&mut open_skel.maps.ingress_stage_progs, &ingress_pipeline_path);
+    reuse_pinned_map_or_recreate(&mut open_skel.maps.egress_stage_progs, &egress_pipeline_path);
 
     let skel = crate::bpf_ctx!(open_skel.load(), "firewall load skeleton failed")?;
-
-    let mut egress_firewall_hook =
-        TcHookProxy::new(&skel.progs.egress_firewall, ifindex, TC_EGRESS, FIREWALL_EGRESS_PRIORITY);
-    let mut ingress_firewall_hook = TcHookProxy::new(
-        &skel.progs.ingress_firewall,
-        ifindex,
-        TC_INGRESS,
-        FIREWALL_INGRESS_PRIORITY,
-    );
-
-    egress_firewall_hook.attach();
-    ingress_firewall_hook.attach();
+    let pipeline = WanTcPipelineHandle::acquire(ifindex as u32)?;
+    pipeline.register_firewall(&skel.progs.ingress_firewall, &skel.progs.egress_firewall)?;
 
     Ok(FirewallHandle {
         _backing: backing,
         skel: Some(skel),
-        ingress_hook: Some(ingress_firewall_hook),
-        egress_hook: Some(egress_firewall_hook),
+        pipeline: Some(pipeline),
     })
 }

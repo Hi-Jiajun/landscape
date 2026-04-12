@@ -6,6 +6,7 @@
 #include <bpf/bpf_core_read.h>
 
 #include "landscape.h"
+#include "wan_tc_pipeline.h"
 #include "firewall.h"
 #include "firewall_share.h"
 
@@ -597,7 +598,7 @@ int ipv4_egress_firewall(struct __sk_buff *skb) {
         return TC_ACT_SHOT;
     }
 
-    return TC_ACT_UNSPEC;
+    return wan_tc_pipeline_continue_egress(skb, EGRESS_STAGE_FIREWALL, TC_ACT_UNSPEC);
 #undef BPF_LOG_TOPIC
 }
 
@@ -612,7 +613,7 @@ int ipv4_ingress_firewall(struct __sk_buff *skb) {
         if (ret == TC_ACT_SHOT) {
             ld_bpf_log("invalid packet");
         }
-        return TC_ACT_UNSPEC;
+        return wan_tc_pipeline_continue_ingress(skb, INGRESS_STAGE_FIREWALL, TC_ACT_UNSPEC);
     }
 
     bool is_icmpx_error = is_icmp_error_pkt(&packet_info);
@@ -649,7 +650,7 @@ int ipv4_ingress_firewall(struct __sk_buff *skb) {
         return TC_ACT_SHOT;
     }
 
-    return TC_ACT_UNSPEC;
+    return wan_tc_pipeline_continue_ingress(skb, INGRESS_STAGE_FIREWALL, TC_ACT_UNSPEC);
 #undef BPF_LOG_TOPIC
 }
 
@@ -664,7 +665,7 @@ int ipv6_egress_firewall(struct __sk_buff *skb) {
         if (ret == TC_ACT_SHOT) {
             ld_bpf_log("invalid packet");
         }
-        return TC_ACT_UNSPEC;
+        return wan_tc_pipeline_continue_egress(skb, EGRESS_STAGE_FIREWALL, TC_ACT_UNSPEC);
     }
 
     bool is_icmpx_error = is_icmp_error_pkt(&packet_info);
@@ -692,7 +693,7 @@ int ipv6_egress_firewall(struct __sk_buff *skb) {
         return TC_ACT_SHOT;
     }
 
-    return TC_ACT_UNSPEC;
+    return wan_tc_pipeline_continue_egress(skb, EGRESS_STAGE_FIREWALL, TC_ACT_UNSPEC);
 #undef BPF_LOG_TOPIC
 }
 
@@ -707,7 +708,7 @@ int ipv6_ingress_firewall(struct __sk_buff *skb) {
         if (ret == TC_ACT_SHOT) {
             ld_bpf_log("invalid packet");
         }
-        return TC_ACT_UNSPEC;
+        return wan_tc_pipeline_continue_ingress(skb, INGRESS_STAGE_FIREWALL, TC_ACT_UNSPEC);
     }
 
     bool is_icmpx_error = is_icmp_error_pkt(&packet_info);
@@ -735,7 +736,7 @@ int ipv6_ingress_firewall(struct __sk_buff *skb) {
         return TC_ACT_SHOT;
     }
 
-    return TC_ACT_UNSPEC;
+    return wan_tc_pipeline_continue_ingress(skb, INGRESS_STAGE_FIREWALL, TC_ACT_UNSPEC);
 #undef BPF_LOG_TOPIC
 }
 
@@ -747,7 +748,7 @@ int egress_firewall(struct __sk_buff *skb) {
     bool is_ipv4;
     int ret;
     if (current_pkg_type(skb, current_l3_offset, &is_ipv4) != TC_ACT_OK) {
-        return TC_ACT_UNSPEC;
+        return wan_tc_pipeline_continue_egress(skb, EGRESS_STAGE_FIREWALL, TC_ACT_UNSPEC);
     }
 
     if (is_ipv4) {
@@ -758,7 +759,7 @@ int egress_firewall(struct __sk_buff *skb) {
     // if (ret) {
     //     ld_bpf_log("bpf_tail_call error: %d", ret);
     // }
-    return TC_ACT_UNSPEC;
+    return wan_tc_pipeline_continue_egress(skb, EGRESS_STAGE_FIREWALL, TC_ACT_UNSPEC);
 #undef BPF_LOG_TOPIC
 }
 
@@ -769,7 +770,7 @@ int ingress_firewall(struct __sk_buff *skb) {
     bool is_ipv4;
     int ret;
     if (current_pkg_type(skb, current_l3_offset, &is_ipv4) != TC_ACT_OK) {
-        return TC_ACT_UNSPEC;
+        return wan_tc_pipeline_continue_ingress(skb, INGRESS_STAGE_FIREWALL, TC_ACT_UNSPEC);
     }
 
     if (is_ipv4) {
@@ -777,6 +778,6 @@ int ingress_firewall(struct __sk_buff *skb) {
     } else {
         bpf_tail_call_static(skb, &ingress_prog_array, IPV6_FIREWALL_INGRESS_PROG_INDEX);
     }
-    return TC_ACT_UNSPEC;
+    return wan_tc_pipeline_continue_ingress(skb, INGRESS_STAGE_FIREWALL, TC_ACT_UNSPEC);
 #undef BPF_LOG_TOPIC
 }

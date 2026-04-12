@@ -4,14 +4,17 @@ use land_nat_v3::*;
 use landscape_common::iface::nat::NatConfig;
 use libbpf_rs::{
     skel::{OpenSkel, SkelBuilder},
-    MapCore, TC_EGRESS, TC_INGRESS,
+    MapCore,
 };
 
+use crate::pipeline::wan_tc::{
+    wan_tc_pipeline_egress_path, wan_tc_pipeline_ingress_path, WanTcPipelineHandle,
+};
 use crate::MAP_PATHS;
 use crate::{
     bpf_error::LdEbpfResult,
-    landscape::{pin_and_reuse_map, OwnedOpenObject, TcHookProxy},
-    NAT_EGRESS_PRIORITY, NAT_INGRESS_PRIORITY,
+    landscape::{pin_and_reuse_map, OwnedOpenObject},
+    map_setting::reuse_pinned_map_or_recreate,
 };
 
 pub(crate) mod land_nat_v3 {
@@ -21,8 +24,7 @@ pub(crate) mod land_nat_v3 {
 pub struct NatV3Handle {
     _backing: OwnedOpenObject,
     skel: Option<LandNatV3Skel<'static>>,
-    ingress_hook: Option<TcHookProxy>,
-    egress_hook: Option<TcHookProxy>,
+    pipeline: Option<WanTcPipelineHandle>,
 }
 
 unsafe impl Send for NatV3Handle {}
@@ -40,8 +42,10 @@ impl NatV3Handle {
 
 impl Drop for NatV3Handle {
     fn drop(&mut self) {
-        self.ingress_hook.take();
-        self.egress_hook.take();
+        if let Some(pipeline) = self.pipeline.as_ref() {
+            pipeline.unregister_nat();
+        }
+        self.pipeline.take();
         self.skel.take();
     }
 }
@@ -121,6 +125,16 @@ pub fn init_nat(ifindex: i32, has_mac: bool, config: NatConfig) -> LdEbpfResult<
         ),
         "nat_v3 prepare nat_conn_metric_events failed"
     )?;
+    let ingress_pipeline_path = wan_tc_pipeline_ingress_path(ifindex as u32);
+    let egress_pipeline_path = wan_tc_pipeline_egress_path(ifindex as u32);
+    reuse_pinned_map_or_recreate(
+        &mut landscape_open.maps.ingress_stage_progs,
+        &ingress_pipeline_path,
+    );
+    reuse_pinned_map_or_recreate(
+        &mut landscape_open.maps.egress_stage_progs,
+        &egress_pipeline_path,
+    );
 
     let rodata_data =
         landscape_open.maps.rodata_data.as_deref_mut().expect("`rodata` is not memery mapped");
@@ -144,23 +158,12 @@ pub fn init_nat(ifindex: i32, has_mac: bool, config: NatConfig) -> LdEbpfResult<
         &landscape_skel.maps.nat4_icmp_free_ports_v3,
         &config,
     );
-
-    let mut nat_egress_hook =
-        TcHookProxy::new(&landscape_skel.progs.egress_nat, ifindex, TC_EGRESS, NAT_EGRESS_PRIORITY);
-    let mut nat_ingress_hook = TcHookProxy::new(
-        &landscape_skel.progs.ingress_nat,
-        ifindex,
-        TC_INGRESS,
-        NAT_INGRESS_PRIORITY,
-    );
-
-    nat_egress_hook.attach();
-    nat_ingress_hook.attach();
+    let pipeline = WanTcPipelineHandle::acquire(ifindex as u32)?;
+    pipeline.register_nat(&landscape_skel.progs.ingress_nat, &landscape_skel.progs.egress_nat)?;
 
     Ok(NatV3Handle {
         _backing: backing,
         skel: Some(landscape_skel),
-        ingress_hook: Some(nat_ingress_hook),
-        egress_hook: Some(nat_egress_hook),
+        pipeline: Some(pipeline),
     })
 }

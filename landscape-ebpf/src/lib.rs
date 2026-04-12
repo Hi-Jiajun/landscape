@@ -12,6 +12,7 @@ pub mod metric;
 pub mod mss_clamp;
 pub mod nat;
 pub mod ns_proxy;
+pub(crate) mod pipeline;
 pub mod pppoe;
 pub mod route;
 pub mod tproxy;
@@ -74,6 +75,12 @@ static MAP_PATHS: Lazy<LandscapeMapPath> = Lazy::new(|| {
         rt4_cache_map: PathBuf::from(format!("{}/rt4_cache_map", ebpf_map_path)),
         rt6_cache_map: PathBuf::from(format!("{}/rt6_cache_map", ebpf_map_path)),
 
+        wan_tc_pipeline_ingress: PathBuf::from(format!(
+            "{}/wan_tc_pipeline_ingress",
+            ebpf_map_path
+        )),
+        wan_tc_pipeline_egress: PathBuf::from(format!("{}/wan_tc_pipeline_egress", ebpf_map_path)),
+
         ip_mac_v4: PathBuf::from(format!("{}/ip_mac_v4", ebpf_map_path)),
         ip_mac_v6: PathBuf::from(format!("{}/ip_mac_v6", ebpf_map_path)),
     };
@@ -122,17 +129,17 @@ pub(crate) struct LandscapeMapPath {
     pub rt4_cache_map: PathBuf,
     pub rt6_cache_map: PathBuf,
 
+    pub wan_tc_pipeline_ingress: PathBuf,
+    pub wan_tc_pipeline_egress: PathBuf,
+
     // IP MAC
     pub ip_mac_v4: PathBuf,
     pub ip_mac_v6: PathBuf,
 }
 
 // pppoe -> Fire wall -> nat -> route
-const MSS_CLAMP_INGRESS_PRIORITY: u32 = 2;
 const PPPOE_INGRESS_PRIORITY: u32 = 3;
-const FIREWALL_INGRESS_PRIORITY: u32 = 4;
 // const MARK_INGRESS_PRIORITY: u32 = 5;
-const NAT_INGRESS_PRIORITY: u32 = 6;
 const WAN_ROUTE_INGRESS_PRIORITY: u32 = 7;
 
 // Fire wall -> nat -> pppoe
@@ -140,9 +147,6 @@ const WAN_ROUTE_INGRESS_PRIORITY: u32 = 7;
 const WAN_ROUTE_EGRESS_PRIORITY: u32 = 3;
 
 // const FLOW_EGRESS_PRIORITY: u32 = 4;
-const MSS_CLAMP_EGRESS_PRIORITY: u32 = 5;
-const NAT_EGRESS_PRIORITY: u32 = 6;
-const FIREWALL_EGRESS_PRIORITY: u32 = 7;
 const PPPOE_EGRESS_PRIORITY: u32 = 8;
 
 // lAN PRIORITY

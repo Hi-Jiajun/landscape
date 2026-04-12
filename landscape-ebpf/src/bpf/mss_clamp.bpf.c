@@ -7,6 +7,7 @@
 
 #include "landscape.h"
 #include "pkg_def.h"
+#include "wan_tc_pipeline.h"
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
@@ -203,7 +204,7 @@ int clamp_ingress(struct __sk_buff *skb) {
         do_mss_clamp(skb, ip_hdr_len + current_l3_offset, mtu_size - ip_hdr_len - TCP_HDR_LEN);
     }
 
-    return TC_ACT_UNSPEC;
+    return wan_tc_pipeline_continue_ingress(skb, INGRESS_STAGE_MSS, TC_ACT_UNSPEC);
 #undef BPF_LOG_TOPIC
 }
 
@@ -216,7 +217,7 @@ int clamp_egress(struct __sk_buff *skb) {
         do_mss_clamp(skb, ip_hdr_len + current_l3_offset, mtu_size - ip_hdr_len - TCP_HDR_LEN);
     }
 
-    return TC_ACT_UNSPEC;
+    return wan_tc_pipeline_continue_egress(skb, EGRESS_STAGE_MSS, TC_ACT_UNSPEC);
 
 #undef BPF_LOG_TOPIC
 }

@@ -2,23 +2,23 @@ pub(crate) mod route_wan {
     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bpf_rs/route_wan.skel.rs"));
 }
 
-use libbpf_rs::{
-    skel::{OpenSkel, SkelBuilder},
-    TC_EGRESS, TC_INGRESS,
-};
+use libbpf_rs::skel::{OpenSkel, SkelBuilder};
 use route_wan::*;
 
+use crate::pipeline::wan_tc::{
+    wan_tc_pipeline_egress_path, wan_tc_pipeline_ingress_path, WanTcPipelineHandle,
+};
 use crate::{
     bpf_error::LdEbpfResult,
-    landscape::{pin_and_reuse_map, OwnedOpenObject, TcHookProxy},
-    MAP_PATHS, WAN_ROUTE_EGRESS_PRIORITY, WAN_ROUTE_INGRESS_PRIORITY,
+    landscape::{pin_and_reuse_map, OwnedOpenObject},
+    map_setting::reuse_pinned_map_or_recreate,
+    MAP_PATHS,
 };
 
 pub struct RouteWanHandle {
     _backing: OwnedOpenObject,
     skel: Option<RouteWanSkel<'static>>,
-    ingress_hook: Option<TcHookProxy>,
-    egress_hook: Option<TcHookProxy>,
+    pipeline: Option<WanTcPipelineHandle>,
 }
 
 unsafe impl Send for RouteWanHandle {}
@@ -36,8 +36,10 @@ impl RouteWanHandle {
 
 impl Drop for RouteWanHandle {
     fn drop(&mut self) {
-        self.ingress_hook.take();
-        self.egress_hook.take();
+        if let Some(pipeline) = self.pipeline.as_ref() {
+            pipeline.unregister_route_wan();
+        }
+        self.pipeline.take();
         self.skel.take();
     }
 }
@@ -104,7 +106,10 @@ pub fn route_wan(ifindex: u32, has_mac: bool) -> LdEbpfResult<RouteWanHandle> {
         pin_and_reuse_map(&mut open_skel.maps.ip_mac_v6, &MAP_PATHS.ip_mac_v6),
         "route_wan prepare ip_mac_v6 failed"
     )?;
-
+    let ingress_pipeline_path = wan_tc_pipeline_ingress_path(ifindex);
+    let egress_pipeline_path = wan_tc_pipeline_egress_path(ifindex);
+    reuse_pinned_map_or_recreate(&mut open_skel.maps.ingress_stage_progs, &ingress_pipeline_path);
+    reuse_pinned_map_or_recreate(&mut open_skel.maps.egress_stage_progs, &egress_pipeline_path);
     let rodata_data =
         open_skel.maps.rodata_data.as_deref_mut().expect("`rodata` is not memery mapped");
 
@@ -113,27 +118,12 @@ pub fn route_wan(ifindex: u32, has_mac: bool) -> LdEbpfResult<RouteWanHandle> {
     }
 
     let skel = crate::bpf_ctx!(open_skel.load(), "route_wan load skeleton failed")?;
-
-    let mut wan_route_ingress_hook = TcHookProxy::new(
-        &skel.progs.route_wan_ingress,
-        ifindex as i32,
-        TC_INGRESS,
-        WAN_ROUTE_INGRESS_PRIORITY,
-    );
-    let mut wan_route_egress_hook = TcHookProxy::new(
-        &skel.progs.route_wan_egress,
-        ifindex as i32,
-        TC_EGRESS,
-        WAN_ROUTE_EGRESS_PRIORITY,
-    );
-
-    wan_route_ingress_hook.attach();
-    wan_route_egress_hook.attach();
+    let pipeline = WanTcPipelineHandle::acquire(ifindex)?;
+    pipeline.register_route_wan(&skel.progs.route_wan_ingress, &skel.progs.route_wan_egress)?;
 
     Ok(RouteWanHandle {
         _backing: backing,
         skel: Some(skel),
-        ingress_hook: Some(wan_route_ingress_hook),
-        egress_hook: Some(wan_route_egress_hook),
+        pipeline: Some(pipeline),
     })
 }

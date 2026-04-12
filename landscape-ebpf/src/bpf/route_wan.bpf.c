@@ -6,6 +6,7 @@
 #include <bpf/bpf_core_read.h>
 
 #include "landscape.h"
+#include "wan_tc_pipeline.h"
 #include "route_v4.h"
 #include "route_v6.h"
 
@@ -92,12 +93,12 @@ int rt4_wan_egress(struct __sk_buff *skb) {
 
     ret = lan_redirect_check_v4(skb, current_l3_offset, &context, false);
     if (ret != TC_ACT_OK) {
-        return ret;
+        return wan_tc_pipeline_continue_egress(skb, EGRESS_STAGE_WAN_ROUTE, ret);
     }
 
     ret = flow_verdict_v4(skb, current_l3_offset, &context, &flow_mark);
     if (ret != TC_ACT_OK) {
-        return ret;
+        return wan_tc_pipeline_continue_egress(skb, EGRESS_STAGE_WAN_ROUTE, ret);
     }
 
     barrier_var(flow_mark);
@@ -105,7 +106,7 @@ int rt4_wan_egress(struct __sk_buff *skb) {
 
     ret = pick_wan_and_send_by_flow_id_v4(skb, current_l3_offset, &context, flow_mark);
 
-    return ret;
+    return wan_tc_pipeline_continue_egress(skb, EGRESS_STAGE_WAN_ROUTE, ret);
 #undef BPF_LOG_TOPIC
 }
 
@@ -162,24 +163,24 @@ int rt6_wan_egress(struct __sk_buff *skb) {
 
     if (VALIDATE_READ_DATA(skb, &ip6h, current_l3_offset, sizeof(struct ipv6hdr))) {
         ld_bpf_log("ipv6 bpf_skb_load_bytes error");
-        return TC_ACT_UNSPEC;
+        return wan_tc_pipeline_continue_egress(skb, EGRESS_STAGE_WAN_ROUTE, TC_ACT_UNSPEC);
     }
 
     COPY_ADDR_FROM(context.saddr.all, ip6h->saddr.in6_u.u6_addr32);
     COPY_ADDR_FROM(context.daddr.all, ip6h->daddr.in6_u.u6_addr32);
 
     if (is_broadcast_ip6(context.daddr.bytes)) {
-        return TC_ACT_UNSPEC;
+        return wan_tc_pipeline_continue_egress(skb, EGRESS_STAGE_WAN_ROUTE, TC_ACT_UNSPEC);
     }
 
     ret = lan_redirect_check_v6(skb, current_l3_offset, &context);
     if (ret != TC_ACT_OK) {
-        return ret;
+        return wan_tc_pipeline_continue_egress(skb, EGRESS_STAGE_WAN_ROUTE, ret);
     }
 
     ret = flow_verdict_v6(skb, current_l3_offset, &context, &flow_mark);
     if (ret != TC_ACT_OK) {
-        return ret;
+        return wan_tc_pipeline_continue_egress(skb, EGRESS_STAGE_WAN_ROUTE, ret);
     }
 
     barrier_var(flow_mark);
@@ -187,7 +188,7 @@ int rt6_wan_egress(struct __sk_buff *skb) {
 
     ret = pick_wan_and_send_by_flow_id_v6(skb, current_l3_offset, &context, flow_mark);
 
-    return ret;
+    return wan_tc_pipeline_continue_egress(skb, EGRESS_STAGE_WAN_ROUTE, ret);
 #undef BPF_LOG_TOPIC
 }
 
@@ -256,7 +257,7 @@ int route_wan_egress(struct __sk_buff *skb) {
 
     if (likely(skb->ingress_ifindex != 0)) {
         // 端口转发数据, 相对于是已经决定使用这个出口, 所以直接发送
-        return TC_ACT_UNSPEC;
+        return wan_tc_pipeline_continue_egress(skb, EGRESS_STAGE_WAN_ROUTE, TC_ACT_UNSPEC);
     }
 
     bool is_ipv4;
@@ -271,7 +272,7 @@ int route_wan_egress(struct __sk_buff *skb) {
 
     ret = current_pkg_type(skb, current_l3_offset, &is_ipv4);
     if (unlikely(ret != TC_ACT_OK)) {
-        return TC_ACT_UNSPEC;
+        return wan_tc_pipeline_continue_egress(skb, EGRESS_STAGE_WAN_ROUTE, TC_ACT_UNSPEC);
     }
 
     if (is_ipv4) {
@@ -282,6 +283,6 @@ int route_wan_egress(struct __sk_buff *skb) {
         bpf_printk("bpf_tail_call_static error");
     }
 
-    return TC_ACT_SHOT;
+    return wan_tc_pipeline_continue_egress(skb, EGRESS_STAGE_WAN_ROUTE, TC_ACT_UNSPEC);
 #undef BPF_LOG_TOPIC
 }
