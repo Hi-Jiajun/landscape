@@ -2,7 +2,6 @@
 #define __LD_METRIC_SHARE_H__
 #include <bpf/bpf_helpers.h>
 #include "landscape.h"
-#include "pkg_def.h"
 
 struct net_metric_key {
     union u_inet_addr src_addr;

@@ -2,7 +2,6 @@
 #define __LD_DNS_DISPATCHER_H__
 #include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
-#include "landscape.h"
 
 struct {
     __uint(type, BPF_MAP_TYPE_SOCKMAP);

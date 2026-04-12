@@ -74,11 +74,6 @@ struct packet_context {
     int icmp_error_payload_offset;
 };
 
-/// IP Fragment Related End
-struct firewall_action {
-    __u32 mark;
-};
-
 // 检查是否开放连接的 key
 struct firewall_conntrack_key {
     // IPV4 / 6
@@ -131,23 +126,6 @@ struct {
     __uint(max_entries, 35565);
     __uint(map_flags, BPF_F_NO_PREALLOC);
 } fire2_conn_map SEC(".maps");
-
-// ipv4 = 32 + 8 + 8 + 16 = 64
-// ipv6 = 128 + 8 + 8 + 16 = 160
-struct firewall_static_rule_key {
-    __u32 prefixlen;
-    // l3_proto
-    u8 ip_type;
-    // l4_proto
-    u8 ip_protocol;
-    __be16 local_port;
-    union u_inet_addr remote_address;
-};
-
-// 静态配置开放端口
-struct firewall_static_ct_action {
-    __u32 mark;
-};
 
 enum firewall_report_status {
     FIREWALL_REPORT_NONE = 0,     // 没到时间，不需要上报

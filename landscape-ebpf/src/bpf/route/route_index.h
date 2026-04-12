@@ -3,6 +3,8 @@
 #include <vmlinux.h>
 #include <bpf/bpf_endian.h>
 
+#include "../landscape.h"
+
 #define WAN_CACHE 0
 #define LAN_CACHE 1
 
