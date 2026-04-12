@@ -1,10 +1,9 @@
 use std::{
     mem::MaybeUninit,
-    net::{IpAddr, Ipv6Addr},
-    str::FromStr,
+    net::{IpAddr, Ipv4Addr},
 };
 
-use etherparse::{PacketBuilder, PacketHeaders};
+use etherparse::PacketBuilder;
 use landscape_common::net::MacAddr;
 use libbpf_rs::{
     skel::{OpenSkel, SkelBuilder as _},
@@ -13,35 +12,26 @@ use libbpf_rs::{
 use zerocopy::IntoBytes;
 
 use crate::{
-    map_setting::{add_wan_ip, nat::StaticNatMappingV6Item},
+    map_setting::{
+        add_wan_ip,
+        nat::{add_static_nat4_mapping_v3, StaticNatMappingV4Item},
+    },
     nat::v3::land_nat_v3::{types, LandNatV3SkelBuilder},
     tests::TestSkb,
+    NAT_MAPPING_EGRESS, NAT_MAPPING_INGRESS,
 };
 
+const WAN_IP: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 1);
+const LAN_HOST: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 100);
+const REMOTE_IP: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 1);
 const IFINDEX: u32 = 6;
 
-fn wan_ip() -> Ipv6Addr {
-    Ipv6Addr::from_str("2409:8888:6666:4f21::").unwrap()
-}
-
-fn lan_host() -> Ipv6Addr {
-    Ipv6Addr::from_str("fd00:1234:5678:abc5::100").unwrap()
-}
-
-fn remote() -> Ipv6Addr {
-    Ipv6Addr::from_str("2001:db8:2::1").unwrap()
-}
-
-fn wan_npt_addr() -> Ipv6Addr {
-    Ipv6Addr::from_str("2409:8888:6666:4f25::100").unwrap()
-}
-
-fn build_ipv6_tcp(src: Ipv6Addr, dst: Ipv6Addr, src_port: u16, dst_port: u16) -> Vec<u8> {
+fn build_ipv4_tcp(src: Ipv4Addr, dst: Ipv4Addr, src_port: u16, dst_port: u16) -> Vec<u8> {
     let builder = PacketBuilder::ethernet2(
         [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
         [0x11, 0x22, 0x33, 0x44, 0x55, 0x66],
     )
-    .ipv6(src.octets(), dst.octets(), 64)
+    .ipv4(src.octets(), dst.octets(), 64)
     .tcp(src_port, dst_port, 0x12345678, 65535);
 
     let payload = [0u8; 0];
@@ -50,12 +40,12 @@ fn build_ipv6_tcp(src: Ipv6Addr, dst: Ipv6Addr, src_port: u16, dst_port: u16) ->
     buf
 }
 
-fn build_ipv6_udp(src: Ipv6Addr, dst: Ipv6Addr, src_port: u16, dst_port: u16) -> Vec<u8> {
+fn build_ipv4_udp(src: Ipv4Addr, dst: Ipv4Addr, src_port: u16, dst_port: u16) -> Vec<u8> {
     let builder = PacketBuilder::ethernet2(
         [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
         [0x11, 0x22, 0x33, 0x44, 0x55, 0x66],
     )
-    .ipv6(src.octets(), dst.octets(), 64)
+    .ipv4(src.octets(), dst.octets(), 64)
     .udp(src_port, dst_port);
 
     let payload = [0u8; 8];
@@ -64,55 +54,52 @@ fn build_ipv6_udp(src: Ipv6Addr, dst: Ipv6Addr, src_port: u16, dst_port: u16) ->
     buf
 }
 
-fn add_ct6_entry<T: MapCore>(
+fn add_ct_entry<T: MapCore>(
     timer_map: &T,
     l4proto: u8,
-    client_suffix: [u8; 8],
+    src_addr: Ipv4Addr,
+    src_port: u16,
+    nat_addr: Ipv4Addr,
+    nat_port: u16,
+    client_addr: Ipv4Addr,
     client_port: u16,
-    id_byte: u8,
-    client_prefix: [u8; 8],
-    trigger_addr: Ipv6Addr,
-    trigger_port: u16,
+    gress: u8,
 ) {
-    let key = types::nat_timer_key_v6 {
-        client_suffix,
-        client_port: client_port.to_be(),
-        id_byte,
-        l4_protocol: l4proto,
+    let key = types::nat_timer_key_v4 {
+        l4proto,
+        _pad: [0; 3],
+        pair_ip: types::inet4_pair {
+            src_addr: types::inet4_addr { addr: src_addr.to_bits().to_be() },
+            dst_addr: types::inet4_addr { addr: nat_addr.to_bits().to_be() },
+            src_port: src_port.to_be(),
+            dst_port: nat_port.to_be(),
+        },
     };
-    let mut value = types::nat_timer_value_v6 {
-        server_status: 1,
-        client_status: 1,
-        is_allow_reuse: 1,
-        ..Default::default()
-    };
-    value.trigger_addr = types::inet6_addr { bytes: trigger_addr.octets() };
-    value.trigger_port = trigger_port.to_be();
-    value.client_prefix = client_prefix;
+    let mut value = types::nat_timer_value_v4_v3::default();
+    value.server_status = 1;
+    value.client_status = 1;
+    value.gress = gress;
+    value.client_addr = types::inet4_addr { addr: client_addr.to_bits().to_be() };
+    value.client_port = client_port.to_be();
+    value.ifindex = IFINDEX;
 
     timer_map
         .update(unsafe { plain::as_bytes(&key) }, unsafe { plain::as_bytes(&value) }, MapFlags::ANY)
-        .expect("failed to insert v3 v6 CT entry");
+        .expect("failed to insert CT entry");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map_setting::nat::add_static_nat6_mapping;
+    use crate::tests::nat::NAT_V3_TEST_LOCK;
 
     const TC_ACT_SHOT: i32 = 2;
-    const LAN_CLIENT_SUFFIX: [u8; 8] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00];
-    const LAN_CLIENT_PREFIX: [u8; 8] = [0xfd, 0x00, 0x12, 0x34, 0x56, 0x78, 0xab, 0xc5];
-    const LAN_ID_BYTE: u8 = 0x05;
-    const WAN_NPT_PREFIX: [u8; 8] = [0x24, 0x09, 0x88, 0x88, 0x66, 0x66, 0x4f, 0x25];
-    const LOCAL_CLIENT_SUFFIX: [u8; 8] = [0x00; 8];
-    const LOCAL_CLIENT_PREFIX: [u8; 8] = [0x24, 0x09, 0x88, 0x88, 0x66, 0x66, 0x4f, 0x21];
-    const LOCAL_ID_BYTE: u8 = 0x01;
 
     #[test]
     fn tcp_ingress_lan_host_v3() {
+        let _guard = NAT_V3_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut landscape_builder = LandNatV3SkelBuilder::default();
-        let pin_root = crate::tests::nat::isolated_pin_root("nat-v6-static-v3-lan");
+        let pin_root = crate::tests::nat::isolated_pin_root("nat-v4-static-v3-lan");
         landscape_builder.object_builder_mut().pin_root_path(&pin_root).unwrap();
         let mut open_object = MaybeUninit::uninit();
         let landscape_open = landscape_builder.open(&mut open_object).unwrap();
@@ -121,36 +108,37 @@ mod tests {
         add_wan_ip(
             &landscape_skel.maps.wan_ip_binding,
             IFINDEX,
-            IpAddr::V6(wan_ip()),
+            IpAddr::V4(WAN_IP),
             None,
-            60,
+            24,
             Some(MacAddr::broadcast()),
         );
 
-        add_static_nat6_mapping(
-            &landscape_skel.maps.nat6_static_mappings,
-            vec![StaticNatMappingV6Item {
-                wan_port: 80,
+        add_static_nat4_mapping_v3(
+            &landscape_skel.maps.nat4_st_map,
+            vec![StaticNatMappingV4Item {
+                wan_port: 8080,
                 lan_port: 80,
-                lan_ip: lan_host(),
+                lan_ip: LAN_HOST,
                 l4_protocol: 6,
             }],
         );
-
-        add_ct6_entry(
-            &landscape_skel.maps.nat6_conn_timer,
+        add_ct_entry(
+            &landscape_skel.maps.nat4_mapping_timer_v3,
             6,
-            LAN_CLIENT_SUFFIX,
-            80,
-            LAN_ID_BYTE,
-            LAN_CLIENT_PREFIX,
-            remote(),
+            REMOTE_IP,
             9999,
+            WAN_IP,
+            8080,
+            LAN_HOST,
+            80,
+            NAT_MAPPING_INGRESS,
         );
 
-        let mut pkt = build_ipv6_tcp(remote(), wan_npt_addr(), 9999, 80);
+        let mut pkt = build_ipv4_tcp(REMOTE_IP, WAN_IP, 9999, 8080);
         let mut ctx = TestSkb::default();
         ctx.ifindex = IFINDEX;
+
         let mut packet_out = vec![0u8; pkt.len()];
         let input = ProgramInput {
             data_in: Some(&mut pkt),
@@ -159,19 +147,19 @@ mod tests {
             ..Default::default()
         };
 
-        let result = landscape_skel.progs.nat_v6_ingress.test_run(input).expect("test_run failed");
+        let result = landscape_skel.progs.nat_v4_ingress.test_run(input).expect("test_run failed");
         assert_eq!(result.return_value as i32, -1, "ingress should return TC_ACT_UNSPEC(-1)");
 
-        let pkt_out = PacketHeaders::from_ethernet_slice(&packet_out).expect("parse output");
-        if let Some(etherparse::NetHeaders::Ipv6(ipv6, _)) = pkt_out.net {
-            let dst: Ipv6Addr = ipv6.destination.into();
-            assert_eq!(&dst.octets()[..8], &LAN_CLIENT_PREFIX, "dst prefix should be rewritten");
-            assert_eq!(&dst.octets()[8..], &LAN_CLIENT_SUFFIX, "dst suffix should be preserved");
+        let pkt_out = etherparse::PacketHeaders::from_ethernet_slice(&packet_out)
+            .expect("parse output packet");
+        if let Some(etherparse::NetHeaders::Ipv4(ipv4, _)) = pkt_out.net {
+            let dst: Ipv4Addr = ipv4.destination.into();
+            assert_eq!(dst, LAN_HOST, "dst_ip should be rewritten to LAN host");
         } else {
-            panic!("expected IPv6 header in output");
+            panic!("expected IPv4 header in output");
         }
         if let Some(etherparse::TransportHeader::Tcp(tcp)) = pkt_out.transport {
-            assert_eq!(tcp.destination_port, 80, "dst_port should be unchanged");
+            assert_eq!(tcp.destination_port, 80, "dst_port should be rewritten to 80");
         } else {
             panic!("expected TCP transport header in output");
         }
@@ -179,8 +167,9 @@ mod tests {
 
     #[test]
     fn tcp_egress_lan_host_v3() {
+        let _guard = NAT_V3_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut landscape_builder = LandNatV3SkelBuilder::default();
-        let pin_root = crate::tests::nat::isolated_pin_root("nat-v6-static-v3-lan");
+        let pin_root = crate::tests::nat::isolated_pin_root("nat-v4-static-v3-lan");
         landscape_builder.object_builder_mut().pin_root_path(&pin_root).unwrap();
         let mut open_object = MaybeUninit::uninit();
         let landscape_open = landscape_builder.open(&mut open_object).unwrap();
@@ -189,36 +178,37 @@ mod tests {
         add_wan_ip(
             &landscape_skel.maps.wan_ip_binding,
             IFINDEX,
-            IpAddr::V6(wan_ip()),
+            IpAddr::V4(WAN_IP),
             None,
-            60,
+            24,
             Some(MacAddr::broadcast()),
         );
 
-        add_static_nat6_mapping(
-            &landscape_skel.maps.nat6_static_mappings,
-            vec![StaticNatMappingV6Item {
-                wan_port: 80,
+        add_static_nat4_mapping_v3(
+            &landscape_skel.maps.nat4_st_map,
+            vec![StaticNatMappingV4Item {
+                wan_port: 8080,
                 lan_port: 80,
-                lan_ip: lan_host(),
+                lan_ip: LAN_HOST,
                 l4_protocol: 6,
             }],
         );
-
-        add_ct6_entry(
-            &landscape_skel.maps.nat6_conn_timer,
+        add_ct_entry(
+            &landscape_skel.maps.nat4_mapping_timer_v3,
             6,
-            LAN_CLIENT_SUFFIX,
-            80,
-            LAN_ID_BYTE,
-            LAN_CLIENT_PREFIX,
-            remote(),
+            REMOTE_IP,
             9999,
+            WAN_IP,
+            8080,
+            LAN_HOST,
+            80,
+            NAT_MAPPING_EGRESS,
         );
 
-        let mut pkt = build_ipv6_tcp(lan_host(), remote(), 80, 9999);
+        let mut pkt = build_ipv4_tcp(LAN_HOST, REMOTE_IP, 80, 9999);
         let mut ctx = TestSkb::default();
         ctx.ifindex = IFINDEX;
+
         let mut packet_out = vec![0u8; pkt.len()];
         let input = ProgramInput {
             data_in: Some(&mut pkt),
@@ -227,19 +217,19 @@ mod tests {
             ..Default::default()
         };
 
-        let result = landscape_skel.progs.nat_v6_egress.test_run(input).expect("test_run failed");
+        let result = landscape_skel.progs.nat_v4_egress.test_run(input).expect("test_run failed");
         assert_eq!(result.return_value as i32, -1, "egress should return TC_ACT_UNSPEC(-1)");
 
-        let pkt_out = PacketHeaders::from_ethernet_slice(&packet_out).expect("parse output");
-        if let Some(etherparse::NetHeaders::Ipv6(ipv6, _)) = pkt_out.net {
-            let src: Ipv6Addr = ipv6.source.into();
-            assert_eq!(&src.octets()[..8], &WAN_NPT_PREFIX, "src prefix should be NPT-translated");
-            assert_eq!(&src.octets()[8..], &LAN_CLIENT_SUFFIX, "src suffix should be preserved");
+        let pkt_out = etherparse::PacketHeaders::from_ethernet_slice(&packet_out)
+            .expect("parse output packet");
+        if let Some(etherparse::NetHeaders::Ipv4(ipv4, _)) = pkt_out.net {
+            let src: Ipv4Addr = ipv4.source.into();
+            assert_eq!(src, WAN_IP, "src_ip should be rewritten to WAN IP");
         } else {
-            panic!("expected IPv6 header in output");
+            panic!("expected IPv4 header in output");
         }
         if let Some(etherparse::TransportHeader::Tcp(tcp)) = pkt_out.transport {
-            assert_eq!(tcp.source_port, 80, "src_port should be unchanged");
+            assert_eq!(tcp.source_port, 8080, "src_port should be rewritten to 8080");
         } else {
             panic!("expected TCP transport header in output");
         }
@@ -247,8 +237,9 @@ mod tests {
 
     #[test]
     fn tcp_ingress_local_router_v3() {
+        let _guard = NAT_V3_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut landscape_builder = LandNatV3SkelBuilder::default();
-        let pin_root = crate::tests::nat::isolated_pin_root("nat-v6-static-v3-local");
+        let pin_root = crate::tests::nat::isolated_pin_root("nat-v4-static-v3-local");
         landscape_builder.object_builder_mut().pin_root_path(&pin_root).unwrap();
         let mut open_object = MaybeUninit::uninit();
         let landscape_open = landscape_builder.open(&mut open_object).unwrap();
@@ -257,36 +248,37 @@ mod tests {
         add_wan_ip(
             &landscape_skel.maps.wan_ip_binding,
             IFINDEX,
-            IpAddr::V6(wan_ip()),
+            IpAddr::V4(WAN_IP),
             None,
-            60,
+            24,
             Some(MacAddr::broadcast()),
         );
 
-        add_static_nat6_mapping(
-            &landscape_skel.maps.nat6_static_mappings,
-            vec![StaticNatMappingV6Item {
-                wan_port: 80,
+        add_static_nat4_mapping_v3(
+            &landscape_skel.maps.nat4_st_map,
+            vec![StaticNatMappingV4Item {
+                wan_port: 8080,
                 lan_port: 80,
-                lan_ip: Ipv6Addr::UNSPECIFIED,
+                lan_ip: Ipv4Addr::UNSPECIFIED,
                 l4_protocol: 6,
             }],
         );
-
-        add_ct6_entry(
-            &landscape_skel.maps.nat6_conn_timer,
+        add_ct_entry(
+            &landscape_skel.maps.nat4_mapping_timer_v3,
             6,
-            LOCAL_CLIENT_SUFFIX,
-            80,
-            LOCAL_ID_BYTE,
-            LOCAL_CLIENT_PREFIX,
-            remote(),
+            REMOTE_IP,
             9999,
+            WAN_IP,
+            8080,
+            WAN_IP,
+            80,
+            NAT_MAPPING_INGRESS,
         );
 
-        let mut pkt = build_ipv6_tcp(remote(), wan_ip(), 9999, 80);
+        let mut pkt = build_ipv4_tcp(REMOTE_IP, WAN_IP, 9999, 8080);
         let mut ctx = TestSkb::default();
         ctx.ifindex = IFINDEX;
+
         let mut packet_out = vec![0u8; pkt.len()];
         let input = ProgramInput {
             data_in: Some(&mut pkt),
@@ -295,18 +287,13 @@ mod tests {
             ..Default::default()
         };
 
-        let result = landscape_skel.progs.nat_v6_ingress.test_run(input).expect("test_run failed");
+        let result = landscape_skel.progs.nat_v4_ingress.test_run(input).expect("test_run failed");
         assert_eq!(result.return_value as i32, -1, "ingress should return TC_ACT_UNSPEC(-1)");
 
-        let pkt_out = PacketHeaders::from_ethernet_slice(&packet_out).expect("parse output");
-        if let Some(etherparse::NetHeaders::Ipv6(ipv6, _)) = pkt_out.net {
-            let dst: Ipv6Addr = ipv6.destination.into();
-            assert_eq!(dst, wan_ip(), "dst should stay on local router address");
-        } else {
-            panic!("expected IPv6 header in output");
-        }
+        let pkt_out = etherparse::PacketHeaders::from_ethernet_slice(&packet_out)
+            .expect("parse output packet");
         if let Some(etherparse::TransportHeader::Tcp(tcp)) = pkt_out.transport {
-            assert_eq!(tcp.destination_port, 80, "dst_port should be unchanged");
+            assert_eq!(tcp.destination_port, 80, "dst_port should be rewritten to 80");
         } else {
             panic!("expected TCP transport header in output");
         }
@@ -314,8 +301,9 @@ mod tests {
 
     #[test]
     fn tcp_egress_local_router_v3() {
+        let _guard = NAT_V3_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut landscape_builder = LandNatV3SkelBuilder::default();
-        let pin_root = crate::tests::nat::isolated_pin_root("nat-v6-static-v3-local");
+        let pin_root = crate::tests::nat::isolated_pin_root("nat-v4-static-v3-local");
         landscape_builder.object_builder_mut().pin_root_path(&pin_root).unwrap();
         let mut open_object = MaybeUninit::uninit();
         let landscape_open = landscape_builder.open(&mut open_object).unwrap();
@@ -324,36 +312,37 @@ mod tests {
         add_wan_ip(
             &landscape_skel.maps.wan_ip_binding,
             IFINDEX,
-            IpAddr::V6(wan_ip()),
+            IpAddr::V4(WAN_IP),
             None,
-            60,
+            24,
             Some(MacAddr::broadcast()),
         );
 
-        add_static_nat6_mapping(
-            &landscape_skel.maps.nat6_static_mappings,
-            vec![StaticNatMappingV6Item {
-                wan_port: 80,
+        add_static_nat4_mapping_v3(
+            &landscape_skel.maps.nat4_st_map,
+            vec![StaticNatMappingV4Item {
+                wan_port: 8080,
                 lan_port: 80,
-                lan_ip: Ipv6Addr::UNSPECIFIED,
+                lan_ip: Ipv4Addr::UNSPECIFIED,
                 l4_protocol: 6,
             }],
         );
-
-        add_ct6_entry(
-            &landscape_skel.maps.nat6_conn_timer,
+        add_ct_entry(
+            &landscape_skel.maps.nat4_mapping_timer_v3,
             6,
-            LOCAL_CLIENT_SUFFIX,
-            80,
-            LOCAL_ID_BYTE,
-            LOCAL_CLIENT_PREFIX,
-            remote(),
+            REMOTE_IP,
             9999,
+            WAN_IP,
+            8080,
+            WAN_IP,
+            80,
+            NAT_MAPPING_EGRESS,
         );
 
-        let mut pkt = build_ipv6_tcp(wan_ip(), remote(), 80, 9999);
+        let mut pkt = build_ipv4_tcp(WAN_IP, REMOTE_IP, 80, 9999);
         let mut ctx = TestSkb::default();
         ctx.ifindex = IFINDEX;
+
         let mut packet_out = vec![0u8; pkt.len()];
         let input = ProgramInput {
             data_in: Some(&mut pkt),
@@ -362,18 +351,13 @@ mod tests {
             ..Default::default()
         };
 
-        let result = landscape_skel.progs.nat_v6_egress.test_run(input).expect("test_run failed");
+        let result = landscape_skel.progs.nat_v4_egress.test_run(input).expect("test_run failed");
         assert_eq!(result.return_value as i32, -1, "egress should return TC_ACT_UNSPEC(-1)");
 
-        let pkt_out = PacketHeaders::from_ethernet_slice(&packet_out).expect("parse output");
-        if let Some(etherparse::NetHeaders::Ipv6(ipv6, _)) = pkt_out.net {
-            let src: Ipv6Addr = ipv6.source.into();
-            assert_eq!(src, wan_ip(), "src should stay on local router address");
-        } else {
-            panic!("expected IPv6 header in output");
-        }
+        let pkt_out = etherparse::PacketHeaders::from_ethernet_slice(&packet_out)
+            .expect("parse output packet");
         if let Some(etherparse::TransportHeader::Tcp(tcp)) = pkt_out.transport {
-            assert_eq!(tcp.source_port, 80, "src_port should be unchanged");
+            assert_eq!(tcp.source_port, 8080, "src_port should be rewritten to 8080");
         } else {
             panic!("expected TCP transport header in output");
         }
@@ -381,8 +365,9 @@ mod tests {
 
     #[test]
     fn udp_ingress_local_router_v3() {
+        let _guard = NAT_V3_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut landscape_builder = LandNatV3SkelBuilder::default();
-        let pin_root = crate::tests::nat::isolated_pin_root("nat-v6-static-v3-local");
+        let pin_root = crate::tests::nat::isolated_pin_root("nat-v4-static-v3-local");
         landscape_builder.object_builder_mut().pin_root_path(&pin_root).unwrap();
         let mut open_object = MaybeUninit::uninit();
         let landscape_open = landscape_builder.open(&mut open_object).unwrap();
@@ -391,36 +376,37 @@ mod tests {
         add_wan_ip(
             &landscape_skel.maps.wan_ip_binding,
             IFINDEX,
-            IpAddr::V6(wan_ip()),
+            IpAddr::V4(WAN_IP),
             None,
-            60,
+            24,
             Some(MacAddr::broadcast()),
         );
 
-        add_static_nat6_mapping(
-            &landscape_skel.maps.nat6_static_mappings,
-            vec![StaticNatMappingV6Item {
-                wan_port: 53,
+        add_static_nat4_mapping_v3(
+            &landscape_skel.maps.nat4_st_map,
+            vec![StaticNatMappingV4Item {
+                wan_port: 5353,
                 lan_port: 53,
-                lan_ip: Ipv6Addr::UNSPECIFIED,
+                lan_ip: Ipv4Addr::UNSPECIFIED,
                 l4_protocol: 17,
             }],
         );
-
-        add_ct6_entry(
-            &landscape_skel.maps.nat6_conn_timer,
+        add_ct_entry(
+            &landscape_skel.maps.nat4_mapping_timer_v3,
             17,
-            LOCAL_CLIENT_SUFFIX,
-            53,
-            LOCAL_ID_BYTE,
-            LOCAL_CLIENT_PREFIX,
-            remote(),
+            REMOTE_IP,
             12345,
+            WAN_IP,
+            5353,
+            WAN_IP,
+            53,
+            NAT_MAPPING_INGRESS,
         );
 
-        let mut pkt = build_ipv6_udp(remote(), wan_ip(), 12345, 53);
+        let mut pkt = build_ipv4_udp(REMOTE_IP, WAN_IP, 12345, 5353);
         let mut ctx = TestSkb::default();
         ctx.ifindex = IFINDEX;
+
         let mut packet_out = vec![0u8; pkt.len()];
         let input = ProgramInput {
             data_in: Some(&mut pkt),
@@ -429,18 +415,13 @@ mod tests {
             ..Default::default()
         };
 
-        let result = landscape_skel.progs.nat_v6_ingress.test_run(input).expect("test_run failed");
+        let result = landscape_skel.progs.nat_v4_ingress.test_run(input).expect("test_run failed");
         assert_eq!(result.return_value as i32, -1, "ingress should return TC_ACT_UNSPEC(-1)");
 
-        let pkt_out = PacketHeaders::from_ethernet_slice(&packet_out).expect("parse output");
-        if let Some(etherparse::NetHeaders::Ipv6(ipv6, _)) = pkt_out.net {
-            let dst: Ipv6Addr = ipv6.destination.into();
-            assert_eq!(dst, wan_ip(), "dst should stay on local router address");
-        } else {
-            panic!("expected IPv6 header in output");
-        }
+        let pkt_out = etherparse::PacketHeaders::from_ethernet_slice(&packet_out)
+            .expect("parse output packet");
         if let Some(etherparse::TransportHeader::Udp(udp)) = pkt_out.transport {
-            assert_eq!(udp.destination_port, 53, "dst_port should be unchanged");
+            assert_eq!(udp.destination_port, 53, "dst_port should be rewritten to 53");
         } else {
             panic!("expected UDP transport header in output");
         }
@@ -448,8 +429,9 @@ mod tests {
 
     #[test]
     fn udp_egress_local_router_v3() {
+        let _guard = NAT_V3_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut landscape_builder = LandNatV3SkelBuilder::default();
-        let pin_root = crate::tests::nat::isolated_pin_root("nat-v6-static-v3-local");
+        let pin_root = crate::tests::nat::isolated_pin_root("nat-v4-static-v3-local");
         landscape_builder.object_builder_mut().pin_root_path(&pin_root).unwrap();
         let mut open_object = MaybeUninit::uninit();
         let landscape_open = landscape_builder.open(&mut open_object).unwrap();
@@ -458,36 +440,37 @@ mod tests {
         add_wan_ip(
             &landscape_skel.maps.wan_ip_binding,
             IFINDEX,
-            IpAddr::V6(wan_ip()),
+            IpAddr::V4(WAN_IP),
             None,
-            60,
+            24,
             Some(MacAddr::broadcast()),
         );
 
-        add_static_nat6_mapping(
-            &landscape_skel.maps.nat6_static_mappings,
-            vec![StaticNatMappingV6Item {
-                wan_port: 53,
+        add_static_nat4_mapping_v3(
+            &landscape_skel.maps.nat4_st_map,
+            vec![StaticNatMappingV4Item {
+                wan_port: 5353,
                 lan_port: 53,
-                lan_ip: Ipv6Addr::UNSPECIFIED,
+                lan_ip: Ipv4Addr::UNSPECIFIED,
                 l4_protocol: 17,
             }],
         );
-
-        add_ct6_entry(
-            &landscape_skel.maps.nat6_conn_timer,
+        add_ct_entry(
+            &landscape_skel.maps.nat4_mapping_timer_v3,
             17,
-            LOCAL_CLIENT_SUFFIX,
-            53,
-            LOCAL_ID_BYTE,
-            LOCAL_CLIENT_PREFIX,
-            remote(),
+            REMOTE_IP,
             12345,
+            WAN_IP,
+            5353,
+            WAN_IP,
+            53,
+            NAT_MAPPING_EGRESS,
         );
 
-        let mut pkt = build_ipv6_udp(wan_ip(), remote(), 53, 12345);
+        let mut pkt = build_ipv4_udp(WAN_IP, REMOTE_IP, 53, 12345);
         let mut ctx = TestSkb::default();
         ctx.ifindex = IFINDEX;
+
         let mut packet_out = vec![0u8; pkt.len()];
         let input = ProgramInput {
             data_in: Some(&mut pkt),
@@ -496,18 +479,13 @@ mod tests {
             ..Default::default()
         };
 
-        let result = landscape_skel.progs.nat_v6_egress.test_run(input).expect("test_run failed");
+        let result = landscape_skel.progs.nat_v4_egress.test_run(input).expect("test_run failed");
         assert_eq!(result.return_value as i32, -1, "egress should return TC_ACT_UNSPEC(-1)");
 
-        let pkt_out = PacketHeaders::from_ethernet_slice(&packet_out).expect("parse output");
-        if let Some(etherparse::NetHeaders::Ipv6(ipv6, _)) = pkt_out.net {
-            let src: Ipv6Addr = ipv6.source.into();
-            assert_eq!(src, wan_ip(), "src should stay on local router address");
-        } else {
-            panic!("expected IPv6 header in output");
-        }
+        let pkt_out = etherparse::PacketHeaders::from_ethernet_slice(&packet_out)
+            .expect("parse output packet");
         if let Some(etherparse::TransportHeader::Udp(udp)) = pkt_out.transport {
-            assert_eq!(udp.source_port, 53, "src_port should be unchanged");
+            assert_eq!(udp.source_port, 5353, "src_port should be rewritten to 5353");
         } else {
             panic!("expected UDP transport header in output");
         }
@@ -515,8 +493,9 @@ mod tests {
 
     #[test]
     fn tcp_ingress_no_match_drop_v3() {
+        let _guard = NAT_V3_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut landscape_builder = LandNatV3SkelBuilder::default();
-        let pin_root = crate::tests::nat::isolated_pin_root("nat-v6-static-v3-local");
+        let pin_root = crate::tests::nat::isolated_pin_root("nat-v4-static-v3-local");
         landscape_builder.object_builder_mut().pin_root_path(&pin_root).unwrap();
         let mut open_object = MaybeUninit::uninit();
         let landscape_open = landscape_builder.open(&mut open_object).unwrap();
@@ -525,25 +504,26 @@ mod tests {
         add_wan_ip(
             &landscape_skel.maps.wan_ip_binding,
             IFINDEX,
-            IpAddr::V6(wan_ip()),
+            IpAddr::V4(WAN_IP),
             None,
-            60,
+            24,
             Some(MacAddr::broadcast()),
         );
 
-        add_static_nat6_mapping(
-            &landscape_skel.maps.nat6_static_mappings,
-            vec![StaticNatMappingV6Item {
-                wan_port: 80,
+        add_static_nat4_mapping_v3(
+            &landscape_skel.maps.nat4_st_map,
+            vec![StaticNatMappingV4Item {
+                wan_port: 8080,
                 lan_port: 80,
-                lan_ip: Ipv6Addr::UNSPECIFIED,
+                lan_ip: Ipv4Addr::UNSPECIFIED,
                 l4_protocol: 6,
             }],
         );
 
-        let mut pkt = build_ipv6_tcp(remote(), wan_ip(), 9999, 9090);
+        let mut pkt = build_ipv4_tcp(REMOTE_IP, WAN_IP, 9999, 9090);
         let mut ctx = TestSkb::default();
         ctx.ifindex = IFINDEX;
+
         let mut packet_out = vec![0u8; pkt.len()];
         let input = ProgramInput {
             data_in: Some(&mut pkt),
@@ -552,7 +532,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = landscape_skel.progs.nat_v6_ingress.test_run(input).expect("test_run failed");
+        let result = landscape_skel.progs.nat_v4_ingress.test_run(input).expect("test_run failed");
         assert_eq!(
             result.return_value as i32, TC_ACT_SHOT,
             "ingress with no matching mapping should return TC_ACT_SHOT(2)",

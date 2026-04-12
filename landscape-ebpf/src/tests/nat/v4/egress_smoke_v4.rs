@@ -10,11 +10,11 @@ use libbpf_rs::{
 };
 use zerocopy::IntoBytes;
 
-use crate::{map_setting::add_wan_ip, nat::v2::land_nat_v2::LandNatV2SkelBuilder, tests::TestSkb};
+use crate::{map_setting::add_wan_ip, nat::v3::land_nat_v3::LandNatV3SkelBuilder, tests::TestSkb};
 
 /// https://www.cloudshark.org/captures/456a264486bf?filter=tcp
 /// 192.168.101.201:56186 -> 50.18.88.205:443
-fn ipv4_tcp_syn() -> Vec<u8> {
+fn build_ipv4_tcp_syn() -> Vec<u8> {
     [
         0x00, 0x25, 0x90, 0x97, 0x4b, 0x8e, 0x00, 0x21, 0xcc, 0xd2, 0x9b, 0x82, 0x08, 0x00, 0x45,
         0x00, 0x00, 0x34, 0x0a, 0x6d, 0x40, 0x00, 0x80, 0x06, 0x00, 0x00, 0xc0, 0xa8, 0x65, 0xc9,
@@ -25,8 +25,8 @@ fn ipv4_tcp_syn() -> Vec<u8> {
     .to_vec()
 }
 
-pub fn handle_ipv4_egress(mut payload: Vec<u8>) {
-    let mut landscape_builder = LandNatV2SkelBuilder::default();
+pub fn run_ipv4_egress_smoke(mut payload: Vec<u8>) {
+    let mut landscape_builder = LandNatV3SkelBuilder::default();
     let pin_root = crate::tests::nat::isolated_pin_root("nat-v4-egress");
     landscape_builder.object_builder_mut().pin_root_path(&pin_root).unwrap();
     let mut open_object = MaybeUninit::uninit();
@@ -44,7 +44,7 @@ pub fn handle_ipv4_egress(mut payload: Vec<u8>) {
         24,
         Some(MacAddr::broadcast()),
     );
-    let handle_ipv4_egress = landscape_skel.progs.egress_nat;
+    let egress_nat = landscape_skel.progs.egress_nat;
 
     let mut ctx = TestSkb::default();
     ctx.ifindex = ifindex;
@@ -57,7 +57,7 @@ pub fn handle_ipv4_egress(mut payload: Vec<u8>) {
         data_out: Some(&mut packet_out),
         ..Default::default()
     };
-    let result = handle_ipv4_egress.test_run(input).expect("test_run failed");
+    let result = egress_nat.test_run(input).expect("test_run failed");
 
     println!("return_value = {}", result.return_value as i32);
     println!("duration = {:?}", result.duration);
@@ -70,7 +70,7 @@ pub mod tests {
     use super::*;
 
     #[test]
-    fn tcp_syn() {
-        handle_ipv4_egress(ipv4_tcp_syn());
+    fn tcp_syn_smoke_v4() {
+        run_ipv4_egress_smoke(build_ipv4_tcp_syn());
     }
 }

@@ -11,7 +11,10 @@ use libbpf_rs::{
 };
 use zerocopy::IntoBytes;
 
-use crate::{map_setting::add_wan_ip, nat::test::test_nat::TestNatSkelBuilder, tests::TestSkb};
+use crate::{
+    map_setting::add_wan_ip,
+    tests::{nat::nat6_helper_v3::Nat6HelperV3SkelBuilder, TestSkb},
+};
 
 // 2001:db8:12::2 => 2001:db8:1::1 inner 2001:db8:1::1 => 2001:db8:2::2 id 0x5edf
 fn build_ipv6_icmp_too_big() -> Vec<u8> {
@@ -88,7 +91,7 @@ fn build_ipv6_icmp_request() -> Vec<u8> {
     bytes.to_vec()
 }
 
-fn build_tcp_syn() -> Vec<u8> {
+fn build_ipv6_tcp_syn() -> Vec<u8> {
     [
         0x38, 0xc9, 0x86, 0x2d, 0x92, 0x61, 0x00, 0xe0, 0x4c, 0x36, 0x1c, 0x43, 0x86, 0xdd, 0x60,
         0x0d, 0x04, 0xd1, 0x00, 0x28, 0x06, 0x40, 0x20, 0x01, 0x48, 0x60, 0x48, 0x60, 0x88, 0x89,
@@ -101,7 +104,7 @@ fn build_tcp_syn() -> Vec<u8> {
     .to_vec()
 }
 
-fn build_tcp_syn_but_checksum_incorrect() -> Vec<u8> {
+fn build_ipv6_tcp_syn_with_bad_checksum() -> Vec<u8> {
     [
         0x38, 0xc9, 0x86, 0x2d, 0x92, 0x61, 0x00, 0xe0, 0x4c, 0x36, 0x1c, 0x43, 0x86, 0xdd, 0x60,
         0x0d, 0x04, 0xd1, 0x00, 0x28, 0x06, 0x40, 0x20, 0x01, 0x48, 0x60, 0x48, 0x60, 0x88, 0x89,
@@ -114,7 +117,7 @@ fn build_tcp_syn_but_checksum_incorrect() -> Vec<u8> {
     .to_vec()
 }
 
-fn build_icmpv6_upd_error() -> Vec<u8> {
+fn build_icmpv6_udp_error() -> Vec<u8> {
     [
         0x38, 0xc9, 0x86, 0x2d, 0x92, 0x61, 0x00, 0xe0, 0x4c, 0x36, 0x1c, 0x43, 0x86, 0xdd, 0x60,
         0x00, 0x00, 0x00, 0x00, 0x39, 0x3a, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -128,8 +131,8 @@ fn build_icmpv6_upd_error() -> Vec<u8> {
     .to_vec()
 }
 
-pub fn handle_ipv6_egress(mut payload: Vec<u8>) {
-    let landscape_builder = TestNatSkelBuilder::default();
+pub fn run_ipv6_egress_helper(mut payload: Vec<u8>) {
+    let landscape_builder = Nat6HelperV3SkelBuilder::default();
     let mut open_object = MaybeUninit::uninit();
     let landscape_open = landscape_builder.open(&mut open_object).unwrap();
 
@@ -145,7 +148,7 @@ pub fn handle_ipv6_egress(mut payload: Vec<u8>) {
         60,
         Some(MacAddr::broadcast()),
     );
-    let handle_ipv6_egress = landscape_skel.progs.handle_ipv6_egress;
+    let egress_helper = landscape_skel.progs.handle_ipv6_egress;
 
     let mut ctx = TestSkb::default();
     ctx.ifindex = ifindex;
@@ -158,7 +161,7 @@ pub fn handle_ipv6_egress(mut payload: Vec<u8>) {
         data_out: Some(&mut packet_out),
         ..Default::default()
     };
-    let result = handle_ipv6_egress.test_run(input).expect("test_run failed");
+    let result = egress_helper.test_run(input).expect("test_run failed");
 
     println!("return_value = {}", result.return_value as i32);
     println!("duration = {:?}", result.duration);
@@ -172,26 +175,26 @@ pub mod tests {
 
     #[test]
     fn ipv6_icmp_too_big() {
-        handle_ipv6_egress(build_ipv6_icmp_too_big());
+        run_ipv6_egress_helper(build_ipv6_icmp_too_big());
     }
 
     #[test]
     fn ipv6_icmp_request() {
-        handle_ipv6_egress(build_ipv6_icmp_request());
+        run_ipv6_egress_helper(build_ipv6_icmp_request());
     }
 
     #[test]
-    fn tcp_syn() {
-        handle_ipv6_egress(build_tcp_syn());
+    fn tcp_syn_helper_v6() {
+        run_ipv6_egress_helper(build_ipv6_tcp_syn());
     }
 
     #[test]
-    fn tcp_syn_but_checksum_incorrect() {
-        handle_ipv6_egress(build_tcp_syn_but_checksum_incorrect());
+    fn tcp_syn_with_bad_checksum_helper_v6() {
+        run_ipv6_egress_helper(build_ipv6_tcp_syn_with_bad_checksum());
     }
 
     #[test]
-    fn icmpv6_upd_error() {
-        handle_ipv6_egress(build_icmpv6_upd_error());
+    fn icmpv6_udp_error() {
+        run_ipv6_egress_helper(build_icmpv6_udp_error());
     }
 }
