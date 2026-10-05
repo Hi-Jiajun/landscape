@@ -78,6 +78,48 @@ struct {
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } firewall_state6_map SEC(".maps");
 
+#define CT_TIMEOUT_SYN_SENT_NS  (30ULL * 1000000000ULL)    // 30 seconds
+#define CT_TIMEOUT_ESTAB_NS     (7200ULL * 1000000000ULL)  // 2 hours
+#define CT_TIMEOUT_FIN_WAIT_NS  (60ULL * 1000000000ULL)    // 60 seconds
+#define CT_TIMEOUT_UDP_NS       (180ULL * 1000000000ULL)   // 3 minutes
+#define CT_TIMEOUT_ICMP_NS      (30ULL * 1000000000ULL)    // 30 seconds
+
+struct ratelimit_entry {
+    __u64 last_time_ns;
+    __u32 tokens;
+    __u32 _pad;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __type(key, __be32);
+    __type(value, struct ratelimit_entry);
+    __uint(max_entries, 16384);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} firewall_ratelimit4_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __type(key, union u_inet_addr);
+    __type(value, struct ratelimit_entry);
+    __uint(max_entries, 16384);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} firewall_ratelimit6_map SEC(".maps");
+
+struct firewall_global_cfg {
+    __u8 allow_wan_ping;     // 1 = allow (default), 0 = drop unsolicited ping from WAN
+    __u8 syn_flood_protect;  // 1 = enabled (default), 0 = disabled
+    __u8 _pad[6];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
+    __type(value, struct firewall_global_cfg);
+    __uint(max_entries, 1);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} firewall_config_map SEC(".maps");
+
 struct port_allow_key {
     __be16 port;
     __u8   protocol;

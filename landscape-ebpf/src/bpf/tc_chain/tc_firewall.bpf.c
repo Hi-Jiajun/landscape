@@ -19,8 +19,8 @@ const volatile u32 current_l3_offset = 14;
 
 static __always_inline bool is_port_allowed(__be16 dport, __u8 proto) {
     u16 port_host = bpf_ntohs(dport);
-    // Standard management & service fallback: Landscape Web UI (6443), Nginx (80, 443)
-    if (proto == IPPROTO_TCP && (port_host == 6443 || port_host == 80 || port_host == 443)) {
+    // Standard management & service fallback: Landscape Web UI (6443, 6300), Nginx (80, 443)
+    if (proto == IPPROTO_TCP && (port_host == 6443 || port_host == 6300 || port_host == 80 || port_host == 443)) {
         return true;
     }
     struct port_allow_key exact_key = {
@@ -40,6 +40,80 @@ static __always_inline bool is_port_allowed(__be16 dport, __u8 proto) {
         return true;
     }
     return false;
+}
+
+static __always_inline bool check_rate_limit4(__be32 src_ip) {
+    u64 now = bpf_ktime_get_ns();
+    struct ratelimit_entry *entry = bpf_map_lookup_elem(&firewall_ratelimit4_map, &src_ip);
+    if (!entry) {
+        struct ratelimit_entry new_entry = {
+            .last_time_ns = now,
+            .tokens = 40,
+            ._pad = 0,
+        };
+        bpf_map_update_elem(&firewall_ratelimit4_map, &src_ip, &new_entry, BPF_ANY);
+        return true;
+    }
+    u64 elapsed = (now > entry->last_time_ns) ? (now - entry->last_time_ns) : 0;
+    // 1 token per 50ms = 20 tokens/sec
+    u32 add_tokens = (u32)(elapsed / 50000000ULL);
+    if (add_tokens > 0) {
+        entry->tokens += add_tokens;
+        if (entry->tokens > 50) entry->tokens = 50;
+        entry->last_time_ns = now;
+    }
+    if (entry->tokens > 0) {
+        entry->tokens--;
+        return true;
+    }
+    return false;
+}
+
+static __always_inline bool check_rate_limit6(const union u_inet_addr *src_ip) {
+    u64 now = bpf_ktime_get_ns();
+    struct ratelimit_entry *entry = bpf_map_lookup_elem(&firewall_ratelimit6_map, src_ip);
+    if (!entry) {
+        struct ratelimit_entry new_entry = {
+            .last_time_ns = now,
+            .tokens = 40,
+            ._pad = 0,
+        };
+        bpf_map_update_elem(&firewall_ratelimit6_map, src_ip, &new_entry, BPF_ANY);
+        return true;
+    }
+    u64 elapsed = (now > entry->last_time_ns) ? (now - entry->last_time_ns) : 0;
+    u32 add_tokens = (u32)(elapsed / 50000000ULL);
+    if (add_tokens > 0) {
+        entry->tokens += add_tokens;
+        if (entry->tokens > 50) entry->tokens = 50;
+        entry->last_time_ns = now;
+    }
+    if (entry->tokens > 0) {
+        entry->tokens--;
+        return true;
+    }
+    return false;
+}
+
+static __always_inline bool is_ct_expired(const struct ct_entry *ent, u64 now_ns) {
+    u64 timeout = CT_TIMEOUT_ESTAB_NS;
+    if (ent->state == FW_STATE_SYN_SENT) {
+        timeout = CT_TIMEOUT_SYN_SENT_NS;
+    } else if (ent->state == FW_STATE_FIN_WAIT) {
+        timeout = CT_TIMEOUT_FIN_WAIT_NS;
+    } else if (ent->state == FW_STATE_UDP) {
+        timeout = CT_TIMEOUT_UDP_NS;
+    } else if (ent->state == FW_STATE_ICMP) {
+        timeout = CT_TIMEOUT_ICMP_NS;
+    }
+    return (now_ns > ent->last_seen_ns && (now_ns - ent->last_seen_ns) > timeout);
+}
+
+static __always_inline bool is_wan_ping_allowed(void) {
+    __u32 key = 0;
+    struct firewall_global_cfg *cfg = bpf_map_lookup_elem(&firewall_config_map, &key);
+    if (!cfg) return true;
+    return cfg->allow_wan_ping != 0;
 }
 
 static __always_inline int fw_v4_egress(struct __sk_buff *skb) {
@@ -180,8 +254,22 @@ static __always_inline int fw_v4_ingress(struct __sk_buff *skb) {
                 .dst_port = ip_pair.dst_port,
                 .protocol = IPPROTO_ICMP,
             };
-            if (bpf_map_lookup_elem(&firewall_state4_map, &match_k)) return TC_ACT_OK;
-            // Echo request from outside allowed for ping diagnostics
+            struct ct_entry *ent = bpf_map_lookup_elem(&firewall_state4_map, &match_k);
+            if (ent) {
+                u64 now_ns = bpf_ktime_get_ns();
+                if (is_ct_expired(ent, now_ns)) {
+                    bpf_map_delete_elem(&firewall_state4_map, &match_k);
+                } else {
+                    ent->last_seen_ns = now_ns;
+                    ent->packets++;
+                    ent->bytes += skb->len;
+                    return TC_ACT_OK;
+                }
+            }
+            // Unsolicited WAN ping check & rate limit
+            if (!is_wan_ping_allowed() || !check_rate_limit4(ip_pair.src_addr.addr)) {
+                return TC_ACT_SHOT;
+            }
             return TC_ACT_OK;
         }
     }
@@ -197,18 +285,28 @@ static __always_inline int fw_v4_ingress(struct __sk_buff *skb) {
         };
         struct ct_entry *ent = bpf_map_lookup_elem(&firewall_state4_map, &match_k);
         if (ent) {
-            ent->last_seen_ns = bpf_ktime_get_ns();
-            ent->packets++;
-            ent->bytes += skb->len;
-            if (idx.pkt_type == PKT_TCP_ACK_V2 && ent->state == FW_STATE_SYN_SENT) {
-                ent->state = FW_STATE_ESTABLISHED;
-            } else if (idx.pkt_type == PKT_TCP_FIN_V2 || idx.pkt_type == PKT_TCP_RST_V2) {
-                ent->state = FW_STATE_FIN_WAIT;
+            u64 now_ns = bpf_ktime_get_ns();
+            if (is_ct_expired(ent, now_ns)) {
+                bpf_map_delete_elem(&firewall_state4_map, &match_k);
+                ent = NULL;
+            } else {
+                ent->last_seen_ns = now_ns;
+                ent->packets++;
+                ent->bytes += skb->len;
+                if (idx.pkt_type == PKT_TCP_ACK_V2 && ent->state == FW_STATE_SYN_SENT) {
+                    ent->state = FW_STATE_ESTABLISHED;
+                } else if (idx.pkt_type == PKT_TCP_FIN_V2 || idx.pkt_type == PKT_TCP_RST_V2) {
+                    ent->state = FW_STATE_FIN_WAIT;
+                }
+                return TC_ACT_OK;
             }
-            return TC_ACT_OK;
         }
 
         if (is_port_allowed(ip_pair.dst_port, proto)) {
+            // Mitigate SYN flood & rapid port knocking
+            if (!check_rate_limit4(ip_pair.src_addr.addr)) {
+                return TC_ACT_SHOT;
+            }
             if (idx.pkt_type == PKT_TCP_SYN_V2) {
                 struct ct_entry in_ent = {
                     .last_seen_ns = bpf_ktime_get_ns(),
@@ -379,8 +477,22 @@ static __always_inline int fw_v6_ingress(struct __sk_buff *skb) {
                 .dst_port = ip_pair.dst_port,
                 .protocol = IPPROTO_ICMPV6,
             };
-            if (bpf_map_lookup_elem(&firewall_state6_map, &match_k)) return TC_ACT_OK;
-            // Echo request from outside allowed for ping / PMTU
+            struct ct_entry *ent = bpf_map_lookup_elem(&firewall_state6_map, &match_k);
+            if (ent) {
+                u64 now_ns = bpf_ktime_get_ns();
+                if (is_ct_expired(ent, now_ns)) {
+                    bpf_map_delete_elem(&firewall_state6_map, &match_k);
+                } else {
+                    ent->last_seen_ns = now_ns;
+                    ent->packets++;
+                    ent->bytes += skb->len;
+                    return TC_ACT_OK;
+                }
+            }
+            // Unsolicited WAN ping check & rate limit
+            if (!is_wan_ping_allowed() || !check_rate_limit6(&ip_pair.src_addr)) {
+                return TC_ACT_SHOT;
+            }
             return TC_ACT_OK;
         }
     }
@@ -396,18 +508,28 @@ static __always_inline int fw_v6_ingress(struct __sk_buff *skb) {
         };
         struct ct_entry *ent = bpf_map_lookup_elem(&firewall_state6_map, &match_k);
         if (ent) {
-            ent->last_seen_ns = bpf_ktime_get_ns();
-            ent->packets++;
-            ent->bytes += skb->len;
-            if (idx.pkt_type == PKT_TCP_ACK_V2 && ent->state == FW_STATE_SYN_SENT) {
-                ent->state = FW_STATE_ESTABLISHED;
-            } else if (idx.pkt_type == PKT_TCP_FIN_V2 || idx.pkt_type == PKT_TCP_RST_V2) {
-                ent->state = FW_STATE_FIN_WAIT;
+            u64 now_ns = bpf_ktime_get_ns();
+            if (is_ct_expired(ent, now_ns)) {
+                bpf_map_delete_elem(&firewall_state6_map, &match_k);
+                ent = NULL;
+            } else {
+                ent->last_seen_ns = now_ns;
+                ent->packets++;
+                ent->bytes += skb->len;
+                if (idx.pkt_type == PKT_TCP_ACK_V2 && ent->state == FW_STATE_SYN_SENT) {
+                    ent->state = FW_STATE_ESTABLISHED;
+                } else if (idx.pkt_type == PKT_TCP_FIN_V2 || idx.pkt_type == PKT_TCP_RST_V2) {
+                    ent->state = FW_STATE_FIN_WAIT;
+                }
+                return TC_ACT_OK;
             }
-            return TC_ACT_OK;
         }
 
         if (is_port_allowed(ip_pair.dst_port, proto)) {
+            // Mitigate SYN flood & rapid port knocking
+            if (!check_rate_limit6(&ip_pair.src_addr)) {
+                return TC_ACT_SHOT;
+            }
             if (idx.pkt_type == PKT_TCP_SYN_V2) {
                 struct ct_entry in_ent = {
                     .last_seen_ns = bpf_ktime_get_ns(),

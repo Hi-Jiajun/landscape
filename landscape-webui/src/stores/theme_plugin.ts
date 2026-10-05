@@ -59,12 +59,12 @@ export const beamThemeOverrides: GlobalThemeOverrides = {
 
 export const useThemePluginStore = defineStore("theme_plugin", () => {
   const currentStyle = ref<ThemeStyle>(
-    (localStorage.getItem("landscape_theme_style") as ThemeStyle) || "beam",
+    (localStorage.getItem("landscape_theme_style_v2") as ThemeStyle) || "default",
   );
 
   function setStyle(style: ThemeStyle) {
     currentStyle.value = style;
-    localStorage.setItem("landscape_theme_style", style);
+    localStorage.setItem("landscape_theme_style_v2", style);
     applyBodyClass();
   }
 

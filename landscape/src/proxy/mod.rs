@@ -361,6 +361,23 @@ impl LandscapeProxyService {
             groups.push(serde_json::Value::Object(grp_obj));
         }
 
+        let mut listeners_arr = Vec::new();
+        let active_listeners = if cfg.listeners.is_empty() {
+            landscape_common::proxy::default_listeners()
+        } else {
+            cfg.listeners.clone()
+        };
+        for lis in active_listeners {
+            let mut lis_obj = serde_json::Map::new();
+            lis_obj.insert("name".to_string(), json!(lis.name));
+            lis_obj.insert("type".to_string(), json!(lis.listener_type));
+            lis_obj.insert("port".to_string(), json!(lis.port));
+            if let Some(ref p) = lis.proxy {
+                lis_obj.insert("proxy".to_string(), json!(p));
+            }
+            listeners_arr.push(serde_json::Value::Object(lis_obj));
+        }
+
         let root = json!({
             "tproxy-port": cfg.tproxy_port,
             "mixed-port": cfg.mixed_port,
@@ -370,11 +387,25 @@ impl LandscapeProxyService {
             "log-level": cfg.log_level,
             "allow-lan": true,
             "bind-address": "*",
+            "unified-delay": true,
+            "tcp-concurrent": true,
+            "ipv6": false,
             "find-process-mode": "off",
             "profile": {
                 "store-selected": true,
                 "store-fake-ip": false
             },
+            "dns": {
+                "enable": true,
+                "ipv6": false,
+                "enhanced-mode": "normal",
+                "nameserver": [
+                    "223.5.5.5",
+                    "119.29.29.29"
+                ]
+            },
+            "listeners": listeners_arr,
+            "proxies": cfg.custom_nodes,
             "proxy-providers": providers,
             "proxy-groups": groups,
             "rules": [

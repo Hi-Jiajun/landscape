@@ -60,6 +60,17 @@ pub struct ProxyGroupConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ProxyListenerConfig {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub listener_type: String,
+    pub port: u16,
+    #[serde(default)]
+    pub proxy: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ProxyPluginConfig {
     #[serde(default)]
     pub enable: bool,
@@ -85,6 +96,8 @@ pub struct ProxyPluginConfig {
     pub groups: Vec<ProxyGroupConfig>,
     #[serde(default)]
     pub custom_nodes: Vec<serde_json::Value>,
+    #[serde(default = "default_listeners")]
+    pub listeners: Vec<ProxyListenerConfig>,
 }
 
 fn default_tproxy_port() -> u16 {
@@ -167,8 +180,50 @@ impl Default for ProxyPluginConfig {
                 },
             ],
             custom_nodes: Vec::new(),
+            listeners: default_listeners(),
         }
     }
+}
+
+pub fn default_listeners() -> Vec<ProxyListenerConfig> {
+    vec![
+        ProxyListenerConfig {
+            name: "flow-ai".to_string(),
+            listener_type: "tproxy".to_string(),
+            port: 7892,
+            proxy: Some("🤖 AI服务".to_string()),
+        },
+        ProxyListenerConfig {
+            name: "flow-stream".to_string(),
+            listener_type: "tproxy".to_string(),
+            port: 7893,
+            proxy: Some("🎥 流媒体".to_string()),
+        },
+        ProxyListenerConfig {
+            name: "flow-game".to_string(),
+            listener_type: "tproxy".to_string(),
+            port: 7894,
+            proxy: Some("🎮 外服游戏".to_string()),
+        },
+        ProxyListenerConfig {
+            name: "flow-im".to_string(),
+            listener_type: "tproxy".to_string(),
+            port: 7895,
+            proxy: Some("💬 即时通讯".to_string()),
+        },
+        ProxyListenerConfig {
+            name: "flow-final".to_string(),
+            listener_type: "tproxy".to_string(),
+            port: 7896,
+            proxy: Some("🐟 漏网之鱼".to_string()),
+        },
+        ProxyListenerConfig {
+            name: "flow-steam".to_string(),
+            listener_type: "tproxy".to_string(),
+            port: 7897,
+            proxy: Some("🎮 Steam".to_string()),
+        },
+    ]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
