@@ -2,63 +2,64 @@ import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import type { GlobalThemeOverrides } from "naive-ui";
 
-export type ThemeStyle = "default" | "unifi-argon";
+export type ThemeStyle = "default" | "beam";
 
-const UNIFI_BLUE = "#0066FF";
-const UNIFI_BLUE_HOVER = "#2563EB";
-const UNIFI_BLUE_PRESSED = "#1D4ED8";
-const UNIFI_BG = "#0A0D14";
-const UNIFI_CARD_BG = "#101622";
-const UNIFI_SIDER_BG = "#0D111A";
-const UNIFI_HEADER_BG = "#0D111ACC";
-const UNIFI_BORDER = "rgba(255, 255, 255, 0.08)";
+// Beam Cyber Azure & Indigo Color Palette
+const BEAM_PRIMARY = "#0EA5E9"; // Cyan 500
+const BEAM_PRIMARY_HOVER = "#38BDF8"; // Cyan 400
+const BEAM_PRIMARY_PRESSED = "#0284C7"; // Cyan 600
+const BEAM_BG = "#07090E";
+const BEAM_CARD_BG = "#0F172A";
+const BEAM_SIDER_BG = "#0A0E17";
+const BEAM_HEADER_BG = "#0A0E17CC";
+const BEAM_BORDER = "rgba(255, 255, 255, 0.08)";
 
-export const unifiArgonThemeOverrides: GlobalThemeOverrides = {
+export const beamThemeOverrides: GlobalThemeOverrides = {
   common: {
-    primaryColor: UNIFI_BLUE,
-    primaryColorHover: UNIFI_BLUE_HOVER,
-    primaryColorPressed: UNIFI_BLUE_PRESSED,
-    primaryColorSuppl: UNIFI_BLUE,
-    bodyColor: UNIFI_BG,
-    cardColor: UNIFI_CARD_BG,
-    modalColor: UNIFI_CARD_BG,
-    popoverColor: "#141B2D",
-    tableColor: UNIFI_CARD_BG,
-    borderColor: UNIFI_BORDER,
-    borderRadius: "10px",
-    borderRadiusSmall: "6px",
+    primaryColor: BEAM_PRIMARY,
+    primaryColorHover: BEAM_PRIMARY_HOVER,
+    primaryColorPressed: BEAM_PRIMARY_PRESSED,
+    primaryColorSuppl: BEAM_PRIMARY,
+    bodyColor: BEAM_BG,
+    cardColor: BEAM_CARD_BG,
+    modalColor: BEAM_CARD_BG,
+    popoverColor: "#131C31",
+    tableColor: BEAM_CARD_BG,
+    borderColor: BEAM_BORDER,
+    borderRadius: "12px",
+    borderRadiusSmall: "8px",
     fontFamily:
-      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+      '-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
     fontWeightStrong: "600",
   },
   Layout: {
-    color: UNIFI_BG,
-    siderColor: UNIFI_SIDER_BG,
-    headerColor: UNIFI_HEADER_BG,
+    color: BEAM_BG,
+    siderColor: BEAM_SIDER_BG,
+    headerColor: BEAM_HEADER_BG,
   },
   Card: {
-    color: UNIFI_CARD_BG,
-    borderColor: UNIFI_BORDER,
-    borderRadius: "10px",
+    color: BEAM_CARD_BG,
+    borderColor: BEAM_BORDER,
+    borderRadius: "14px",
   },
   Menu: {
-    itemColorActive: "rgba(0, 102, 255, 0.12)",
+    itemColorActive: "rgba(14, 165, 233, 0.15)",
     itemColorHover: "rgba(255, 255, 255, 0.04)",
-    itemTextColorActive: UNIFI_BLUE,
-    borderRadius: "8px",
+    itemTextColorActive: BEAM_PRIMARY,
+    borderRadius: "10px",
   },
   Tag: {
-    borderRadius: "6px",
+    borderRadius: "8px",
   },
   Button: {
-    borderRadiusMedium: "8px",
-    borderRadiusSmall: "6px",
+    borderRadiusMedium: "9px",
+    borderRadiusSmall: "7px",
   },
 };
 
 export const useThemePluginStore = defineStore("theme_plugin", () => {
   const currentStyle = ref<ThemeStyle>(
-    (localStorage.getItem("landscape_theme_style") as ThemeStyle) || "unifi-argon",
+    (localStorage.getItem("landscape_theme_style") as ThemeStyle) || "beam",
   );
 
   function setStyle(style: ThemeStyle) {
@@ -68,16 +69,16 @@ export const useThemePluginStore = defineStore("theme_plugin", () => {
   }
 
   function applyBodyClass() {
-    if (currentStyle.value === "unifi-argon") {
-      document.documentElement.classList.add("theme-unifi-argon");
+    if (currentStyle.value === "beam") {
+      document.documentElement.classList.add("theme-beam");
     } else {
-      document.documentElement.classList.remove("theme-unifi-argon");
+      document.documentElement.classList.remove("theme-beam");
     }
   }
 
   const activeThemeOverrides = computed<GlobalThemeOverrides>(() => {
-    if (currentStyle.value === "unifi-argon") {
-      return unifiArgonThemeOverrides;
+    if (currentStyle.value === "beam") {
+      return beamThemeOverrides;
     }
     return { common: { fontWeightStrong: "600" } };
   });

@@ -3,7 +3,7 @@ import { darkTheme, enUS, zhCN, dateZhCN, dateEnUS } from "naive-ui";
 import { computed, onMounted } from "vue";
 import { usePreferenceStore } from "@/stores/preference";
 import { useThemePluginStore } from "@/stores/theme_plugin";
-import "@/styles/unifi-argon.css";
+import "@/styles/beam.css";
 import Env from "@/components/Env.vue";
 
 const prefStore = usePreferenceStore();

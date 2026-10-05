@@ -16,10 +16,12 @@ import LanguageSetting from "@/components/head/LanguageSetting.vue";
 import ThemeSwitch from "@/components/head/ThemeSwitch.vue";
 import GlobalTerminal from "@/components/GlobalTerminal.vue";
 import LandscapeSiderBar from "@/views/LandscapeSiderBar.vue";
+import { useThemePluginStore } from "@/stores/theme_plugin";
 
 const router = useRouter();
 const route = useRoute();
 const historyStore = useHistoryRouteStore();
+const themePlugin = useThemePluginStore();
 const { t } = useI18n();
 
 const themeVars = useThemeVars();
@@ -105,9 +107,13 @@ const contentStyle = computed(() => {
       <LandscapeSiderBar />
       <n-layout>
         <n-layout-header
-          style="height: 30px; padding: 0 10px; display: flex"
+          style="height: 46px; padding: 0 16px; display: flex; align-items: center;"
           bordered
         >
+          <div v-if="themePlugin.currentStyle === 'beam'" class="beam-brand-badge" style="margin-right: 14px;">
+            <span class="beam-status-dot"></span>
+            <span>BEAM OS</span>
+          </div>
           <n-flex
             style="flex: 1; width: 0"
             justify="space-between"

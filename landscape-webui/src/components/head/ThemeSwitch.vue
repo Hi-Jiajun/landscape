@@ -8,9 +8,9 @@ const themePlugin = useThemePluginStore();
 
 const options = computed(() => [
   {
-    label: "UniFi Argon (现代极简)",
-    key: "unifi-argon",
-    icon: themePlugin.currentStyle === "unifi-argon" ? () => h(NIcon, null, { default: () => h(CheckmarkOutline) }) : undefined,
+    label: "Beam (现代流光布局)",
+    key: "beam",
+    icon: themePlugin.currentStyle === "beam" ? () => h(NIcon, null, { default: () => h(CheckmarkOutline) }) : undefined,
   },
   {
     label: "Landscape 原生经典",
@@ -26,7 +26,7 @@ function handleSelect(key: string) {
 
 <template>
   <n-dropdown :options="options" @select="handleSelect" trigger="click">
-    <n-button quaternary circle size="small" title="主题切换">
+    <n-button quaternary circle size="small" title="主题与布局切换">
       <template #icon>
         <n-icon :size="16">
           <ColorPaletteOutline />
