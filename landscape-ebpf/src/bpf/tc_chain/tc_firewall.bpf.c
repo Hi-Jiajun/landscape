@@ -54,6 +54,23 @@ static __always_inline int fw_do_egress(struct __sk_buff *skb) {
         };
         if (unlikely(bpf_map_lookup_elem(&firewall_block_ip4_map, &block_search_key)))
             return TC_ACT_SHOT;
+
+        if (likely(!is_icmpx && (idx.l4_protocol == IPPROTO_TCP || idx.l4_protocol == IPPROTO_UDP))) {
+            struct ct_tuple4 reply_k = {
+                .src_ip = daddr,
+                .dst_ip = saddr,
+                .src_port = dport,
+                .dst_port = sport,
+                .protocol = idx.l4_protocol,
+            };
+            struct ct_entry ent = {
+                .last_seen_ns = bpf_ktime_get_ns(),
+                .packets = 1,
+                .bytes = skb->len,
+                .state = 1,
+            };
+            bpf_map_update_elem(&firewall_state4_map, &reply_k, &ent, BPF_ANY);
+        }
     } else {
         struct scan_ipv6_idx idx = {};
         if (scan_ipv6_into_idx(skb, current_l3_offset, &idx) != LD_SCAN_OK) return TC_ACT_OK;
@@ -86,6 +103,23 @@ static __always_inline int fw_do_egress(struct __sk_buff *skb) {
         __builtin_memcpy(&block_search_key.addr, &daddr, sizeof(block_search_key.addr));
         if (unlikely(bpf_map_lookup_elem(&firewall_block_ip6_map, &block_search_key)))
             return TC_ACT_SHOT;
+
+        if (likely(!is_icmpx && (idx.l4_protocol == IPPROTO_TCP || idx.l4_protocol == IPPROTO_UDP))) {
+            struct ct_tuple6 reply_k = {
+                .src_ip = daddr,
+                .dst_ip = saddr,
+                .src_port = dport,
+                .dst_port = sport,
+                .protocol = idx.l4_protocol,
+            };
+            struct ct_entry ent = {
+                .last_seen_ns = bpf_ktime_get_ns(),
+                .packets = 1,
+                .bytes = skb->len,
+                .state = 1,
+            };
+            bpf_map_update_elem(&firewall_state6_map, &reply_k, &ent, BPF_ANY);
+        }
     }
 
     return TC_ACT_OK;
@@ -130,6 +164,22 @@ static __always_inline int fw_do_ingress(struct __sk_buff *skb) {
         };
         if (unlikely(bpf_map_lookup_elem(&firewall_block_ip4_map, &block_search_key)))
             return TC_ACT_SHOT;
+
+        if (likely(!is_icmpx && (idx.l4_protocol == IPPROTO_TCP || idx.l4_protocol == IPPROTO_UDP))) {
+            struct ct_tuple4 match_k = {
+                .src_ip = saddr,
+                .dst_ip = daddr,
+                .src_port = sport,
+                .dst_port = dport,
+                .protocol = idx.l4_protocol,
+            };
+            struct ct_entry *ent = bpf_map_lookup_elem(&firewall_state4_map, &match_k);
+            if (ent) {
+                ent->last_seen_ns = bpf_ktime_get_ns();
+                ent->packets++;
+                ent->bytes += skb->len;
+            }
+        }
     } else {
         struct scan_ipv6_idx idx = {};
         if (scan_ipv6_into_idx(skb, current_l3_offset, &idx) != LD_SCAN_OK) return TC_ACT_OK;
@@ -162,6 +212,37 @@ static __always_inline int fw_do_ingress(struct __sk_buff *skb) {
         __builtin_memcpy(&block_search_key.addr, &saddr, sizeof(block_search_key.addr));
         if (unlikely(bpf_map_lookup_elem(&firewall_block_ip6_map, &block_search_key)))
             return TC_ACT_SHOT;
+
+        if (likely(!is_icmpx && (idx.l4_protocol == IPPROTO_TCP || idx.l4_protocol == IPPROTO_UDP))) {
+            // Allow DHCPv6 client inbound (UDP port 546)
+            if (idx.l4_protocol == IPPROTO_UDP && bpf_ntohs(dport) == 546)
+                return TC_ACT_OK;
+
+            struct ct_tuple6 match_k = {
+                .src_ip = saddr,
+                .dst_ip = daddr,
+                .src_port = sport,
+                .dst_port = dport,
+                .protocol = idx.l4_protocol,
+            };
+            struct ct_entry *ent = bpf_map_lookup_elem(&firewall_state6_map, &match_k);
+            if (ent) {
+                ent->last_seen_ns = bpf_ktime_get_ns();
+                ent->packets++;
+                ent->bytes += skb->len;
+            } else {
+                struct port_allow_key pkey = {
+                    .port = dport,
+                    .protocol = idx.l4_protocol,
+                };
+                if (!bpf_map_lookup_elem(&firewall_allow_ports_map, &pkey)) {
+                    // Default open ports for Landscape management (e.g. 6443)
+                    if (bpf_ntohs(dport) != 6443) {
+                        return TC_ACT_SHOT;
+                    }
+                }
+            }
+        }
     }
 
     return TC_ACT_OK;
