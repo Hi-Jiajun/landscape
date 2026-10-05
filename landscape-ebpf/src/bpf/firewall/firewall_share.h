@@ -25,6 +25,62 @@ struct {
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } firewall_block_ip6_map SEC(".maps");
 
+struct ct_tuple4 {
+    __be32 src_ip;
+    __be32 dst_ip;
+    __be16 src_port;
+    __be16 dst_port;
+    __u8   protocol;
+    __u8   _pad[3];
+};
+
+struct ct_tuple6 {
+    struct in6_addr src_ip;
+    struct in6_addr dst_ip;
+    __be16 src_port;
+    __be16 dst_port;
+    __u8   protocol;
+    __u8   _pad[3];
+};
+
+struct ct_entry {
+    __u64 last_seen_ns;
+    __u32 packets;
+    __u32 bytes;
+    __u8  state;
+    __u8  _pad[3];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __type(key, struct ct_tuple4);
+    __type(value, struct ct_entry);
+    __uint(max_entries, 65536);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} firewall_state4_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __type(key, struct ct_tuple6);
+    __type(value, struct ct_entry);
+    __uint(max_entries, 65536);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} firewall_state6_map SEC(".maps");
+
+struct port_allow_key {
+    __be16 port;
+    __u8   protocol;
+    __u8   _pad;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct port_allow_key);
+    __type(value, __u8);
+    __uint(max_entries, 256);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} firewall_allow_ports_map SEC(".maps");
+
 #define FIREWALL_CREATE_CONN 1
 #define FIREWALL_DELETE_CONN 2
 // struct firewall_conn_event {
