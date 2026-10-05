@@ -13,6 +13,7 @@ import { usePtyStore } from "@/stores/pty";
 import { useEnrolledDeviceStore } from "@/stores/enrolled_device";
 import IntervalFetch from "@/components/head/IntervalFetch.vue";
 import LanguageSetting from "@/components/head/LanguageSetting.vue";
+import ThemeSwitch from "@/components/head/ThemeSwitch.vue";
 import GlobalTerminal from "@/components/GlobalTerminal.vue";
 import LandscapeSiderBar from "@/views/LandscapeSiderBar.vue";
 
@@ -153,7 +154,8 @@ const contentStyle = computed(() => {
               </n-flex>
             </n-scrollbar>
 
-            <n-flex :size="[5, 0]">
+            <n-flex :size="[5, 0]" align="center">
+              <ThemeSwitch />
               <LanguageSetting />
               <PresentationMode></PresentationMode>
               <n-flex align="center">

@@ -41,6 +41,8 @@ mod tests {
             mac: None,
             default_route: false,
             is_docker: false,
+            is_tproxy: false,
+            tproxy_port: 0,
             iface_name: String::new(),
             iface_ip: IpAddr::V6(Ipv6Addr::UNSPECIFIED),
             gateway_ip: IpAddr::V6(Ipv6Addr::UNSPECIFIED),

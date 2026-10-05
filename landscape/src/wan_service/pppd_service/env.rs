@@ -246,6 +246,8 @@ impl PppdEnv for SystemPppdEnv {
                     weight: 1,
                     mac: None,
                     is_docker: false,
+                    is_tproxy: false,
+                    tproxy_port: 0,
                     iface_name: iface.to_string(),
                     iface_ip: IpAddr::V4(*local),
                     default_route: as_router,

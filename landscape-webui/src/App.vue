@@ -2,12 +2,16 @@
 import { darkTheme, enUS, zhCN, dateZhCN, dateEnUS } from "naive-ui";
 import { computed, onMounted } from "vue";
 import { usePreferenceStore } from "@/stores/preference";
+import { useThemePluginStore } from "@/stores/theme_plugin";
+import "@/styles/unifi-argon.css";
 import Env from "@/components/Env.vue";
 
 const prefStore = usePreferenceStore();
+const themePlugin = useThemePluginStore();
 
 onMounted(() => {
   prefStore.loadPreference();
+  themePlugin.applyBodyClass();
 });
 
 const currentLocale = computed(() => {
@@ -29,7 +33,7 @@ const currentTheme = computed(() => {
     :date-locale="currentDateLocale"
     :theme="currentTheme"
     style="display: flex; flex: 1"
-    :theme-overrides="{ common: { fontWeightStrong: '600' } }"
+    :theme-overrides="themePlugin.activeThemeOverrides"
   >
     <n-message-provider>
       <n-notification-provider>

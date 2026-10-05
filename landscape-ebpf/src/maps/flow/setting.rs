@@ -42,6 +42,9 @@ fn flow_match_key_from_rule(rule: &ResolvedFlowEntryRule) -> FlowMatchKey {
             }
         }
     }
+    if let Some(qos) = rule.qos {
+        match_key.tos = qos as u8;
+    }
     match_key
 }
 
