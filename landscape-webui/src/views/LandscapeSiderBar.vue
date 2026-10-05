@@ -16,6 +16,7 @@ import {
   Dashboard,
   Certificate,
   Gateway,
+  Rocket,
 } from "@vicons/carbon";
 import { Wall } from "@vicons/tabler";
 import { Docker } from "@vicons/fa";
@@ -32,6 +33,7 @@ const capabilityStore = useCapabilityStore();
 // Menu keys that require a backend capability to be usable.
 const menu_capability: Record<string, string> = {
   gateway: "gateway",
+  proxy: "proxy",
   "metrics/conn/history": "metric_persistent",
   "metrics/dns": "metric_persistent",
   "self-monitor/memory": "mem_track",
@@ -189,6 +191,11 @@ const menuOptions = computed<MenuOption[]>(() =>
       label: t("routes.gateway"),
       key: "gateway",
       icon: renderIcon(Gateway),
+    },
+    {
+      label: t("routes.proxy"),
+      key: "proxy",
+      icon: renderIcon(Rocket),
     },
     {
       label: t("routes.docker"),

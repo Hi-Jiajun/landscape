@@ -38,6 +38,7 @@ pub mod net_proto;
 pub mod pty;
 
 pub mod net;
+pub mod proxy;
 pub mod sys_service;
 pub mod test;
 pub mod utils;

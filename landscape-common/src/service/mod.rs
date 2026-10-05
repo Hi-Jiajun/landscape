@@ -3,7 +3,7 @@ use std::future::Future;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle as TokioJoinHandle;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -15,7 +15,7 @@ pub mod manager;
 
 pub use error::ServiceConfigError;
 
-#[derive(Serialize, Debug, PartialEq, Clone, Default)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Default)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "t")]
 #[serde(rename_all = "lowercase")]

@@ -67,7 +67,7 @@ function target_type_option(): any[] {
       value: "netns",
     },
     {
-      label: "本地 TProxy",
+      label: "出站代理插件 (TProxy)",
       value: "local_tproxy",
     },
   ];
@@ -95,7 +95,7 @@ function handleUpdateValue(value: FlowTarget["t"], index: number) {
     target_rules.value[index] = {
       target: {
         t: FlowTargetEnum.LocalTproxy,
-        port: 7890,
+        port: 17890,
       },
       weight,
     };

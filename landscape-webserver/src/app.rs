@@ -121,6 +121,9 @@ pub struct LandscapeApp {
 
     // Gateway
     pub(crate) gateway_service: GatewayService,
+
+    /// Outbound proxy plugin service
+    pub proxy_service: landscape::proxy::LandscapeProxyService,
 }
 
 impl LandscapeApp {

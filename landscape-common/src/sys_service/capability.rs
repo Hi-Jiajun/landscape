@@ -15,4 +15,6 @@ pub enum Capability {
     MetricPersistent,
     /// Per-subsystem memory self-monitoring (cargo feature `mem-track`).
     MemTrack,
+    /// Outbound proxy plugin service.
+    Proxy,
 }

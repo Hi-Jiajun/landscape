@@ -91,6 +91,7 @@ mod interfaces;
 mod metrics;
 mod nat;
 mod openapi;
+mod proxy;
 mod redirect_https;
 mod self_monitor;
 mod services;
@@ -508,6 +509,7 @@ async fn run_system(
     .await;
 
     let docker_service = LandscapeDockerService::new(home_path.clone(), route_service.clone());
+    let proxy_service = landscape::proxy::LandscapeProxyService::new(home_path.clone()).await;
 
     let pppd_service = PPPDServiceConfigManagerService::new(
         db_store_provider.clone(),
@@ -585,6 +587,7 @@ async fn run_system(
         cert_service: cert_service.clone(),
         // gateway
         gateway_service: gateway_service.clone(),
+        proxy_service,
     };
 
     gateway::sync_gateway_dynamic_dns_redirects(&landscape_app_status).await;
@@ -620,6 +623,7 @@ async fn run_system(
     let (metrics_router, _) = openapi::build_metrics_openapi_router().split_for_parts();
     let (self_monitor_router, _) = openapi::build_self_monitor_openapi_router().split_for_parts();
     let (gateway_router, _) = openapi::build_gateway_openapi_router().split_for_parts();
+    let (proxy_router, _) = openapi::build_proxy_openapi_router().split_for_parts();
     let openapi = openapi::build_full_openapi_spec();
 
     // /system combines two routers with different state types:
@@ -644,6 +648,7 @@ async fn run_system(
         .nest("/metrics", metrics_router)
         .nest("/self-monitor", self_monitor_router)
         .nest("/gateway", gateway_router)
+        .nest("/proxy", proxy_router)
         .with_state(landscape_app_status.clone())
         .nest("/system", system_combined)
         .route_layer(axum::middleware::from_fn_with_state(auth_share.clone(), auth::auth_handler));
