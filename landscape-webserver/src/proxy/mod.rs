@@ -204,8 +204,9 @@ async fn get_nodes(
     if let Some(proxies_map) = raw.get("proxies").and_then(|v| v.as_object()) {
         for (name, obj) in proxies_map {
             let node_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
-            // Filter out internal groups if we only want individual proxies
-            if ["Selector", "URLTest", "Fallback", "Direct", "Reject", "Compatible"].contains(&node_type.as_str()) {
+            // Filter out internal groups and pseudonodes
+            if ["Selector", "URLTest", "Fallback", "Direct", "Reject", "Compatible", "Pass", "PassRule", "RejectDrop", "Relay"].contains(&node_type.as_str())
+                || ["PASS", "PASS-RULE", "REJECT-DROP", "DIRECT", "REJECT", "GLOBAL", "COMPATIBLE"].contains(&name.as_str()) {
                 continue;
             }
 

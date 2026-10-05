@@ -98,6 +98,8 @@ pub struct ProxyPluginConfig {
     pub custom_nodes: Vec<serde_json::Value>,
     #[serde(default = "default_listeners")]
     pub listeners: Vec<ProxyListenerConfig>,
+    #[serde(default = "default_external_ui")]
+    pub external_ui: Option<String>,
 }
 
 fn default_tproxy_port() -> u16 {
@@ -109,11 +111,15 @@ fn default_mixed_port() -> u16 {
 }
 
 fn default_api_port() -> u16 {
-    19091
+    9090
 }
 
 fn default_api_secret() -> String {
-    "landscape-secret".to_string()
+    "".to_string()
+}
+
+fn default_external_ui() -> Option<String> {
+    Some("/var/lib/sing-box/ui".to_string())
 }
 
 fn default_mode() -> String {
@@ -134,6 +140,7 @@ impl Default for ProxyPluginConfig {
             mixed_port: default_mixed_port(),
             api_port: default_api_port(),
             api_secret: default_api_secret(),
+            external_ui: default_external_ui(),
             mode: default_mode(),
             log_level: default_log_level(),
             subscriptions: Vec::new(),

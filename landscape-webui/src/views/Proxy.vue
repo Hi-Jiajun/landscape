@@ -272,6 +272,12 @@ function formatUptime(seconds?: number) {
   if (h > 0) return `${h}小时 ${m % 60}分`;
   return `${m}分 ${seconds % 60}秒`;
 }
+
+const zashboardUrl = computed(() => {
+  const host = typeof window !== "undefined" ? window.location.hostname : "192.168.1.1";
+  const port = config.value?.api_port || 9090;
+  return `http://${host}:${port}/ui`;
+});
 </script>
 
 <template>
@@ -321,6 +327,18 @@ function formatUptime(seconds?: number) {
               <template #icon>
                 <n-icon><Renew /></n-icon>
               </template>
+            </n-button>
+            <n-button
+              secondary
+              type="primary"
+              size="small"
+              tag="a"
+              :href="zashboardUrl"
+              target="_blank"
+              :disabled="!isRunning"
+              style="margin-left: 8px;"
+            >
+              打开 Zashboard 面板
             </n-button>
           </n-flex>
         </div>

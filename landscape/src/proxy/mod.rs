@@ -12,8 +12,19 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-fn url_encode(input: &str) -> String {
-    url::form_urlencoded::byte_serialize(input.as_bytes()).collect()
+fn url_path_encode(input: &str) -> String {
+    let mut encoded = String::new();
+    for byte in input.bytes() {
+        match byte {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => {
+                encoded.push_str(&format!("%{:02X}", byte));
+            }
+        }
+    }
+    encoded
 }
 
 #[derive(Clone)]
@@ -378,42 +389,54 @@ impl LandscapeProxyService {
             listeners_arr.push(serde_json::Value::Object(lis_obj));
         }
 
-        let root = json!({
-            "tproxy-port": cfg.tproxy_port,
-            "mixed-port": cfg.mixed_port,
-            "external-controller": format!("127.0.0.1:{}", cfg.api_port),
-            "secret": cfg.api_secret,
-            "mode": cfg.mode,
-            "log-level": cfg.log_level,
-            "allow-lan": true,
-            "bind-address": "*",
-            "unified-delay": true,
-            "tcp-concurrent": true,
+        let mut root_obj = serde_json::Map::new();
+        root_obj.insert("tproxy-port".to_string(), json!(cfg.tproxy_port));
+        root_obj.insert("mixed-port".to_string(), json!(cfg.mixed_port));
+        root_obj.insert("external-controller".to_string(), json!(format!("0.0.0.0:{}", cfg.api_port)));
+        root_obj.insert("secret".to_string(), json!(cfg.api_secret));
+        root_obj.insert("mode".to_string(), json!(cfg.mode));
+        root_obj.insert("log-level".to_string(), json!(cfg.log_level));
+        root_obj.insert("allow-lan".to_string(), json!(true));
+        root_obj.insert("bind-address".to_string(), json!("*"));
+        root_obj.insert("unified-delay".to_string(), json!(true));
+        root_obj.insert("tcp-concurrent".to_string(), json!(true));
+        root_obj.insert("ipv6".to_string(), json!(false));
+        root_obj.insert("find-process-mode".to_string(), json!("off"));
+        root_obj.insert("profile".to_string(), json!({
+            "store-selected": true,
+            "store-fake-ip": false
+        }));
+        root_obj.insert("dns".to_string(), json!({
+            "enable": true,
             "ipv6": false,
-            "find-process-mode": "off",
-            "profile": {
-                "store-selected": true,
-                "store-fake-ip": false
-            },
-            "dns": {
-                "enable": true,
-                "ipv6": false,
-                "enhanced-mode": "normal",
-                "nameserver": [
-                    "223.5.5.5",
-                    "119.29.29.29"
-                ]
-            },
-            "listeners": listeners_arr,
-            "proxies": cfg.custom_nodes,
-            "proxy-providers": providers,
-            "proxy-groups": groups,
-            "rules": [
-                "MATCH,🚀 节点选择"
+            "enhanced-mode": "normal",
+            "nameserver": [
+                "223.5.5.5",
+                "119.29.29.29"
             ]
-        });
+        }));
+        if let Some(ref ui_path) = cfg.external_ui {
+            let p = std::path::Path::new(ui_path);
+            if p.is_relative() {
+                root_obj.insert("external-ui".to_string(), json!(ui_path));
+            } else if p.exists() {
+                let proxy_dir = self.home_path.join("proxy");
+                let symlink_path = proxy_dir.join("ui");
+                if symlink_path.is_symlink() || symlink_path.exists() {
+                    let _ = std::fs::remove_file(&symlink_path);
+                }
+                #[cfg(unix)]
+                let _ = std::os::unix::fs::symlink(ui_path, &symlink_path);
+                root_obj.insert("external-ui".to_string(), json!("ui"));
+            }
+        }
+        root_obj.insert("listeners".to_string(), json!(listeners_arr));
+        root_obj.insert("proxies".to_string(), json!(cfg.custom_nodes));
+        root_obj.insert("proxy-providers".to_string(), json!(providers));
+        root_obj.insert("proxy-groups".to_string(), json!(groups));
+        root_obj.insert("rules".to_string(), json!(["MATCH,🚀 节点选择"]));
 
-        Ok(root)
+        Ok(serde_json::Value::Object(root_obj))
     }
 
     pub async fn add_subscription(&self, name: String, url: String) -> Result<ProxySubscription, String> {
@@ -495,11 +518,11 @@ impl LandscapeProxyService {
         if self.is_running().await {
             let provider_name = format!("sub_{}", id.simple());
             let reload_url = format!("http://127.0.0.1:{}/providers/proxies/{}", cfg.api_port, provider_name);
-            let _ = self.http_client
-                .put(&reload_url)
-                .header("Authorization", format!("Bearer {}", cfg.api_secret))
-                .send()
-                .await;
+            let mut req = self.http_client.put(&reload_url);
+            if !cfg.api_secret.is_empty() {
+                req = req.header("Authorization", format!("Bearer {}", cfg.api_secret));
+            }
+            let _ = req.send().await;
         }
 
         info!("Subscription '{}' refreshed successfully, detected {} nodes", name, count);
@@ -509,9 +532,11 @@ impl LandscapeProxyService {
     pub async fn get_proxies_from_controller(&self) -> Result<serde_json::Value, String> {
         let cfg = self.config.read().await;
         let url = format!("http://127.0.0.1:{}/proxies", cfg.api_port);
-        let resp = self.http_client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", cfg.api_secret))
+        let mut req = self.http_client.get(&url);
+        if !cfg.api_secret.is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", cfg.api_secret));
+        }
+        let resp = req
             .send()
             .await
             .map_err(|e| format!("Failed to query proxies: {e}"))?;
@@ -523,16 +548,19 @@ impl LandscapeProxyService {
 
     pub async fn test_node_delay(&self, name: &str, test_url: Option<&str>) -> Result<u64, String> {
         let cfg = self.config.read().await;
-        let encoded_name = url_encode(name);
+        let encoded_name = url_path_encode(name);
         let target_url = test_url.unwrap_or("http://www.gstatic.com/generate_204");
+        let encoded_target_url = url::form_urlencoded::byte_serialize(target_url.as_bytes()).collect::<String>();
         let url = format!(
             "http://127.0.0.1:{}/proxies/{}/delay?timeout=5000&url={}",
-            cfg.api_port, encoded_name, url_encode(target_url)
+            cfg.api_port, encoded_name, encoded_target_url
         );
 
-        let resp = self.http_client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", cfg.api_secret))
+        let mut req = self.http_client.get(&url);
+        if !cfg.api_secret.is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", cfg.api_secret));
+        }
+        let resp = req
             .send()
             .await
             .map_err(|e| format!("Delay test request failed: {e}"))?;
@@ -552,16 +580,19 @@ impl LandscapeProxyService {
 
     pub async fn select_group_node(&self, group: &str, node: &str) -> Result<(), String> {
         let cfg = self.config.read().await;
-        let encoded_group = url_encode(group);
+        let encoded_group = url_path_encode(group);
         let url = format!("http://127.0.0.1:{}/proxies/{}", cfg.api_port, encoded_group);
         let body = json!({ "name": node });
         let body_str = serde_json::to_string(&body).map_err(|e| e.to_string())?;
 
-        let resp = self.http_client
+        let mut req = self.http_client
             .put(&url)
-            .header("Authorization", format!("Bearer {}", cfg.api_secret))
             .header("Content-Type", "application/json")
-            .body(body_str)
+            .body(body_str);
+        if !cfg.api_secret.is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", cfg.api_secret));
+        }
+        let resp = req
             .send()
             .await
             .map_err(|e| format!("Select node request failed: {e}"))?;
