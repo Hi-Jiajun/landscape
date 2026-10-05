@@ -308,6 +308,9 @@ static __always_inline int xdp_route4_cache_pick_wan(struct xdp_md *ctx,
     }
 
     if (info->is_docker) {
+        if (info->is_docker == 2) {
+            return XDP_PASS;
+        }
         xdp_set_docker_meta(ctx, flow_id, info->ifindex);
         return XDP_PASS;
     }
@@ -401,6 +404,9 @@ static __always_inline int xdp_route6_cache_pick_wan(struct xdp_md *ctx,
     }
 
     if (info->is_docker) {
+        if (info->is_docker == 2) {
+            return XDP_PASS;
+        }
         xdp_set_docker_meta(ctx, flow_id, info->ifindex);
         return XDP_PASS;
     }

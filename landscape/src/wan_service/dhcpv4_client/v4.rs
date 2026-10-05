@@ -654,6 +654,8 @@ async fn bind_ipv4(
                     weight: 1,
                     mac: Some(*mac_addr),
                     is_docker: false,
+                    is_tproxy: false,
+                    tproxy_port: 0,
                     default_route: default_router,
                     iface_name: iface_name.to_string(),
                     iface_ip: IpAddr::V4(new_yiaddr),

@@ -56,6 +56,9 @@ static __always_inline int tc_route4_pick_wan_in_lan(struct __sk_buff *skb, u32 
         }
 
         if (target_info->is_docker) {
+            if (target_info->is_docker == 2) {
+                return TC_ACT_OK;
+            }
             int ret = bpf_skb_vlan_push(skb, ETH_P_8021Q, get_flow_vlan_id(resolved_flow_id));
             if (ret) ld_bpf_log("bpf_skb_vlan_push error");
             return bpf_redirect(target_info->ifindex, 0);
@@ -127,6 +130,9 @@ static __always_inline int tc_route6_pick_wan_in_lan(struct __sk_buff *skb, u32 
         }
 
         if (target_info->is_docker) {
+            if (target_info->is_docker == 2) {
+                return TC_ACT_OK;
+            }
             int ret = bpf_skb_vlan_push(skb, ETH_P_8021Q, get_flow_vlan_id(resolved_flow_id));
             if (ret) ld_bpf_log("bpf_skb_vlan_push error");
             return bpf_redirect(target_info->ifindex, 0);
