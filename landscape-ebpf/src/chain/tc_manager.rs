@@ -491,11 +491,23 @@ impl TcChainManager {
         }
         delete_prog_array_fd(root_next_stage_fd, 0);
 
-        let sorted: Vec<&StageEntry> = state
-            .stages
+        let stage_order: &[StageType] = match chain {
+            ChainDir::WanIngress => &[
+                StageType::Mss,
+                StageType::Firewall,
+                StageType::Nat,
+            ],
+            ChainDir::WanEgress => &[
+                StageType::Mss,
+                StageType::Nat,
+                StageType::Firewall,
+                StageType::Pppoe,
+            ],
+        };
+
+        let sorted: Vec<&StageEntry> = stage_order
             .iter()
-            .filter(|(k, _)| !matches!((k, chain), (StageType::Pppoe, ChainDir::WanIngress)))
-            .map(|(_, v)| v)
+            .filter_map(|st| state.stages.get(st))
             .filter(|v| match chain {
                 ChainDir::WanIngress => v.wan_ingress_prog_fd != 0,
                 ChainDir::WanEgress => v.wan_egress_prog_fd != 0,

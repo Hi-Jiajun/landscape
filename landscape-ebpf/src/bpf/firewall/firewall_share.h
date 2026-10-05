@@ -25,6 +25,16 @@ struct {
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } firewall_block_ip6_map SEC(".maps");
 
+enum fw_ct_state {
+    FW_STATE_NONE = 0,
+    FW_STATE_SYN_SENT = 1,
+    FW_STATE_ESTABLISHED = 2,
+    FW_STATE_FIN_WAIT = 3,
+    FW_STATE_CLOSED = 4,
+    FW_STATE_UDP = 5,
+    FW_STATE_ICMP = 6,
+};
+
 struct ct_tuple4 {
     __be32 src_ip;
     __be32 dst_ip;
@@ -35,8 +45,8 @@ struct ct_tuple4 {
 };
 
 struct ct_tuple6 {
-    struct in6_addr src_ip;
-    struct in6_addr dst_ip;
+    union u_inet_addr src_ip;
+    union u_inet_addr dst_ip;
     __be16 src_port;
     __be16 dst_port;
     __u8   protocol;
@@ -48,7 +58,8 @@ struct ct_entry {
     __u32 packets;
     __u32 bytes;
     __u8  state;
-    __u8  _pad[3];
+    __u8  flags;
+    __u8  _pad[6];
 };
 
 struct {
@@ -83,24 +94,6 @@ struct {
 
 #define FIREWALL_CREATE_CONN 1
 #define FIREWALL_DELETE_CONN 2
-// struct firewall_conn_event {
-//     union u_inet_addr src_addr;
-//     union u_inet_addr dst_addr;
-//     u16 src_port;
-//     u16 dst_port;
-//     u64 create_time;
-//     u64 report_time;
-//     u8 l4_proto;
-//     u8 l3_proto;
-//     u8 event_type;
-//     u8 flow_id;
-//     u8 trace_id;
-// } __firewall_conn_event;
-
-// struct {
-//     __uint(type, BPF_MAP_TYPE_RINGBUF);
-//     __uint(max_entries, 1 << 24);
-// } firewall_conn_events SEC(".maps");
 
 struct firewall_conn_metric_event {
     union u_inet_addr src_addr;
