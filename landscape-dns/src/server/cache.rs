@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use landscape_common::{
     dns::rule::FilterResult,
-    flow::{DnsResultSink, DnsRuntimeMarkInfo, FlowMarkInfo},
+    flow::{DnsMarkInstallError, DnsResultSink, DnsRuntimeMarkInfo, FlowMarkInfo},
 };
 
 use crate::{
@@ -86,10 +86,6 @@ impl CacheHandle {
     /// underlying moka cache's iterator.
     pub fn iter(&self) -> moka::future::Iter<'_, (Arc<str>, RecordType), Arc<CacheDNSItem>> {
         self.cache.iter()
-    }
-
-    pub fn flow_id(&self) -> u32 {
-        self.flow_id
     }
 
     pub fn generation(&self) -> u64 {
@@ -184,14 +180,17 @@ impl CacheHandle {
 
     /// Inserts an answer and registers its route marks in the datapath.
     ///
-    /// Returns `false` when the marks could not be installed *and* at least one
-    /// of them is load-bearing (a proxied or blocked answer). In that case
-    /// nothing is cached either, and the caller must not hand the records to the
-    /// client: the address would otherwise be sent out natively by any device
-    /// whose own flow is direct, which is exactly the leak the marks exist to
-    /// prevent. Answers that need no association (`Direct`, `KeepGoing`) are
-    /// cached and served as usual, since a missing entry is what they ask for.
-    pub async fn insert(&self, entry: CacheEntry) -> bool {
+    /// Returns an error when the marks could not be installed *and* the answer
+    /// must not be served because of it. In that case nothing is cached either,
+    /// and the caller must not hand the records to the client: the address would
+    /// otherwise be sent out natively by any device whose own flow is direct,
+    /// which is exactly the leak the marks exist to prevent.
+    ///
+    /// Answers that need no association (`Direct`, `KeepGoing`) are cached and
+    /// served as usual, since a missing entry is what they ask for — except when
+    /// the answer comes from a superseded rule generation, where its own mark
+    /// cannot be trusted to describe the live rules.
+    pub async fn insert(&self, entry: CacheEntry) -> Result<(), DnsMarkInstallError> {
         let CacheEntry {
             domain_key,
             query_type,
@@ -228,13 +227,20 @@ impl CacheHandle {
                 update_dns_mark_list.into_iter().collect(),
             )
         {
-            if cache_item.mark.mark.requires_route_association() {
+            // An answer from a superseded generation cannot be judged by its own
+            // mark: the rules that produced it are gone, so the domain may have
+            // been moved to `Redirect`/`Drop` since. Serving it "because it only
+            // asked for Direct" would let the replaced rules decide this domain
+            // again, so it is refused outright and the client retries under the
+            // current rules.
+            if e.superseded || cache_item.mark.mark.requires_route_association() {
                 tracing::error!(
                     flow_id = self.flow_id,
                     domain = %domain_key,
+                    superseded = e.superseded,
                     "refusing an answer whose route association could not be installed: {e}"
                 );
-                return false;
+                return Err(e);
             }
             // `Direct`/`KeepGoing` ask for native egress or for the flow's own
             // policy, which is what a missing entry already yields.
@@ -246,11 +252,11 @@ impl CacheHandle {
         }
 
         if min_ttl == 0 {
-            return true;
+            return Ok(());
         }
 
         self.cache.insert((domain_key, query_type), Arc::new(cache_item)).await;
-        true
+        Ok(())
     }
 
     pub fn resolver_cache_entry(

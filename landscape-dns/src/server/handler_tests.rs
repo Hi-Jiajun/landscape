@@ -95,6 +95,7 @@ impl DnsRequestHandler {
         matched_rule_order: Option<u32>,
     ) {
         let runtime = self.snapshot.load_full();
+        // The test sink never fails, so a refusal cannot happen here.
         runtime
             .cache
             .insert(crate::server::cache::CacheEntry {
@@ -107,7 +108,8 @@ impl DnsRequestHandler {
                 matched_rule_id,
                 matched_rule_order,
             })
-            .await;
+            .await
+            .expect("test sink accepts every mark");
     }
 }
 

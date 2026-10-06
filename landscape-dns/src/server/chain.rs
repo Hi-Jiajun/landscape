@@ -502,7 +502,7 @@ async fn apply_outcome_to_cache(
     if query_filtered {
         cache.invalidate(domain, query_type).await;
     } else if let Some((records, code)) = outcome.cache_write() {
-        let installed = cache
+        cache
             .insert(CacheHandle::resolver_cache_entry(
                 resolver,
                 domain.raw_arc(),
@@ -510,16 +510,7 @@ async fn apply_outcome_to_cache(
                 records,
                 code,
             ))
-            .await;
-        if !installed {
-            return Err(DnsMarkInstallError {
-                flow_id: cache.flow_id(),
-                detail: format!(
-                    "route marks for '{}' could not be installed; the answer is refused",
-                    domain.raw()
-                ),
-            });
-        }
+            .await?;
     }
     Ok(())
 }

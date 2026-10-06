@@ -11,10 +11,13 @@ pub fn main() {
         landscape_ebpf::runtime::init_map_paths("map_inmap_insert_test").expect("init map paths");
     let paths = paths.as_ref();
 
-    let _ = landscape_ebpf::maps::flow_dns::refreash_flow_dns_inner_map(paths, 12, vec![]);
+    // Generation 1 both rebuilds the table and becomes the published
+    // generation, so the incremental writes below are admitted.
+    let _ = landscape_ebpf::maps::flow_dns::refreash_flow_dns_inner_map(paths, 12, 1, vec![]);
     let _ = landscape_ebpf::maps::flow_dns::update_flow_dns_rule(
         paths,
         12,
+        1,
         vec![FlowMarkInfo {
             mark: FlowMark::default().into(),
             ip: std::net::IpAddr::V4(Ipv4Addr::BROADCAST),
@@ -25,6 +28,7 @@ pub fn main() {
     let _ = landscape_ebpf::maps::flow_dns::update_flow_dns_rule(
         paths,
         12,
+        1,
         vec![FlowMarkInfo {
             mark: FlowMark::default().into(),
             ip: std::net::IpAddr::V4(Ipv4Addr::LOCALHOST),

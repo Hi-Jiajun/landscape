@@ -51,6 +51,17 @@ pub enum FlowDnsWriteError {
         #[source]
         source: libbpf_rs::Error,
     },
+
+    /// The answer belongs to a rule generation a rebuild has already replaced.
+    ///
+    /// It was produced under rules that no longer exist, so its mark must not be
+    /// installed: doing so would re-apply the configuration the change replaced,
+    /// for that address, for as long as the entry lives.
+    #[error(
+        "flow {flow_id}: answer belongs to rule generation {answer_generation}, \
+         but generation {published_generation} is already in effect"
+    )]
+    Superseded { flow_id: u32, answer_generation: u64, published_generation: u64 },
 }
 
 /// Upper bound on the remembered conflict identities that back the log dedup
@@ -172,6 +183,23 @@ impl Candidate {
 /// so a single lock makes the read-decide-write sequence atomic.
 static FLOW_DNS_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
+/// Rule generation each flow's mark table currently reflects.
+///
+/// A query keeps the runtime snapshot it started with, so it can finish after a
+/// rule change already rebuilt and published the table. Admitting only writes
+/// that match the published generation keeps the replaced rules from being
+/// re-applied to one address.
+///
+/// The check runs **inside** [`FLOW_DNS_WRITE_LOCK`] together with the write it
+/// guards. Checking and writing as two separate steps would leave exactly the
+/// window this exists to close: an answer could pass the check, the rebuild
+/// could publish, and the answer would then write the old mark over the new one.
+static PUBLISHED_GENERATION: OnceLock<Mutex<HashMap<u32, u64>>> = OnceLock::new();
+
+fn published_generations() -> &'static Mutex<HashMap<u32, u64>> {
+    PUBLISHED_GENERATION.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 /// Conflict identities already reported, so a conflict re-observed on every DNS
 /// answer is logged once instead of on every answer.
 static REPORTED_CONFLICTS: OnceLock<Mutex<HashSet<ConflictId>>> = OnceLock::new();
@@ -181,6 +209,54 @@ static SUPPRESSED_CONFLICTS: AtomicU64 = AtomicU64::new(0);
 
 fn lock_flow_dns_writes() -> MutexGuard<'static, ()> {
     FLOW_DNS_WRITE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The generation currently published for a flow, if any.
+pub fn published_generation(flow_id: u32) -> Option<u64> {
+    published_generations()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&flow_id)
+        .copied()
+}
+
+/// Admit an incremental write that belongs to `generation`.
+///
+/// Only the published generation is accepted. An answer from a different
+/// generation cannot be evaluated against the live rules — it may be older (the
+/// rules it used are gone) or newer (it was produced by a rebuild that has not
+/// published yet, so installing it would put part of an unpublished
+/// configuration into the live table).
+fn admit_generation(flow_id: u32, generation: u64) -> Result<(), FlowDnsWriteError> {
+    let mut published =
+        published_generations().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    match published.get(&flow_id) {
+        Some(current) if *current == generation => Ok(()),
+        Some(current) => Err(FlowDnsWriteError::Superseded {
+            flow_id,
+            answer_generation: generation,
+            published_generation: *current,
+        }),
+        // No generation published yet for this flow: the writer ran before any
+        // rebuild, so its answer is the only information available.
+        None => {
+            published.insert(flow_id, generation);
+            Ok(())
+        }
+    }
+}
+
+/// Publish `generation` as the one the flow's table now reflects.
+///
+/// Called by the rebuild path, which is authoritative: it recomputes every mark
+/// from the whole cache, and it advances the generation even when the table it
+/// publishes is empty (an empty table means the new rules removed the marks, so
+/// an answer from the old generation must not put them back).
+fn publish_generation(flow_id: u32, generation: u64) {
+    published_generations()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(flow_id, generation);
 }
 
 /// How strongly a stored mark constrains the traffic, from widest to strictest.
@@ -457,12 +533,17 @@ fn report_conflicts(flow_id: u32, conflicts: &[Conflict], policy: ConflictPolicy
 pub fn refreash_flow_dns_inner_map(
     paths: &LandscapeMapPath,
     flow_id: u32,
+    generation: u64,
     data: Vec<FlowMarkInfo>,
 ) -> Result<(), FlowDnsWriteError> {
     // Rebuilding the outer slots has to be mutually exclusive with the
     // incremental path too, otherwise an answer could be applied to the inner
     // map that is being replaced.
     let _guard = lock_flow_dns_writes();
+    // The rebuild is authoritative: publishing its generation under the same
+    // lock means no incremental write can slip between "the table is rebuilt"
+    // and "the generation changed".
+    publish_generation(flow_id, generation);
 
     let v4 = match libbpf_rs::MapHandle::from_pinned_path(&paths.flow4_dns_map) {
         Ok(outer) => create_flow_dns_inner_map_v4(&outer, flow_id, &data),
@@ -836,9 +917,12 @@ where
 pub fn update_flow_dns_rule(
     paths: &LandscapeMapPath,
     flow_id: u32,
+    generation: u64,
     data: Vec<FlowMarkInfo>,
 ) -> Result<(), FlowDnsWriteError> {
     let _guard = lock_flow_dns_writes();
+    // Checked and applied under one lock: see `admit_generation`.
+    admit_generation(flow_id, generation)?;
 
     let v4 = apply_family_v4(paths, flow_id, &data);
     let v6 = apply_family_v6(paths, flow_id, &data);
@@ -1174,5 +1258,57 @@ mod tests {
         assert_ne!(routing_identity(REDIRECT_AI), routing_identity(REDIRECT_MEDIA));
         assert_ne!(routing_identity(DIRECT), routing_identity(REDIRECT_AI));
         assert_ne!(routing_identity(KEEP_GOING), routing_identity(DIRECT));
+    }
+
+    // The generation gate is process-global, so every test below owns its own
+    // flow id: sharing one would make these tests race each other.
+    #[test]
+    fn the_first_writer_sets_the_published_generation() {
+        assert!(admit_generation(9101, 7).is_ok());
+        assert_eq!(published_generation(9101), Some(7));
+    }
+
+    #[test]
+    fn answers_of_the_published_generation_are_admitted_repeatedly() {
+        publish_generation(9102, 3);
+        // One generation serves many answers.
+        assert!(admit_generation(9102, 3).is_ok());
+        assert!(admit_generation(9102, 3).is_ok());
+        assert_eq!(published_generation(9102), Some(3));
+    }
+
+    #[test]
+    fn an_answer_from_a_replaced_generation_is_refused() {
+        publish_generation(9103, 5);
+        // The rebuild moved on; this answer still describes the old rules.
+        let err = admit_generation(9103, 4).expect_err("a stale answer must be refused");
+        match err {
+            FlowDnsWriteError::Superseded { answer_generation, published_generation, .. } => {
+                assert_eq!(answer_generation, 4);
+                assert_eq!(published_generation, 5);
+            }
+            other => panic!("expected Superseded, got {other:?}"),
+        }
+        // ... and it must not drag the published generation backwards.
+        assert_eq!(published_generation(9103), Some(5));
+    }
+
+    #[test]
+    fn an_answer_from_an_unpublished_generation_is_refused() {
+        publish_generation(9104, 9);
+        // A generation newer than the published one means a rebuild is in
+        // flight; installing it would publish part of a configuration that has
+        // not been announced yet.
+        assert!(admit_generation(9104, 10).is_err());
+        assert_eq!(published_generation(9104), Some(9));
+    }
+
+    #[test]
+    fn generations_are_tracked_per_flow() {
+        publish_generation(9105, 2);
+        // A neighbouring flow's generation is unrelated.
+        assert!(admit_generation(9106, 1).is_ok());
+        assert_eq!(published_generation(9105), Some(2));
+        assert_eq!(published_generation(9106), Some(1));
     }
 }

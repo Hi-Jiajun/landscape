@@ -60,6 +60,12 @@ pub enum DstIpRuleError {
 pub struct DnsMarkInstallError {
     pub flow_id: u32,
     pub detail: String,
+    /// True when the mark was refused because the answer belongs to a rule
+    /// generation a rebuild already replaced, rather than because the datapath
+    /// failed. The caller must refuse such an answer regardless of the mark it
+    /// carries: the rules that produced it no longer exist, so the domain may
+    /// have been moved to a stricter action since.
+    pub superseded: bool,
 }
 
 impl DnsMarkInstallError {
@@ -77,6 +83,12 @@ impl DnsMarkInstallError {
                 "answer belongs to rule generation {answer_generation}, \
                  but generation {current_generation} is already in effect"
             ),
+            superseded: true,
         }
+    }
+
+    /// The datapath refused the write for its own reasons (map unavailable, ...).
+    pub fn write_failed(flow_id: u32, detail: String) -> Self {
+        Self { flow_id, detail, superseded: false }
     }
 }

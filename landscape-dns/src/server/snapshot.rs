@@ -56,6 +56,10 @@ pub(crate) struct SnapshotStore {
     sink: Arc<dyn DnsResultSink>,
     /// Monotonic counter bumped on every applied patch. See [`RuntimeSnapshot`].
     generation: AtomicU64,
+    /// Serialises patch application. Two patches must not interleave their
+    /// rebuild-and-publish sequences: the older one could otherwise finish last
+    /// and put its table and generation back in front of the newer one.
+    apply_lock: tokio::sync::Mutex<()>,
 }
 
 impl SnapshotStore {
@@ -81,6 +85,7 @@ impl SnapshotStore {
             local_resolver,
             sink,
             generation: AtomicU64::new(INITIAL_GENERATION),
+            apply_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -118,6 +123,7 @@ impl SnapshotStore {
     }
 
     pub async fn apply(&self, patch: SnapshotPatch) {
+        let _apply_guard = self.apply_lock.lock().await;
         // Every patch replaces rules, so every patch starts a new generation.
         // Answers still in flight keep the snapshot they began with and are
         // stamped with the generation they were produced under.
