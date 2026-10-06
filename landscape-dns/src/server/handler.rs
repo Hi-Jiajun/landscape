@@ -129,7 +129,11 @@ impl DnsRequestHandler {
     pub async fn invalidate_cache_entry(&self, domain: &ParsedDomain, query_type: RecordType) {
         let runtime = self.snapshot.load_full();
         runtime.cache.invalidate(domain, query_type).await;
-        self.snapshot.refresh_maps_from_cache(&runtime.cache);
+        // An administrative cache invalidation: the snapshot is unchanged, so a
+        // failure is only reported, not acted on.
+        if let Err(e) = self.snapshot.refresh_maps_from_cache(&runtime.cache) {
+            tracing::error!("refreshing the DNS mark table failed: {e}");
+        }
     }
 
     pub async fn refresh_cache_entry(

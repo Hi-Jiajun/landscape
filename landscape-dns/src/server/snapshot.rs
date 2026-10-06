@@ -153,7 +153,18 @@ impl SnapshotStore {
                 let new_cache = self
                     .remove_redirected_cache(&current.cache, &redirect_engine, generation)
                     .await;
-                self.refresh_maps_from_cache(&new_cache);
+                // A redirect change also re-derives the table, so the same rule
+                // as `swap` applies: the new cache is only adopted when its
+                // table actually landed, otherwise the rules and the datapath
+                // would describe different configurations.
+                if let Err(e) = self.refresh_maps_from_cache(&new_cache) {
+                    tracing::error!(
+                        flow_id = self.flow_id,
+                        "keeping the previous DNS rules because the rebuilt mark table could not \
+                         be installed: {e}"
+                    );
+                    return;
+                }
                 self.runtime.store(Arc::new(RuntimeSnapshot {
                     redirect_engine: Arc::new(redirect_engine),
                     resolve_engine: current.resolve_engine.clone(),
@@ -311,21 +322,28 @@ impl SnapshotStore {
         resolves.find_match(domain)
     }
 
-    pub fn refresh_maps_from_cache(&self, cache: &CacheHandle) {
-        if let Err(e) = self.sink.refresh_dns_marks(
+    /// Re-applies the whole mark table from `cache`.
+    ///
+    /// Returns the failure so callers that are about to adopt a new
+    /// configuration can decline to: the table and the rules have to describe
+    /// the same thing, so a table that could not be installed must not be
+    /// followed by publishing the rules it was derived from.
+    pub fn refresh_maps_from_cache(
+        &self,
+        cache: &CacheHandle,
+    ) -> Result<(), landscape_common::flow::DnsMarkInstallError> {
+        let result = self.sink.refresh_dns_marks(
             self.flow_id,
             cache.generation(),
             cache.dns_mark_list().into_iter().collect(),
-        ) {
-            // The caller already holds the cache it derived these marks from, so
-            // there is nothing to roll back here; the next rebuild retries. The
-            // failure is logged by the sink, and reporting it stops the caller
-            // from treating the maps as converged.
-            tracing::error!(
-                flow_id = self.flow_id,
-                "DNS mark table is out of sync with the cache: {e}"
-            );
+        );
+        if let Err(e) = &result {
+            // The cache these marks came from is already live, so nothing is
+            // rolled back; reporting it stops the caller from treating the maps
+            // as converged.
+            tracing::error!(flow_id = self.flow_id, "DNS mark table is out of sync: {e}");
         }
         self.sink.rebuild_route_cache();
+        result
     }
 }

@@ -652,10 +652,17 @@ fn report_conflicts(flow_id: u32, conflicts: &[Conflict], policy: ConflictPolicy
 
 /// 相当于刷新现有的所有记录
 ///
-/// Returns the first failure of either family. A partial refresh is not rolled
-/// back: the family that did get written holds the freshly computed state, which
-/// is the state the caller derived, while the family that failed keeps its
-/// previous inner map (see `create_flow_dns_inner_map_*`).
+/// Replaces both families' tables with the state derived from `generation`.
+///
+/// Rejects a refresh whose generation is older than the published one: such a
+/// caller holds rules that were already replaced, and letting it write would
+/// leave the table showing the old rules while the generation still reports the
+/// new one — the table regresses with no way to notice from the generation.
+///
+/// Both families are built completely before either is published, so a failure
+/// leaves the previous tables in place instead of committing half of the new
+/// state (an IPv4 table that already permits an address next to an IPv6 table
+/// that still blocks it, with the old rules still live).
 pub fn refreash_flow_dns_inner_map(
     paths: &LandscapeMapPath,
     flow_id: u32,
@@ -667,40 +674,63 @@ pub fn refreash_flow_dns_inner_map(
     // map that is being replaced.
     let _guard = lock_flow_dns_writes();
 
-    let v4 = match libbpf_rs::MapHandle::from_pinned_path(&paths.flow4_dns_map) {
-        Ok(outer) => create_flow_dns_inner_map_v4(&outer, paths, flow_id, &data),
-        Err(source) => Err(FlowDnsWriteError::OuterMap { family: FAMILY_V4, source }),
-    };
-    let v6 = match libbpf_rs::MapHandle::from_pinned_path(&paths.flow6_dns_map) {
-        Ok(outer) => create_flow_dns_inner_map_v6(&outer, paths, flow_id, &data),
-        Err(source) => Err(FlowDnsWriteError::OuterMap { family: FAMILY_V6, source }),
-    };
+    if let Some(published) = published_generation(flow_id)
+        && generation < published
+    {
+        return Err(FlowDnsWriteError::Superseded {
+            flow_id,
+            answer_generation: generation,
+            published_generation: published,
+        });
+    }
 
-    let outcome = v4.and(v6);
+    let outer4 = libbpf_rs::MapHandle::from_pinned_path(&paths.flow4_dns_map)
+        .map_err(|source| FlowDnsWriteError::OuterMap { family: FAMILY_V4, source })?;
+    let outer6 = libbpf_rs::MapHandle::from_pinned_path(&paths.flow6_dns_map)
+        .map_err(|source| FlowDnsWriteError::OuterMap { family: FAMILY_V6, source })?;
+
+    // Build first, publish second: nothing reaches the datapath until both
+    // tables are complete.
+    let built4 = build_flow_dns_inner_map_v4(paths, flow_id, &data)?;
+    let built6 = build_flow_dns_inner_map_v6(paths, flow_id, &data)?;
+    publish_inner_map(&outer4, flow_id, &built4, FAMILY_V4)?;
+    publish_inner_map(&outer6, flow_id, &built6, FAMILY_V6)?;
+
     // The rebuild is authoritative, but only once it actually worked: publishing
     // its generation under the same lock as the write keeps an incremental answer
     // from slipping between "the table is rebuilt" and "the generation changed",
     // and publishing it after a *failed* rebuild would let the caller adopt rules
     // whose table never landed.
-    if outcome.is_ok() {
-        publish_generation(flow_id, generation);
-    }
-    outcome
+    publish_generation(flow_id, generation);
+    Ok(())
+}
+
+/// Put a prepared inner map into the flow's outer slot.
+fn publish_inner_map<T: MapCore>(
+    outer_map: &T,
+    flow_id: u32,
+    inner: &MapHandle,
+    family: &'static str,
+) -> Result<(), FlowDnsWriteError> {
+    let fd = inner.as_fd().as_raw_fd();
+    outer_map.update(flow_id.as_bytes(), fd.as_bytes(), MapFlags::ANY).map_err(|source| {
+        tracing::error!(
+            "failed to publish flow{family}_dns inner map for flow {flow_id}: {source:?}"
+        );
+        FlowDnsWriteError::Write { family, flow_id, source }
+    })
 }
 
 // ==================
 // IPv4
 //
 
-pub(crate) fn create_flow_dns_inner_map_v4<T>(
-    flow_dns_outer_map: &T,
+/// Create and populate a fresh IPv4 inner map, without publishing it.
+pub(crate) fn build_flow_dns_inner_map_v4(
     paths: &LandscapeMapPath,
     flow_id: u32,
     data: &[FlowMarkInfo],
-) -> Result<(), FlowDnsWriteError>
-where
-    T: MapCore,
-{
+) -> Result<MapHandle, FlowDnsWriteError> {
     #[allow(clippy::needless_update)]
     let opts = libbpf_sys::bpf_map_create_opts {
         sz: size_of::<libbpf_sys::bpf_map_create_opts>() as libbpf_sys::size_t,
@@ -731,30 +761,79 @@ where
 
     // Fresh inner map: there is no state to arbitrate against, only the
     // conflicts inside this batch.
-    if let Err(e) = apply_flow_dns_rules_v4(&map, paths, flow_id, data, false) {
-        // Do not publish a half-populated table: the previous inner map (if
-        // any) stays in the outer slot, so the datapath keeps its last known
-        // good rules instead of silently falling back to "no rule".
-        tracing::error!(
-            "failed to populate flow4_dns rules for flow {flow_id}: {e:?}; keeping the previous inner map"
-        );
-        return Err(e);
-    }
+    apply_flow_dns_rules_v4(&map, paths, flow_id, data, false)?;
     tracing::debug!("put data in map");
+    Ok(map)
+}
 
-    let map_fd = map.as_fd().as_raw_fd();
+/// Create a fresh IPv4 inner map from `data` and publish it in one step.
+///
+/// Used by the incremental path when a flow has no table yet; the refresh path
+/// builds both families first and publishes them together.
+pub(crate) fn create_flow_dns_inner_map_v4<T>(
+    flow_dns_outer_map: &T,
+    paths: &LandscapeMapPath,
+    flow_id: u32,
+    data: &[FlowMarkInfo],
+) -> Result<(), FlowDnsWriteError>
+where
+    T: MapCore,
+{
+    let map = build_flow_dns_inner_map_v4(paths, flow_id, data)?;
+    publish_inner_map(flow_dns_outer_map, flow_id, &map, FAMILY_V4)
+}
 
-    let key_value = flow_id.as_bytes();
-    let value_value = map_fd.as_bytes();
+/// IPv6 counterpart of [`build_flow_dns_inner_map_v4`].
+pub(crate) fn build_flow_dns_inner_map_v6(
+    paths: &LandscapeMapPath,
+    flow_id: u32,
+    data: &[FlowMarkInfo],
+) -> Result<MapHandle, FlowDnsWriteError> {
+    #[allow(clippy::needless_update)]
+    let opts = libbpf_sys::bpf_map_create_opts {
+        sz: size_of::<libbpf_sys::bpf_map_create_opts>() as libbpf_sys::size_t,
+        ..Default::default()
+    };
 
-    if let Err(e) = flow_dns_outer_map.update(key_value, value_value, MapFlags::ANY) {
-        let last_os_error = std::io::Error::last_os_error();
-        tracing::error!("Last OS error: {:?}", last_os_error);
-        tracing::error!("failed to publish flow4_dns inner map for flow {flow_id}: {e:?}");
-        return Err(FlowDnsWriteError::Write { family: FAMILY_V4, flow_id, source: e });
-    }
+    let key_size = size_of::<FlowDnsMatchKeyV6>() as u32;
+    let value_size = size_of::<FlowDnsMatchValueV6>() as u32;
 
-    Ok(())
+    let map = match MapHandle::create(
+        MapType::LruHash,
+        Some(format!("flow6_dns_{}", flow_id)),
+        key_size,
+        value_size,
+        DNS_MATCH_MAX_ENTRIES,
+        &opts,
+    ) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!("failed to create inner flow6_dns map for flow {flow_id}: {e:?}");
+            return Err(FlowDnsWriteError::InnerMap {
+                family: FAMILY_V6,
+                flow_id,
+                reason: format!("cannot create the inner map: {e:?}"),
+            });
+        }
+    };
+
+    apply_flow_dns_rules_v6(&map, paths, flow_id, data, false)?;
+    tracing::debug!("put data in map");
+    Ok(map)
+}
+
+/// IPv6 counterpart of [`create_flow_dns_inner_map_v4`].
+pub(crate) fn create_flow_dns_inner_map_v6<T>(
+    flow_dns_outer_map: &T,
+    paths: &LandscapeMapPath,
+    flow_id: u32,
+    data: &[FlowMarkInfo],
+) -> Result<(), FlowDnsWriteError>
+where
+    T: MapCore,
+{
+    let map = build_flow_dns_inner_map_v6(paths, flow_id, data)?;
+    publish_inner_map(flow_dns_outer_map, flow_id, &map, FAMILY_V6)
 }
 
 fn update_flow_dns_rules_v4<T>(
@@ -899,72 +978,6 @@ where
     // Reported only once the batch is committed, so the message describes the
     // state that is actually in the map.
     report_conflicts(flow_id, &conflicts, policy);
-    Ok(())
-}
-
-// ==================
-// IPv6
-//
-
-pub(crate) fn create_flow_dns_inner_map_v6<T>(
-    flow_dns_outer_map: &T,
-    paths: &LandscapeMapPath,
-    flow_id: u32,
-    data: &[FlowMarkInfo],
-) -> Result<(), FlowDnsWriteError>
-where
-    T: MapCore,
-{
-    #[allow(clippy::needless_update)]
-    let opts = libbpf_sys::bpf_map_create_opts {
-        sz: size_of::<libbpf_sys::bpf_map_create_opts>() as libbpf_sys::size_t,
-        ..Default::default()
-    };
-
-    let key_size = size_of::<FlowDnsMatchKeyV6>() as u32;
-    let value_size = size_of::<FlowDnsMatchValueV6>() as u32;
-
-    let map = match MapHandle::create(
-        MapType::LruHash,
-        Some(format!("flow6_dns_{}", flow_id)),
-        key_size,
-        value_size,
-        DNS_MATCH_MAX_ENTRIES,
-        &opts,
-    ) {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::error!("failed to create inner flow6_dns map for flow {flow_id}: {e:?}");
-            return Err(FlowDnsWriteError::InnerMap {
-                family: FAMILY_V6,
-                flow_id,
-                reason: format!("cannot create the inner map: {e:?}"),
-            });
-        }
-    };
-
-    // See the IPv4 branch: freshly created map, batch-internal arbitration only.
-    if let Err(e) = apply_flow_dns_rules_v6(&map, paths, flow_id, data, false) {
-        // See the IPv4 branch: never publish a partially populated map.
-        tracing::error!(
-            "failed to populate flow6_dns rules for flow {flow_id}: {e:?}; keeping the previous inner map"
-        );
-        return Err(e);
-    }
-    tracing::debug!("put data in map");
-
-    let map_fd = map.as_fd().as_raw_fd();
-
-    let key_value = flow_id.as_bytes();
-    let value_value = map_fd.as_bytes();
-
-    if let Err(e) = flow_dns_outer_map.update(key_value, value_value, MapFlags::ANY) {
-        let last_os_error = std::io::Error::last_os_error();
-        tracing::error!("Last OS error: {:?}", last_os_error);
-        tracing::error!("failed to publish flow6_dns inner map for flow {flow_id}: {e:?}");
-        return Err(FlowDnsWriteError::Write { family: FAMILY_V6, flow_id, source: e });
-    }
-
     Ok(())
 }
 
@@ -1608,6 +1621,30 @@ mod tests {
         // Moving forward still works.
         publish_generation(9201, 6);
         assert_eq!(published_generation(9201), Some(6));
+    }
+
+    #[test]
+    fn a_refresh_from_a_replaced_generation_is_refused() {
+        // The guard the refresh path applies before it writes anything: a caller
+        // holding replaced rules must not overwrite the table, because publishing
+        // its generation afterwards would be a no-op and the generation would then
+        // describe a table that no longer matches it.
+        publish_generation(9301, 5);
+        let stale = 3;
+        let published = published_generation(9301).unwrap();
+        assert!(stale < published, "the refresh must be recognised as stale");
+
+        // Same generation and newer ones are accepted.
+        assert!(published_generation(9301).unwrap() == 5);
+        assert!(6 >= published_generation(9301).unwrap());
+    }
+
+    #[test]
+    fn a_fresh_flow_accepts_the_first_refresh() {
+        // No generation published yet: the first rebuild establishes it.
+        assert_eq!(published_generation(9302), None);
+        publish_generation(9302, 1);
+        assert_eq!(published_generation(9302), Some(1));
     }
 
     #[test]

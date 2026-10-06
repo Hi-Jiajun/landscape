@@ -218,6 +218,19 @@ impl CacheHandle {
             matched_rule_order,
         };
         let update_dns_mark_list = cache_item.get_update_rules();
+        // Read what the failure handling needs before the value is moved into the
+        // cache.
+        let needs_association = cache_item.mark.mark.requires_route_association();
+
+        // Cache first, then install the marks. A rebuild derives its table from
+        // the cache, so an answer that is already cached cannot be missed by it
+        // (the next rebuild installs its marks), whereas an answer that installs
+        // its marks first can be dropped by a rebuild that read the cache just
+        // before the insert — leaving an address the client already holds with no
+        // mark at all.
+        if min_ttl != 0 {
+            self.cache.insert((domain_key.clone(), query_type), Arc::new(cache_item)).await;
+        }
 
         // Hand the marks to the datapath sink even if TTL is 0, and even when the
         // list is empty: the call is also how the sink checks that this answer
@@ -235,13 +248,17 @@ impl CacheHandle {
             // asked for Direct" would let the replaced rules decide this domain
             // again, so it is refused outright and the client retries under the
             // current rules.
-            if e.superseded || cache_item.mark.mark.requires_route_association() {
+            if e.superseded || needs_association {
                 tracing::error!(
                     flow_id = self.flow_id,
                     domain = %domain_key,
                     superseded = e.superseded,
                     "refusing an answer whose route association could not be installed: {e}"
                 );
+                // The entry was cached before the marks were installed, so drop it
+                // again: the answer is being refused, and a later lookup must not
+                // serve it from the cache with its marks missing.
+                self.cache.invalidate(&(domain_key, query_type)).await;
                 return Err(e);
             }
             // `Direct`/`KeepGoing` ask for native egress or for the flow's own
@@ -253,11 +270,6 @@ impl CacheHandle {
             );
         }
 
-        if min_ttl == 0 {
-            return Ok(());
-        }
-
-        self.cache.insert((domain_key, query_type), Arc::new(cache_item)).await;
         Ok(())
     }
 
