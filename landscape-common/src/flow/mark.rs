@@ -28,6 +28,12 @@ impl FlowMark {
         self.action
     }
 
+    /// The flow this mark redirects to. Only meaningful for
+    /// [`FlowMarkAction::Redirect`].
+    pub fn flow_id(&self) -> u8 {
+        self.flow_id
+    }
+
     /// Whether a DNS answer carrying this mark should be registered with the
     /// datapath. `KeepGoing` flows only register when reuse-port is allowed;
     /// the addressed action types (Direct/Drop/Redirect) always register.
