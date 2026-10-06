@@ -80,6 +80,40 @@ impl LandscapeProxyService {
             });
         }
 
+        // Spawn background subscription scheduler (checks every 5 minutes)
+        let svc_scheduler = service.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                let (enabled, subs) = {
+                    let cfg = svc_scheduler.config.read().await;
+                    (cfg.enable, cfg.subscriptions.clone())
+                };
+                if !enabled || subs.is_empty() {
+                    continue;
+                }
+                let now = chrono::Utc::now().timestamp() as f64;
+                for sub in subs {
+                    if !sub.enabled || sub.url.is_empty() {
+                        continue;
+                    }
+                    let interval_secs = (sub.update_interval_hours as f64) * 3600.0;
+                    let should_update = match sub.last_updated_at {
+                        None => true,
+                        Some(last) => (now - last) >= interval_secs,
+                    };
+                    if should_update {
+                        info!("Proxy subscription scheduler: auto-refreshing '{}' (ID: {})...", sub.name, sub.id);
+                        if let Err(e) = svc_scheduler.refresh_subscription(sub.id).await {
+                            warn!("Proxy subscription scheduler: failed to refresh '{}': {e}", sub.name);
+                        }
+                    }
+                }
+            }
+        });
+
         service
     }
 
