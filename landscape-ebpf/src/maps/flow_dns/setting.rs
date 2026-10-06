@@ -16,7 +16,8 @@ use zerocopy::{FromBytes, IntoBytes};
 
 use crate::maps::{
     FlowDnsMatchKeyV4, FlowDnsMatchKeyV6, FlowDnsMatchValueV4, FlowDnsMatchValueV6,
-    LandscapeMapPath, LdEbpfResult,
+    FlowIpTrieKeyV4, FlowIpTrieKeyV6, FlowIpTrieValueV4, FlowIpTrieValueV6, LandscapeMapPath,
+    LdEbpfResult,
 };
 
 const DNS_MATCH_MAX_ENTRIES: u32 = 10240;
@@ -64,6 +65,46 @@ pub enum FlowDnsWriteError {
     Superseded { flow_id: u32, answer_generation: u64, published_generation: u64 },
 }
 
+/// Priority of the per-flow destination-IP rule that covers `addr`, if any.
+///
+/// The datapath lets a DNS mark override the destination-IP rule only when the
+/// mark's priority is at most the rule's (`dns.priority <= priority`), so a rule
+/// with a strictly smaller priority decides that address on its own and the DNS
+/// mark becomes an observation for it.
+///
+/// This matters for arbitration: writing a synthesized block for an address a
+/// destination-IP rule already owns would be useless (the rule outranks it) and
+/// actively harmful later — if that rule were removed, the leftover block would
+/// start taking effect and blackhole the address.
+fn dst_ip_owner_priority(paths: &LandscapeMapPath, flow_id: u32, addr: &IpAddr) -> Option<u16> {
+    match addr {
+        IpAddr::V4(v4) => {
+            let outer = libbpf_rs::MapHandle::from_pinned_path(&paths.flow4_ip_map).ok()?;
+            let inner = lookup_flow_inner_map(&outer, flow_id)?;
+            let key = FlowIpTrieKeyV4 { prefixlen: 32, addr: v4.to_bits().to_be() };
+            let bytes = inner.lookup(key.as_bytes(), MapFlags::ANY).ok()??;
+            FlowIpTrieValueV4::read_from_bytes(&bytes).ok().map(|v| v.priority)
+        }
+        IpAddr::V6(v6) => {
+            let outer = libbpf_rs::MapHandle::from_pinned_path(&paths.flow6_ip_map).ok()?;
+            let inner = lookup_flow_inner_map(&outer, flow_id)?;
+            let key = FlowIpTrieKeyV6 { prefixlen: 128, addr: v6.to_bits().to_be_bytes() };
+            let bytes = inner.lookup(key.as_bytes(), MapFlags::ANY).ok()??;
+            FlowIpTrieValueV6::read_from_bytes(&bytes).ok().map(|v| v.priority)
+        }
+    }
+}
+
+/// Inner map of a hash-of-maps outer map for one flow.
+fn lookup_flow_inner_map(
+    outer: &libbpf_rs::MapHandle,
+    flow_id: u32,
+) -> Option<libbpf_rs::MapHandle> {
+    let value = outer.lookup(flow_id.as_bytes(), MapFlags::ANY).ok()??;
+    let id = i32::read_from_bytes(&value).ok()?;
+    libbpf_rs::MapHandle::from_map_id(id as u32).ok()
+}
+
 /// Upper bound on the remembered conflict identities that back the log dedup
 /// below; the set is dropped wholesale when it fills up so memory stays bounded.
 const CONFLICT_LOG_MEMORY: usize = 4096;
@@ -84,6 +125,19 @@ struct Conflict {
     /// not decide this: only the policy did. These are the pairs that need the
     /// rules reconciled — under the default policy the address is refused.
     equipollent: bool,
+    /// True when a destination-IP rule outranks the DNS marks for this address,
+    /// so the arbitration is an observation and nothing was blocked.
+    owned: bool,
+}
+
+/// Whether a destination-IP rule decides this address on its own.
+///
+/// Such a rule outranks the DNS marks (`dns.priority <= priority` is the only
+/// way a mark overrides it), so a block written here would never take effect;
+/// it is also the safer choice, because a leftover block would start blocking
+/// the address the moment that rule was removed.
+fn owner_dominates(settled: &Candidate, owner_priority: Option<u16>) -> bool {
+    settled.synthesized_block && owner_priority.is_some_and(|owner| owner < settled.priority)
 }
 
 /// The `Drop` mark written when two rules that would send the traffic to
@@ -358,11 +412,16 @@ fn fold_candidate(
 ///   different proxy tiers are the real case: neither may be preferred, so the
 ///   address is blocked instead. `priority` is the smallest of the claims so the
 ///   block is at least as strong as the strictest rule that asked for it.
+///
+/// Returns `(decided, applied, conflict)`: the claim the ladder picked, the
+/// value to write, and the arbitration to report. They differ only when a block
+/// is written, and the caller may still fall back to `decided` when a
+/// destination-IP rule owns the address.
 fn settle_claims(
     addr: IpAddr,
     claims: &[Candidate],
     policy: ConflictPolicy,
-) -> (Candidate, Option<Conflict>) {
+) -> (Candidate, Candidate, Option<Conflict>) {
     let mut claims = claims.iter();
     let first = *claims.next().expect("an address is only tracked once a claim exists");
     let mut best = first;
@@ -384,7 +443,7 @@ fn settle_claims(
     }
 
     let Some(rival) = rival else {
-        return (best, None);
+        return (best, best, None);
     };
 
     let block = preference_order(rival.mark) == preference_order(best.mark);
@@ -394,13 +453,16 @@ fn settle_claims(
         // weaker claim as the dropped one so the log names the rule that would
         // have lost the deterministic tie-break.
         let dropped = if candidate_better(&best, &rival) { rival } else { best };
+        let block = Candidate::block(priority);
         (
-            Candidate::block(priority),
+            best,
+            block,
             Some(Conflict {
                 addr,
-                kept: Candidate::block(priority),
+                kept: block,
                 dropped,
                 equipollent: true,
+                owned: false,
             }),
         )
     } else {
@@ -410,11 +472,13 @@ fn settle_claims(
         // still says which pairs the default policy would refuse.
         (
             best,
+            best,
             Some(Conflict {
                 addr,
                 kept: best,
                 dropped: rival,
                 equipollent: block,
+                owned: false,
             }),
         )
     }
@@ -433,7 +497,7 @@ fn settle_with_stored(
     claims: &[Candidate],
     stored: Option<Candidate>,
     policy: ConflictPolicy,
-) -> (Candidate, Option<Conflict>) {
+) -> (Candidate, Candidate, Option<Conflict>) {
     let Some(stored) = stored else {
         return settle_claims(addr, claims, policy);
     };
@@ -477,7 +541,19 @@ fn report_conflicts(flow_id: u32, conflicts: &[Conflict], policy: ConflictPolicy
             reported.clear();
         }
         if reported.insert(id) {
-            if conflict.kept.synthesized_block {
+            if conflict.owned {
+                tracing::warn!(
+                    flow_id,
+                    addr = %conflict.addr,
+                    kept_mark = conflict.kept.mark,
+                    kept_priority = conflict.kept.priority,
+                    dropped_mark = conflict.dropped.mark,
+                    dropped_priority = conflict.dropped.priority,
+                    "shared address is claimed by two DNS rules with different routing, but a \
+                     destination-IP rule outranks them and decides this address; the DNS side is \
+                     observation only, nothing is blocked"
+                );
+            } else if conflict.kept.synthesized_block {
                 tracing::warn!(
                     flow_id,
                     addr = %conflict.addr,
@@ -546,11 +622,11 @@ pub fn refreash_flow_dns_inner_map(
     publish_generation(flow_id, generation);
 
     let v4 = match libbpf_rs::MapHandle::from_pinned_path(&paths.flow4_dns_map) {
-        Ok(outer) => create_flow_dns_inner_map_v4(&outer, flow_id, &data),
+        Ok(outer) => create_flow_dns_inner_map_v4(&outer, paths, flow_id, &data),
         Err(source) => Err(FlowDnsWriteError::OuterMap { family: FAMILY_V4, source }),
     };
     let v6 = match libbpf_rs::MapHandle::from_pinned_path(&paths.flow6_dns_map) {
-        Ok(outer) => create_flow_dns_inner_map_v6(&outer, flow_id, &data),
+        Ok(outer) => create_flow_dns_inner_map_v6(&outer, paths, flow_id, &data),
         Err(source) => Err(FlowDnsWriteError::OuterMap { family: FAMILY_V6, source }),
     };
 
@@ -563,6 +639,7 @@ pub fn refreash_flow_dns_inner_map(
 
 pub(crate) fn create_flow_dns_inner_map_v4<T>(
     flow_dns_outer_map: &T,
+    paths: &LandscapeMapPath,
     flow_id: u32,
     data: &[FlowMarkInfo],
 ) -> Result<(), FlowDnsWriteError>
@@ -599,7 +676,7 @@ where
 
     // Fresh inner map: there is no state to arbitrate against, only the
     // conflicts inside this batch.
-    if let Err(e) = apply_flow_dns_rules_v4(&map, flow_id, data, false) {
+    if let Err(e) = apply_flow_dns_rules_v4(&map, paths, flow_id, data, false) {
         // Do not publish a half-populated table: the previous inner map (if
         // any) stays in the outer slot, so the datapath keeps its last known
         // good rules instead of silently falling back to "no rule".
@@ -625,11 +702,16 @@ where
     Ok(())
 }
 
-fn update_flow_dns_rules_v4<T>(map: &T, flow_id: u32, ips: &[FlowMarkInfo]) -> libbpf_rs::Result<()>
+fn update_flow_dns_rules_v4<T>(
+    map: &T,
+    paths: &LandscapeMapPath,
+    flow_id: u32,
+    ips: &[FlowMarkInfo],
+) -> libbpf_rs::Result<()>
 where
     T: MapCore,
 {
-    apply_flow_dns_rules_v4(map, flow_id, ips, true)
+    apply_flow_dns_rules_v4(map, paths, flow_id, ips, true)
 }
 
 /// Apply DNS marks to a per-flow inner map.
@@ -642,6 +724,7 @@ where
 /// `update_batch` sequence below cannot interleave with another writer.
 fn apply_flow_dns_rules_v4<T>(
     map: &T,
+    paths: &LandscapeMapPath,
     flow_id: u32,
     ips: &[FlowMarkInfo],
     check_existing: bool,
@@ -703,7 +786,19 @@ where
 
         let stored_candidate = stored
             .map(|stored| Candidate::from_stored(stored.mark, stored.priority, stored._pad[0]));
-        let (settled, conflict) = settle_with_stored(*addr, claims, stored_candidate, policy);
+        let (decided, mut settled, conflict) =
+            settle_with_stored(*addr, claims, stored_candidate, policy);
+        let mut conflict = conflict;
+        if owner_dominates(&settled, dst_ip_owner_priority(paths, flow_id, addr)) {
+            // A destination-IP rule outranks these DNS marks, so it decides the
+            // address: the block would never take effect, and leaving it behind
+            // would blackhole the address if that rule were later removed.
+            settled = decided;
+            if let Some(conflict) = conflict.as_mut() {
+                conflict.kept = decided;
+                conflict.owned = true;
+            }
+        }
 
         let unchanged = stored_candidate.is_some_and(|stored| {
             stored.mark == settled.mark
@@ -746,6 +841,7 @@ where
 
 pub(crate) fn create_flow_dns_inner_map_v6<T>(
     flow_dns_outer_map: &T,
+    paths: &LandscapeMapPath,
     flow_id: u32,
     data: &[FlowMarkInfo],
 ) -> Result<(), FlowDnsWriteError>
@@ -781,7 +877,7 @@ where
     };
 
     // See the IPv4 branch: freshly created map, batch-internal arbitration only.
-    if let Err(e) = apply_flow_dns_rules_v6(&map, flow_id, data, false) {
+    if let Err(e) = apply_flow_dns_rules_v6(&map, paths, flow_id, data, false) {
         // See the IPv4 branch: never publish a partially populated map.
         tracing::error!(
             "failed to populate flow6_dns rules for flow {flow_id}: {e:?}; keeping the previous inner map"
@@ -805,16 +901,22 @@ where
     Ok(())
 }
 
-fn update_flow_dns_rules_v6<T>(map: &T, flow_id: u32, ips: &[FlowMarkInfo]) -> libbpf_rs::Result<()>
+fn update_flow_dns_rules_v6<T>(
+    map: &T,
+    paths: &LandscapeMapPath,
+    flow_id: u32,
+    ips: &[FlowMarkInfo],
+) -> libbpf_rs::Result<()>
 where
     T: MapCore,
 {
-    apply_flow_dns_rules_v6(map, flow_id, ips, true)
+    apply_flow_dns_rules_v6(map, paths, flow_id, ips, true)
 }
 
 /// IPv6 counterpart of [`apply_flow_dns_rules_v4`].
 fn apply_flow_dns_rules_v6<T>(
     map: &T,
+    paths: &LandscapeMapPath,
     flow_id: u32,
     ips: &[FlowMarkInfo],
     check_existing: bool,
@@ -874,7 +976,18 @@ where
 
         let stored_candidate = stored
             .map(|stored| Candidate::from_stored(stored.mark, stored.priority, stored._pad[0]));
-        let (settled, conflict) = settle_with_stored(*addr, claims, stored_candidate, policy);
+        let (decided, mut settled, conflict) =
+            settle_with_stored(*addr, claims, stored_candidate, policy);
+        let mut conflict = conflict;
+        if owner_dominates(&settled, dst_ip_owner_priority(paths, flow_id, addr)) {
+            // See the IPv4 branch: a destination-IP rule that outranks the DNS
+            // marks owns the address, so no block is left behind.
+            settled = decided;
+            if let Some(conflict) = conflict.as_mut() {
+                conflict.kept = decided;
+                conflict.owned = true;
+            }
+        }
 
         let unchanged = stored_candidate.is_some_and(|stored| {
             stored.mark == settled.mark
@@ -942,11 +1055,11 @@ fn apply_family_v4(
         && let Ok(fd) = i32::read_from_bytes(&fd_id_arr)
         && let Ok(map) = libbpf_rs::MapHandle::from_map_id(fd as u32)
     {
-        return update_flow_dns_rules_v4(&map, flow_id, data)
+        return update_flow_dns_rules_v4(&map, paths, flow_id, data)
             .map_err(|source| FlowDnsWriteError::Write { family: FAMILY_V4, flow_id, source });
     }
 
-    create_flow_dns_inner_map_v4(&outer, flow_id, data)
+    create_flow_dns_inner_map_v4(&outer, paths, flow_id, data)
 }
 
 fn apply_family_v6(
@@ -962,11 +1075,11 @@ fn apply_family_v6(
         && let Ok(fd) = i32::read_from_bytes(&fd_id_arr)
         && let Ok(map) = libbpf_rs::MapHandle::from_map_id(fd as u32)
     {
-        return update_flow_dns_rules_v6(&map, flow_id, data)
+        return update_flow_dns_rules_v6(&map, paths, flow_id, data)
             .map_err(|source| FlowDnsWriteError::Write { family: FAMILY_V6, flow_id, source });
     }
 
-    create_flow_dns_inner_map_v6(&outer, flow_id, data)
+    create_flow_dns_inner_map_v6(&outer, paths, flow_id, data)
 }
 
 pub fn delete_flow_dns(paths: &LandscapeMapPath, flow_id: u32) -> LdEbpfResult<()> {
@@ -1031,7 +1144,8 @@ mod tests {
             fold_candidate(&mut claims, addr, *candidate);
         }
         let claims = &claims[&addr];
-        settle_claims(addr, claims, policy)
+        let (_, applied, conflict) = settle_claims(addr, claims, policy);
+        (applied, conflict)
     }
 
     #[test]
@@ -1140,7 +1254,8 @@ mod tests {
                 fold_candidate(&mut claims, shared, candidate);
             }
             let claims = claims[&shared].clone();
-            settle_claims(shared, &claims, ConflictPolicy::Block)
+            let (_, applied, conflict) = settle_claims(shared, &claims, ConflictPolicy::Block);
+            (applied, conflict)
         };
 
         // A direct rule, an AI-tier rule and a media-tier rule all claim one
@@ -1175,7 +1290,7 @@ mod tests {
         fold_candidate(&mut claims, shared, Candidate::block(100));
         fold_candidate(&mut claims, shared, rule(DROP, 100));
         let claims = claims[&shared].clone();
-        let (settled, conflict) = settle_claims(shared, &claims, ConflictPolicy::Block);
+        let (_, settled, conflict) = settle_claims(shared, &claims, ConflictPolicy::Block);
         assert_eq!(settled.mark, DROP);
         assert!(!settled.synthesized_block);
         assert!(conflict.is_none());
@@ -1192,7 +1307,7 @@ mod tests {
         fold_candidate(&mut claims, shared, Candidate::from_stored(SYNTHESIZED_BLOCK_MARK, 200, 1));
         let claims = claims[&shared].clone();
 
-        let (settled, conflict) = settle_claims(shared, &claims, ConflictPolicy::Block);
+        let (_, settled, conflict) = settle_claims(shared, &claims, ConflictPolicy::Block);
         assert!(settled.synthesized_block);
         assert!(conflict.expect("still a conflict").kept.synthesized_block);
     }
@@ -1208,7 +1323,7 @@ mod tests {
         fold_candidate(&mut claims, shared, rule(REDIRECT_AI, 500));
         let claims = claims[&shared].clone();
 
-        let (settled, _) = settle_claims(shared, &claims, ConflictPolicy::Block);
+        let (_, settled, _) = settle_claims(shared, &claims, ConflictPolicy::Block);
         assert!(settled.synthesized_block);
     }
 
@@ -1310,5 +1425,46 @@ mod tests {
         assert!(admit_generation(9106, 1).is_ok());
         assert_eq!(published_generation(9105), Some(2));
         assert_eq!(published_generation(9106), Some(1));
+    }
+
+    #[test]
+    fn a_destination_ip_rule_ahead_of_the_marks_owns_the_address() {
+        let shared = shared_addr();
+        // Two proxy tiers would block this address on their own ...
+        let (settled, _) = settle(shared, &[rule(REDIRECT_AI, 100), rule(REDIRECT_MEDIA, 400)]);
+        assert!(settled.synthesized_block);
+
+        // ... but a destination-IP rule that outranks both decides it instead,
+        // so the DNS side must not leave a block behind: that block would start
+        // taking effect the moment the rule was removed.
+        assert!(owner_dominates(&settled, Some(50)));
+        // A rule that does *not* outrank the marks leaves the block in charge.
+        assert!(!owner_dominates(&settled, Some(100)));
+        assert!(!owner_dominates(&settled, Some(1000)));
+        assert!(!owner_dominates(&settled, None));
+    }
+
+    #[test]
+    fn an_owned_address_keeps_the_deterministic_winner() {
+        let shared = shared_addr();
+        let mut claims: HashMap<IpAddr, Vec<Candidate>> = HashMap::new();
+        fold_candidate(&mut claims, shared, rule(REDIRECT_AI, 100));
+        fold_candidate(&mut claims, shared, rule(REDIRECT_MEDIA, 400));
+        let claims = claims[&shared].clone();
+
+        let (decided, applied, _) = settle_claims(shared, &claims, ConflictPolicy::Block);
+        assert!(applied.synthesized_block);
+        // The fallback writes the ladder's winner, i.e. the same tier the
+        // address would have been routed to before arbitration existed.
+        assert_eq!(decided.mark, REDIRECT_AI);
+        assert!(!decided.synthesized_block);
+    }
+
+    #[test]
+    fn a_decided_address_is_never_marked_as_owned() {
+        let shared = shared_addr();
+        // A ladder decision has no block to override.
+        let (settled, _) = settle(shared, &[rule(DIRECT, 100), rule(REDIRECT_AI, 900)]);
+        assert!(!owner_dominates(&settled, Some(1)));
     }
 }
