@@ -47,3 +47,17 @@ pub enum DstIpRuleError {
     #[api_error(id = "dst_ip_rule.cannot_change_flow", status = 400)]
     CannotChangeFlow(ConfigId),
 }
+
+/// A resolved DNS answer could not be registered in the datapath.
+///
+/// The `(ip, mark)` pairs produced for an answer are the only thing that keeps a
+/// proxied or blocked address from being sent out natively by a device whose own
+/// flow is direct. Losing that registration while still handing the address to
+/// the client opens a leak window, so this is reported as an error and the
+/// caller is expected to refuse the answer instead of degrading to "no marks".
+#[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+#[error("flow {flow_id}: {detail}")]
+pub struct DnsMarkInstallError {
+    pub flow_id: u32,
+    pub detail: String,
+}

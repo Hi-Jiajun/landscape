@@ -13,7 +13,7 @@ use hickory_proto::{
 use landscape_common::{
     dns::error::{DnsResult, DnsServiceError},
     dns::rule::FilterResult,
-    flow::DnsResultSink,
+    flow::{DnsMarkInstallError, DnsResultSink},
     metric::dns::DnsOutcome,
 };
 
@@ -124,7 +124,7 @@ impl<'a> ResolveChain<'a> {
         query_type: RecordType,
         resolver: &DNSResolveRuntime,
         policy: CacheWritePolicy,
-    ) -> RuleLookupOutcome {
+    ) -> Result<RuleLookupOutcome, DnsMarkInstallError> {
         let outcome =
             match with_lookup_timeout(resolver.lookup(domain.raw(), query_type), LOOKUP_TIMEOUT)
                 .await
@@ -142,10 +142,10 @@ impl<'a> ResolveChain<'a> {
                 query_filtered,
                 &outcome,
             )
-            .await;
+            .await?;
         }
 
-        outcome
+        Ok(outcome)
     }
 
     // ---- entry points ----
@@ -213,7 +213,7 @@ impl<'a> ResolveChain<'a> {
                 };
             }
 
-            return match self
+            let outcome = match self
                 .stage_rule(
                     domain,
                     query_type,
@@ -222,6 +222,21 @@ impl<'a> ResolveChain<'a> {
                 )
                 .await
             {
+                Ok(outcome) => outcome,
+                // The route marks could not be installed, so serving these
+                // records would let a direct-flow device reach the address
+                // natively. Refuse the answer and retry on the next query.
+                Err(e) => {
+                    tracing::error!("refusing DNS answer: {e}");
+                    return DnsQueryAnswer {
+                        records: vec![],
+                        outcome: DnsOutcome::Error,
+                        response_code: response_code_for(DnsOutcome::Error),
+                    };
+                }
+            };
+
+            return match outcome {
                 RuleLookupOutcome::NoError { records } => DnsQueryAnswer {
                     records: filter_result(records, &filter),
                     outcome: DnsOutcome::Normal,
@@ -285,7 +300,7 @@ impl<'a> ResolveChain<'a> {
             } else {
                 // Read-only: no cache writes here, the cache report below
                 // shows what a client would currently see.
-                if let RuleLookupOutcome::NoError { records } =
+                if let Ok(RuleLookupOutcome::NoError { records }) =
                     self.stage_rule(domain, query_type, resolver, CacheWritePolicy::ReadOnly).await
                 {
                     result.records = Some(crate::to_common_records(if apply_filter {
@@ -370,17 +385,25 @@ impl<'a> ResolveChain<'a> {
             .stage_rule(domain, query_type, resolver, CacheWritePolicy::Write { query_filtered })
             .await
         {
-            RuleLookupOutcome::NoError { records } => {
+            // The refresh contract is explicit about failure, and an answer
+            // whose route marks could not be installed is a failure: reporting
+            // it as refreshed would hide that the address is unprotected.
+            Err(e) => {
+                result.records = Some(vec![]);
+                tracing::error!("refusing to refresh '{}': {e}", domain.raw());
+                return Err(DnsServiceError::RefreshFailed(domain.raw().to_string()));
+            }
+            Ok(RuleLookupOutcome::NoError { records }) => {
                 result.records = Some(if apply_filter {
                     crate::to_common_records(filter_result(records, &filter))
                 } else {
                     crate::to_common_records(records)
                 });
             }
-            RuleLookupOutcome::NxDomain => {
+            Ok(RuleLookupOutcome::NxDomain) => {
                 result.records = Some(vec![]);
             }
-            RuleLookupOutcome::ErrorCode(_) => {
+            Ok(RuleLookupOutcome::ErrorCode(_)) => {
                 // Explicit upstream error: nothing to cache, treat like a
                 // failure for the refresh contract.
                 result.records = Some(vec![]);
@@ -388,7 +411,7 @@ impl<'a> ResolveChain<'a> {
                     return Err(DnsServiceError::RefreshFailed(domain.raw().to_string()));
                 }
             }
-            RuleLookupOutcome::Failed => {
+            Ok(RuleLookupOutcome::Failed) => {
                 // Filtered queries are served an empty answer, so a
                 // failure is not an error here; anything else cannot be
                 // resolved at all.
@@ -462,6 +485,11 @@ impl<'a> ResolveChain<'a> {
 /// Persists a rule lookup outcome to the cache: filtered queries clear any
 /// stale entry, cacheable outcomes are inserted with their response code.
 /// Non-representable failures (`Failed`) leave the cache untouched.
+///
+/// Returns an error only for the security-relevant case: an answer whose
+/// proxied/blocked route marks could not be installed. Such an answer must not
+/// reach the client, so the caller turns it into a refusal rather than serving
+/// records the datapath cannot honour.
 async fn apply_outcome_to_cache(
     cache: &CacheHandle,
     resolver: &DNSResolveRuntime,
@@ -469,11 +497,11 @@ async fn apply_outcome_to_cache(
     query_type: RecordType,
     query_filtered: bool,
     outcome: &RuleLookupOutcome,
-) {
+) -> Result<(), DnsMarkInstallError> {
     if query_filtered {
         cache.invalidate(domain, query_type).await;
     } else if let Some((records, code)) = outcome.cache_write() {
-        cache
+        let installed = cache
             .insert(CacheHandle::resolver_cache_entry(
                 resolver,
                 domain.raw_arc(),
@@ -482,7 +510,17 @@ async fn apply_outcome_to_cache(
                 code,
             ))
             .await;
+        if !installed {
+            return Err(DnsMarkInstallError {
+                flow_id: cache.flow_id(),
+                detail: format!(
+                    "route marks for '{}' could not be installed; the answer is refused",
+                    domain.raw()
+                ),
+            });
+        }
     }
+    Ok(())
 }
 
 /// Maps an upstream lookup error to the rule outcome. Explicit protocol codes

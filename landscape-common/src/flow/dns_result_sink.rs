@@ -1,4 +1,4 @@
-use crate::flow::FlowMarkInfo;
+use crate::flow::{FlowMarkInfo, error::DnsMarkInstallError};
 
 /// Side effects applied to DNS resolution results.
 ///
@@ -7,8 +7,17 @@ use crate::flow::FlowMarkInfo;
 /// them take effect in the datapath: today that's eBPF maps and route caches,
 /// any other backend (userspace routing, DPDK, TC, ...) can plug in later.
 pub trait DnsResultSink: Send + Sync {
-    /// Write (ip, mark) pairs for a freshly cached answer.
-    fn record_dns_answer(&self, flow_id: u32, marks: Vec<FlowMarkInfo>);
+    /// Write (ip, mark) pairs for a freshly resolved answer.
+    ///
+    /// Failing here is a security event, not a bookkeeping problem: the marks
+    /// are what keeps a proxied or blocked address from being sent out natively
+    /// by a device whose own flow is direct. The caller decides what to do with
+    /// the client answer, but it must not treat an error as "no marks needed".
+    fn record_dns_answer(
+        &self,
+        flow_id: u32,
+        marks: Vec<FlowMarkInfo>,
+    ) -> Result<(), DnsMarkInstallError>;
 
     /// Recompute the DNS mark table for a flow from its whole cache.
     fn refresh_dns_marks(&self, flow_id: u32, marks: Vec<FlowMarkInfo>);
@@ -21,7 +30,13 @@ pub trait DnsResultSink: Send + Sync {
 pub struct NoopDnsResultSink;
 
 impl DnsResultSink for NoopDnsResultSink {
-    fn record_dns_answer(&self, _flow_id: u32, _marks: Vec<FlowMarkInfo>) {}
+    fn record_dns_answer(
+        &self,
+        _flow_id: u32,
+        _marks: Vec<FlowMarkInfo>,
+    ) -> Result<(), DnsMarkInstallError> {
+        Ok(())
+    }
 
     fn refresh_dns_marks(&self, _flow_id: u32, _marks: Vec<FlowMarkInfo>) {}
 

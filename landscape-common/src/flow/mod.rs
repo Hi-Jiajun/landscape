@@ -13,6 +13,6 @@ pub mod trace;
 
 pub use config::*;
 pub use dns_result_sink::{DnsResultSink, NoopDnsResultSink};
-pub use error::{DstIpRuleError, FlowRuleError};
+pub use error::{DnsMarkInstallError, DstIpRuleError, FlowRuleError};
 pub use flow_socket_registrar::{FlowSocketRegistrar, NoopFlowSocketRegistrar};
 pub use runtime::*;

@@ -11,8 +11,8 @@ pub fn main() {
         landscape_ebpf::runtime::init_map_paths("map_inmap_insert_test").expect("init map paths");
     let paths = paths.as_ref();
 
-    landscape_ebpf::maps::flow_dns::refreash_flow_dns_inner_map(paths, 12, vec![]);
-    landscape_ebpf::maps::flow_dns::update_flow_dns_rule(
+    let _ = landscape_ebpf::maps::flow_dns::refreash_flow_dns_inner_map(paths, 12, vec![]);
+    let _ = landscape_ebpf::maps::flow_dns::update_flow_dns_rule(
         paths,
         12,
         vec![FlowMarkInfo {
@@ -22,7 +22,7 @@ pub fn main() {
         }],
     );
 
-    landscape_ebpf::maps::flow_dns::update_flow_dns_rule(
+    let _ = landscape_ebpf::maps::flow_dns::update_flow_dns_rule(
         paths,
         12,
         vec![FlowMarkInfo {

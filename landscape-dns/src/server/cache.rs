@@ -82,6 +82,10 @@ impl CacheHandle {
         self.cache.iter()
     }
 
+    pub fn flow_id(&self) -> u32 {
+        self.flow_id
+    }
+
     #[cfg(test)]
     pub async fn get(&self, key: &(Arc<str>, RecordType)) -> Option<Arc<CacheDNSItem>> {
         self.cache.get(key).await
@@ -168,7 +172,16 @@ impl CacheHandle {
         true
     }
 
-    pub async fn insert(&self, entry: CacheEntry) {
+    /// Inserts an answer and registers its route marks in the datapath.
+    ///
+    /// Returns `false` when the marks could not be installed *and* at least one
+    /// of them is load-bearing (a proxied or blocked answer). In that case
+    /// nothing is cached either, and the caller must not hand the records to the
+    /// client: the address would otherwise be sent out natively by any device
+    /// whose own flow is direct, which is exactly the leak the marks exist to
+    /// prevent. Answers that need no association (`Direct`, `KeepGoing`) are
+    /// cached and served as usual, since a missing entry is what they ask for.
+    pub async fn insert(&self, entry: CacheEntry) -> bool {
         let CacheEntry {
             domain_key,
             query_type,
@@ -198,15 +211,34 @@ impl CacheHandle {
         let update_dns_mark_list = cache_item.get_update_rules();
 
         // hand the resulting marks to the datapath sink even if TTL is 0
-        if !update_dns_mark_list.is_empty() {
-            self.sink.record_dns_answer(self.flow_id, update_dns_mark_list.into_iter().collect());
+        if !update_dns_mark_list.is_empty()
+            && let Err(e) = self
+                .sink
+                .record_dns_answer(self.flow_id, update_dns_mark_list.into_iter().collect())
+        {
+            if cache_item.mark.mark.requires_route_association() {
+                tracing::error!(
+                    flow_id = self.flow_id,
+                    domain = %domain_key,
+                    "refusing an answer whose route association could not be installed: {e}"
+                );
+                return false;
+            }
+            // `Direct`/`KeepGoing` ask for native egress or for the flow's own
+            // policy, which is what a missing entry already yields.
+            tracing::warn!(
+                flow_id = self.flow_id,
+                domain = %domain_key,
+                "route association could not be installed, but the answer needs none: {e}"
+            );
         }
 
         if min_ttl == 0 {
-            return;
+            return true;
         }
 
         self.cache.insert((domain_key, query_type), Arc::new(cache_item)).await;
+        true
     }
 
     pub fn resolver_cache_entry(

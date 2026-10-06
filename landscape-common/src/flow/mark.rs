@@ -44,6 +44,21 @@ impl FlowMark {
         }
     }
 
+    /// Whether the datapath must have this answer's route association for the
+    /// traffic to stay inside a managed scope.
+    ///
+    /// A device whose own flow is direct sends anything the DNS mark table does
+    /// not know about natively out of the WAN. `Redirect` and `Drop` are exactly
+    /// the actions that contradict that, so their association is load-bearing:
+    /// if it cannot be installed, the answer must not be handed to the client.
+    ///
+    /// `Direct` needs no association to be safe (native egress is what it asks
+    /// for) and `KeepGoing` explicitly defers to the flow's own policy, which is
+    /// the same policy a missing association falls back to.
+    pub fn requires_route_association(&self) -> bool {
+        matches!(self.action, FlowMarkAction::Redirect | FlowMarkAction::Drop)
+    }
+
     pub fn get_dns_mark(&self, default_flow_id: u32) -> u32 {
         let mut mark_value = match self.action {
             // 转发时候使用目标 flow 进行标记 DNS 请求
