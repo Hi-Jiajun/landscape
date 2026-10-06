@@ -8,7 +8,9 @@ html.theme-beam,
 html.theme-beam body {
   background-color: #07090e !important;
   color: #f1f5f9;
-  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif !important;
   letter-spacing: -0.015em;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -22,7 +24,12 @@ html.theme-beam body::before {
   right: -5vw;
   width: 45vw;
   height: 45vw;
-  background: radial-gradient(circle, rgba(14, 165, 233, 0.08) 0%, rgba(59, 130, 246, 0.03) 50%, transparent 70%);
+  background: radial-gradient(
+    circle,
+    rgba(14, 165, 233, 0.08) 0%,
+    rgba(59, 130, 246, 0.03) 50%,
+    transparent 70%
+  );
   pointer-events: none;
   z-index: 0;
 }
@@ -34,7 +41,12 @@ html.theme-beam body::after {
   left: 10vw;
   width: 50vw;
   height: 50vw;
-  background: radial-gradient(circle, rgba(99, 102, 241, 0.06) 0%, rgba(139, 92, 246, 0.02) 60%, transparent 80%);
+  background: radial-gradient(
+    circle,
+    rgba(99, 102, 241, 0.06) 0%,
+    rgba(139, 92, 246, 0.02) 60%,
+    transparent 80%
+  );
   pointer-events: none;
   z-index: 0;
 }
@@ -78,8 +90,15 @@ html.theme-beam .beam-status-dot {
 }
 
 @keyframes beam-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.5; transform: scale(0.85); }
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.85);
+  }
 }
 
 /* 3. Modern Floating Sidebar Layout */
@@ -116,10 +135,16 @@ html.theme-beam .n-menu-item-content:hover {
 }
 
 html.theme-beam .n-menu-item-content--selected {
-  background: linear-gradient(135deg, rgba(14, 165, 233, 0.18) 0%, rgba(99, 102, 241, 0.12) 100%) !important;
+  background: linear-gradient(
+    135deg,
+    rgba(14, 165, 233, 0.18) 0%,
+    rgba(99, 102, 241, 0.12) 100%
+  ) !important;
   color: #38bdf8 !important;
   border-left: 3px solid #0ea5e9 !important;
-  box-shadow: 0 4px 16px rgba(14, 165, 233, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+  box-shadow:
+    0 4px 16px rgba(14, 165, 233, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
   font-weight: 600 !important;
 }
 
@@ -148,13 +173,20 @@ html.theme-beam .n-card {
   -webkit-backdrop-filter: blur(16px) saturate(180%) !important;
   border: 1px solid rgba(255, 255, 255, 0.08) !important;
   border-radius: 14px !important;
-  box-shadow: 0 8px 32px -4px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.03) !important;
-  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s ease, border-color 0.25s ease !important;
+  box-shadow:
+    0 8px 32px -4px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(255, 255, 255, 0.03) !important;
+  transition:
+    transform 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 0.25s ease,
+    border-color 0.25s ease !important;
 }
 
 html.theme-beam .n-card:hover {
   border-color: rgba(14, 165, 233, 0.3) !important;
-  box-shadow: 0 12px 36px -4px rgba(14, 165, 233, 0.15), 0 0 0 1px rgba(14, 165, 233, 0.2) !important;
+  box-shadow:
+    0 12px 36px -4px rgba(14, 165, 233, 0.15),
+    0 0 0 1px rgba(14, 165, 233, 0.2) !important;
   transform: translateY(-2px);
 }
 

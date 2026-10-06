@@ -219,6 +219,29 @@ impl NatDataplane for EbpfNatDataplane {
         if let Err(e) = maps::nat::reconcile_static_nat4_map(&self.rt.paths, configs) {
             tracing::error!("reconcile static nat4 map error: {e:?}");
         }
+        let mut ports = Vec::new();
+        for cfg in configs {
+            for pair in &cfg.mapping_pair_ports {
+                for proto in &cfg.l4_protocols {
+                    ports.push((pair.wan_port, *proto));
+                }
+            }
+        }
+        // Reconcile: ports removed from the NAT configuration are revoked again
+        // (IPv4 authorizations only — IPv6 entries are left untouched).
+        match maps::firewall::sync_firewall_allowed_ports(
+            &self.rt.paths,
+            maps::firewall::FW_PORT_FAMILY_V4,
+            &ports,
+        ) {
+            Ok(removed) => tracing::debug!(
+                "firewall IPv4 inbound authorizations reconciled ({} ports, {removed} revoked)",
+                ports.len()
+            ),
+            Err(e) => {
+                tracing::error!("failed to reconcile firewall IPv4 inbound authorizations: {e:?}")
+            }
+        }
     }
 
     fn sync_static_nat6(
@@ -227,6 +250,38 @@ impl NatDataplane for EbpfNatDataplane {
     ) {
         if let Err(e) = maps::nat::reconcile_static_nat6_map(&self.rt.paths, configs) {
             tracing::error!("reconcile static nat6 map error: {e:?}");
+        }
+        let mut ports = Vec::new();
+        for cfg in configs {
+            match &cfg.port_config {
+                landscape_common::config_service::static_nat::config6::StaticNatV6PortConfig::Ports { ports: p_list } => {
+                    for port in p_list {
+                        for proto in &cfg.l4_protocols {
+                            ports.push((*port, *proto));
+                        }
+                    }
+                }
+                // "all ports": authorize the any-port sentinel for each
+                // configured protocol instead of silently dropping the mapping.
+                landscape_common::config_service::static_nat::config6::StaticNatV6PortConfig::All => {
+                    for proto in &cfg.l4_protocols {
+                        ports.push((maps::firewall::FW_PORT_ALL, *proto));
+                    }
+                }
+            }
+        }
+        match maps::firewall::sync_firewall_allowed_ports(
+            &self.rt.paths,
+            maps::firewall::FW_PORT_FAMILY_V6,
+            &ports,
+        ) {
+            Ok(removed) => tracing::debug!(
+                "firewall IPv6 inbound authorizations reconciled ({} entries, {removed} revoked)",
+                ports.len()
+            ),
+            Err(e) => {
+                tracing::error!("failed to reconcile firewall IPv6 inbound authorizations: {e:?}")
+            }
         }
     }
 }
@@ -467,6 +522,17 @@ impl FlowRuleDataplane for EbpfFlowRuleDataplane {
         ips: Vec<landscape_common::flow::ip_mark::IpMarkInfo>,
     ) {
         maps::flow_wanip::add_wan_ip_mark(&self.rt.paths, flow_id, ips);
+    }
+
+    fn delete_flow(&self, flow_id: u32) {
+        // Release the outer map-in-map slots (capacity 256) when a flow is
+        // removed. Failures are reported instead of silently swallowed.
+        if let Err(e) = maps::flow_wanip::delete_flow_wan_ip(&self.rt.paths, flow_id) {
+            tracing::error!("failed to delete flow_wanip outer slot for flow {flow_id}: {e:?}");
+        }
+        if let Err(e) = maps::flow_dns::delete_flow_dns(&self.rt.paths, flow_id) {
+            tracing::error!("failed to delete flow_dns outer slot for flow {flow_id}: {e:?}");
+        }
     }
 
     fn invalidate_lan_cache(&self) {

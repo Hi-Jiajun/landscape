@@ -509,6 +509,9 @@ static __always_inline int route6_redirect_by_cached_target(struct __sk_buff *sk
     }
 
     if (target->is_docker) {
+        if (target->is_docker == 2) {
+            return TC_ACT_OK;
+        }
         int ret = bpf_skb_vlan_push(skb, ETH_P_8021Q, route_flow_mark_vlan_id(target->mark_value));
         if (ret) {
             return ret;

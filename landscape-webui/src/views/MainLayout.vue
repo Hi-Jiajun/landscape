@@ -107,10 +107,18 @@ const contentStyle = computed(() => {
       <LandscapeSiderBar />
       <n-layout>
         <n-layout-header
-          :style="themePlugin.currentStyle === 'beam' ? 'height: 46px; padding: 0 16px; display: flex; align-items: center;' : 'height: 30px; padding: 0 10px; display: flex'"
+          :style="
+            themePlugin.currentStyle === 'beam'
+              ? 'height: 46px; padding: 0 16px; display: flex; align-items: center;'
+              : 'height: 30px; padding: 0 10px; display: flex'
+          "
           bordered
         >
-          <div v-if="themePlugin.currentStyle === 'beam'" class="beam-brand-badge" style="margin-right: 14px;">
+          <div
+            v-if="themePlugin.currentStyle === 'beam'"
+            class="beam-brand-badge"
+            style="margin-right: 14px"
+          >
             <span class="beam-status-dot"></span>
             <span>BEAM OS</span>
           </div>

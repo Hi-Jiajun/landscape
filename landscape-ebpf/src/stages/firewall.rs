@@ -67,8 +67,21 @@ pub fn attach_tc_firewall(
         &mut open_skel.maps.firewall_conn_metric_events,
         &paths.firewall_conn_metric_events,
     )?;
+    pin_and_reuse_map(&mut open_skel.maps.firewall_config_map, &paths.firewall_config)?;
+    pin_and_reuse_map(&mut open_skel.maps.firewall_allow_ports_map, &paths.firewall_allow_ports)?;
 
     let skel = bpf_ctx!(open_skel.load(), "load tc_firewall skeleton")?;
+
+    // Make sure the management-port authorizations exist, without touching the
+    // static-NAT authorizations this map is co-owned with (a reconcile here
+    // would revoke them). The global switches (`allow_wan_ping` /
+    // `syn_flood_protect`) are also left alone: attaching the program must not
+    // reset operator choices.
+    if let Err(e) = crate::maps::firewall::ensure_firewall_management_ports_on(
+        &skel.maps.firewall_allow_ports_map,
+    ) {
+        tracing::warn!("failed to ensure firewall management ports on attach: {e:?}");
+    }
 
     let entry = StageEntry {
         wan_ingress_prog_fd: skel.progs.tc_firewall_wan_ingress.as_fd().as_raw_fd(),

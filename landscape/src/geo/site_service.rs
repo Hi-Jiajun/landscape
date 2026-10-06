@@ -34,7 +34,9 @@ use reqwest::Client;
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, mpsc};
 
-use super::raw_file::{raw_dat_path, remove_raw_dat, stream_to_tmp, write_bytes_to_tmp};
+use super::raw_file::{
+    download_with_proxy_fallback, raw_dat_path, remove_raw_dat, write_bytes_to_tmp,
+};
 
 const A_DAY: u64 = 60 * 60 * 24;
 
@@ -208,71 +210,55 @@ impl GeoSiteService {
         tracing::debug!("download file: {}", url);
         let time = Instant::now();
 
-        match client.get(&url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                let dat_path = raw_dat_path("site", config.id);
-                let sealed = match stream_to_tmp(resp.bytes_stream(), &dat_path).await {
-                    Ok(sealed) => sealed,
-                    Err(e) => {
-                        tracing::error!("download {} to {dat_path:?} failed: {}", url, e);
-                        return HashSet::new();
-                    }
-                };
-                let bytes = match sealed.read_back() {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        sealed.abort();
-                        tracing::error!("read back {dat_path:?} failed: {}", e);
-                        return HashSet::new();
-                    }
-                };
-                match landscape_protobuf::read_geo_sites_from_bytes(bytes).await {
-                    Ok(result) => {
-                        if let Err(e) = sealed.commit() {
-                            tracing::warn!(
-                                "persist raw geo site file {:?} failed: {}",
-                                dat_path,
-                                e
-                            );
-                        }
-
-                        let mut file_cache_lock = self.file_cache.lock().await;
-                        let apply_result = Self::apply_geo_values(
-                            &mut file_cache_lock,
-                            &config.name,
-                            result,
-                            &before_hashes,
-                        );
-                        drop(file_cache_lock);
-
-                        if let GeoSiteSource::Url { next_update_at, .. } = &mut config.source {
-                            *next_update_at = get_f64_timestamp() + MILL_A_DAY as f64;
-                        }
-                        let _ = self.store.upsert(config.clone()).await;
-
-                        tracing::debug!(
-                            "handle file done: {}, time: {}ms changed_keys={} unchanged_keys={} deleted_keys={}",
-                            url,
-                            time.elapsed().as_millis(),
-                            apply_result.changed_keys.len(),
-                            apply_result.unchanged_keys,
-                            apply_result.deleted_keys,
-                        );
-                        apply_result.changed_keys
-                    }
-                    Err(e) => {
-                        sealed.abort();
-                        tracing::error!("parse geosite dat from {} failed: {}", url, e);
-                        HashSet::new()
-                    }
-                }
+        let dat_path = raw_dat_path("site", config.id);
+        let sealed = match download_with_proxy_fallback(client, &url, &dat_path).await {
+            Ok(sealed) => sealed,
+            Err(e) => {
+                tracing::error!("download {} to {dat_path:?} failed: {}", url, e);
+                return HashSet::new();
             }
-            Ok(resp) => {
-                tracing::error!("download {} error, HTTP status: {}", url, resp.status());
-                HashSet::new()
+        };
+        let bytes = match sealed.read_back() {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                sealed.abort();
+                tracing::error!("read back {dat_path:?} failed: {}", e);
+                return HashSet::new();
+            }
+        };
+        match landscape_protobuf::read_geo_sites_from_bytes(bytes).await {
+            Ok(result) => {
+                if let Err(e) = sealed.commit() {
+                    tracing::warn!("persist raw geo site file {:?} failed: {}", dat_path, e);
+                }
+
+                let mut file_cache_lock = self.file_cache.lock().await;
+                let apply_result = Self::apply_geo_values(
+                    &mut file_cache_lock,
+                    &config.name,
+                    result,
+                    &before_hashes,
+                );
+                drop(file_cache_lock);
+
+                if let GeoSiteSource::Url { next_update_at, .. } = &mut config.source {
+                    *next_update_at = get_f64_timestamp() + MILL_A_DAY as f64;
+                }
+                let _ = self.store.upsert(config.clone()).await;
+
+                tracing::debug!(
+                    "handle file done: {}, time: {}ms changed_keys={} unchanged_keys={} deleted_keys={}",
+                    url,
+                    time.elapsed().as_millis(),
+                    apply_result.changed_keys.len(),
+                    apply_result.unchanged_keys,
+                    apply_result.deleted_keys,
+                );
+                apply_result.changed_keys
             }
             Err(e) => {
-                tracing::error!("request {} error: {}", url, e);
+                sealed.abort();
+                tracing::error!("parse geosite dat from {} failed: {}", url, e);
                 HashSet::new()
             }
         }
@@ -294,64 +280,52 @@ impl GeoSiteService {
         let time = Instant::now();
         let before_hashes = self.snapshot_key_hashes_for_name(&config.name).await;
 
-        match client.get(&url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                let dat_path = raw_dat_path("site", config.id);
-                let sealed = match stream_to_tmp(resp.bytes_stream(), &dat_path).await {
-                    Ok(sealed) => sealed,
-                    Err(e) => {
-                        tracing::error!("download {} to {dat_path:?} failed: {}", url, e);
-                        return HashSet::new();
-                    }
-                };
-                let bytes = match sealed.read_back() {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        sealed.abort();
-                        tracing::error!("read back {dat_path:?} failed: {}", e);
-                        return HashSet::new();
-                    }
-                };
-                let domains = landscape_protobuf::parse_adguard_rules(&bytes);
-                drop(bytes);
-                if let Err(e) = sealed.commit() {
-                    tracing::warn!("persist raw geo site file {:?} failed: {}", dat_path, e);
-                }
-
-                let mut file_cache_lock = self.file_cache.lock().await;
-                let apply_result = Self::apply_geo_values(
-                    &mut file_cache_lock,
-                    &config.name,
-                    std::iter::once((key.clone(), domains)),
-                    &before_hashes,
-                );
-                drop(file_cache_lock);
-
-                if let GeoSiteSource::AdguardHome { next_update_at, key, .. } = &mut config.source {
-                    *next_update_at = get_f64_timestamp() + MILL_A_DAY as f64;
-                    *key = normalize_adguard_key(key);
-                }
-                let _ = self.store.upsert(config.clone()).await;
-
-                tracing::debug!(
-                    "handle adguard rules done: {}, time: {}ms changed_keys={} unchanged_keys={} deleted_keys={}",
-                    url,
-                    time.elapsed().as_millis(),
-                    apply_result.changed_keys.len(),
-                    apply_result.unchanged_keys,
-                    apply_result.deleted_keys,
-                );
-                apply_result.changed_keys
-            }
-            Ok(resp) => {
-                tracing::error!("download {} error, HTTP status: {}", url, resp.status());
-                HashSet::new()
-            }
+        let dat_path = raw_dat_path("site", config.id);
+        let sealed = match download_with_proxy_fallback(client, &url, &dat_path).await {
+            Ok(sealed) => sealed,
             Err(e) => {
-                tracing::error!("request {} error: {}", url, e);
-                HashSet::new()
+                tracing::error!("download {} to {dat_path:?} failed: {}", url, e);
+                return HashSet::new();
             }
+        };
+        let bytes = match sealed.read_back() {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                sealed.abort();
+                tracing::error!("read back {dat_path:?} failed: {}", e);
+                return HashSet::new();
+            }
+        };
+        let domains = landscape_protobuf::parse_adguard_rules(&bytes);
+        drop(bytes);
+        if let Err(e) = sealed.commit() {
+            tracing::warn!("persist raw geo site file {:?} failed: {}", dat_path, e);
         }
+
+        let mut file_cache_lock = self.file_cache.lock().await;
+        let apply_result = Self::apply_geo_values(
+            &mut file_cache_lock,
+            &config.name,
+            std::iter::once((key.clone(), domains)),
+            &before_hashes,
+        );
+        drop(file_cache_lock);
+
+        if let GeoSiteSource::AdguardHome { next_update_at, key, .. } = &mut config.source {
+            *next_update_at = get_f64_timestamp() + MILL_A_DAY as f64;
+            *key = normalize_adguard_key(key);
+        }
+        let _ = self.store.upsert(config.clone()).await;
+
+        tracing::debug!(
+            "handle adguard rules done: {}, time: {}ms changed_keys={} unchanged_keys={} deleted_keys={}",
+            url,
+            time.elapsed().as_millis(),
+            apply_result.changed_keys.len(),
+            apply_result.unchanged_keys,
+            apply_result.deleted_keys,
+        );
+        apply_result.changed_keys
     }
 
     async fn refresh_direct_config(
@@ -459,7 +433,7 @@ impl GeoSiteService {
     }
 
     pub async fn refresh(&self, force: bool) {
-        let configs: Vec<GeoSiteSourceConfig> = self.store.list().await.unwrap();
+        let configs: Vec<GeoSiteSourceConfig> = self.store.list().await.unwrap_or_default();
 
         let client = Client::new();
         let mut config_names = HashSet::new();
@@ -510,7 +484,7 @@ impl GeoSiteService {
     }
 
     pub async fn refresh_one(&self, name: &str) {
-        let configs: Vec<GeoSiteSourceConfig> = self.store.list().await.unwrap();
+        let configs: Vec<GeoSiteSourceConfig> = self.store.list().await.unwrap_or_default();
         let Some(mut config) = configs.into_iter().find(|c| c.name == name) else {
             tracing::warn!("refresh_one: config '{}' not found", name);
             return;
@@ -574,7 +548,7 @@ impl GeoSiteService {
     }
 
     pub async fn query_geo_by_name(&self, name: Option<String>) -> Vec<GeoSiteSourceConfig> {
-        self.store.query_by_name(name).await.unwrap()
+        self.store.query_by_name(name).await.unwrap_or_default()
     }
 
     pub async fn lookup_domain(&self, domain: &str) -> Result<Vec<GeoSiteLookupResult>, GeoError> {

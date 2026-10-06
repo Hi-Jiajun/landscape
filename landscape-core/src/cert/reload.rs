@@ -44,13 +44,23 @@ pub async fn reload_tls_resolver(
     usage: CertUsage,
     fallback: Option<CertifiedKey>,
 ) -> Result<usize, String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as f64;
+
     let mut candidates: Vec<CertConfig> = provider
         .list_certs()
         .await?
         .into_iter()
         .filter(|c| {
+            let is_usable_status = match c.status {
+                CertStatus::Valid => true,
+                CertStatus::Processing => c.expires_at.map(|exp| exp > now).unwrap_or(false),
+                _ => false,
+            };
             usage.matches_cert(c)
-                && matches!(c.status, CertStatus::Valid)
+                && is_usable_status
                 && c.certificate.as_ref().is_some()
                 && c.private_key.as_ref().is_some()
         })

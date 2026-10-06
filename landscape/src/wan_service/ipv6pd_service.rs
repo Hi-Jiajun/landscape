@@ -172,7 +172,7 @@ impl DHCPv6ClientManagerService {
 
         let service_clone = service.clone();
         spawn_task(task_label::task::WAN_IPV6PD_OBSERVER, async move {
-            while let Ok(msg) = dev_observer.recv().await {
+            while let Some(msg) = dev_observer.recv_skipping_lag().await {
                 match msg {
                     IfaceObserverAction::Up(iface_name) => {
                         tracing::info!("restart {iface_name} IPv6PD service");

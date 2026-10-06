@@ -2,7 +2,7 @@ use axum::extract::{Path, State};
 use landscape_common::api_response::LandscapeApiResp as CommonApiResp;
 use landscape_common::proxy::{
     CreateSubscriptionReq, ProxyGroupItem, ProxyNodeItem, ProxyPluginConfig, ProxyRuntimeInfo,
-    ProxySubscription, SelectGroupProxyReq, TestDelayReq, ToggleProxyReq,
+    ProxySubscription, SelectGroupProxyReq, TestDelayReq, ToggleProxyReq, TproxyDeliveryStatus,
 };
 use landscape_common::service::ServiceStatus;
 use utoipa_axum::router::OpenApiRouter;
@@ -16,6 +16,7 @@ use crate::error::{LandscapeApiError, LandscapeApiResult};
 pub fn build_proxy_openapi_router() -> OpenApiRouter<LandscapeApp> {
     OpenApiRouter::new()
         .routes(routes!(get_proxy_status))
+        .routes(routes!(get_tproxy_status))
         .routes(routes!(get_proxy_config, update_proxy_config))
         .routes(routes!(toggle_proxy))
         .routes(routes!(restart_proxy))
@@ -36,6 +37,20 @@ async fn get_proxy_status(
     State(state): State<LandscapeApp>,
 ) -> LandscapeApiResult<ProxyRuntimeInfo> {
     let status = state.proxy_service.status().await;
+    LandscapeApiResp::success(status)
+}
+
+#[utoipa::path(
+    get,
+    path = "/tproxy",
+    tag = "Proxy Plugin",
+    operation_id = "get_proxy_tproxy_status",
+    responses((status = 200, description = "Kernel state of the local TProxy delivery fabric", body = CommonApiResp<TproxyDeliveryStatus>))
+)]
+async fn get_tproxy_status(
+    State(state): State<LandscapeApp>,
+) -> LandscapeApiResult<TproxyDeliveryStatus> {
+    let status = state.proxy_service.tproxy_status().await;
     LandscapeApiResp::success(status)
 }
 
@@ -65,11 +80,7 @@ async fn update_proxy_config(
     State(state): State<LandscapeApp>,
     JsonBody(config): JsonBody<ProxyPluginConfig>,
 ) -> LandscapeApiResult<()> {
-    state
-        .proxy_service
-        .save_config(config)
-        .await
-        .map_err(LandscapeApiError::Proxy)?;
+    state.proxy_service.save_config(config).await.map_err(LandscapeApiError::Proxy)?;
     LandscapeApiResp::success(())
 }
 
@@ -85,11 +96,7 @@ async fn toggle_proxy(
     State(state): State<LandscapeApp>,
     JsonBody(req): JsonBody<ToggleProxyReq>,
 ) -> LandscapeApiResult<ServiceStatus> {
-    let status = state
-        .proxy_service
-        .toggle(req.enable)
-        .await
-        .map_err(LandscapeApiError::Proxy)?;
+    let status = state.proxy_service.toggle(req.enable).await.map_err(LandscapeApiError::Proxy)?;
     LandscapeApiResp::success(status)
 }
 
@@ -100,14 +107,8 @@ async fn toggle_proxy(
     operation_id = "restart_proxy",
     responses((status = 200, description = "Success"))
 )]
-async fn restart_proxy(
-    State(state): State<LandscapeApp>,
-) -> LandscapeApiResult<()> {
-    state
-        .proxy_service
-        .restart()
-        .await
-        .map_err(LandscapeApiError::Proxy)?;
+async fn restart_proxy(State(state): State<LandscapeApp>) -> LandscapeApiResult<()> {
+    state.proxy_service.restart().await.map_err(LandscapeApiError::Proxy)?;
     LandscapeApiResp::success(())
 }
 
@@ -157,11 +158,7 @@ async fn delete_subscription(
     State(state): State<LandscapeApp>,
     Path(id): Path<Uuid>,
 ) -> LandscapeApiResult<()> {
-    state
-        .proxy_service
-        .delete_subscription(id)
-        .await
-        .map_err(LandscapeApiError::Proxy)?;
+    state.proxy_service.delete_subscription(id).await.map_err(LandscapeApiError::Proxy)?;
     LandscapeApiResp::success(())
 }
 
@@ -177,11 +174,8 @@ async fn refresh_subscription(
     State(state): State<LandscapeApp>,
     Path(id): Path<Uuid>,
 ) -> LandscapeApiResult<usize> {
-    let count = state
-        .proxy_service
-        .refresh_subscription(id)
-        .await
-        .map_err(LandscapeApiError::Proxy)?;
+    let count =
+        state.proxy_service.refresh_subscription(id).await.map_err(LandscapeApiError::Proxy)?;
     LandscapeApiResp::success(count)
 }
 
@@ -192,9 +186,7 @@ async fn refresh_subscription(
     operation_id = "get_proxy_nodes",
     responses((status = 200, description = "Success", body = CommonApiResp<Vec<ProxyNodeItem>>))
 )]
-async fn get_nodes(
-    State(state): State<LandscapeApp>,
-) -> LandscapeApiResult<Vec<ProxyNodeItem>> {
+async fn get_nodes(State(state): State<LandscapeApp>) -> LandscapeApiResult<Vec<ProxyNodeItem>> {
     let raw = match state.proxy_service.get_proxies_from_controller().await {
         Ok(v) => v,
         Err(_) => return LandscapeApiResp::success(Vec::new()),
@@ -203,10 +195,25 @@ async fn get_nodes(
     let mut items = Vec::new();
     if let Some(proxies_map) = raw.get("proxies").and_then(|v| v.as_object()) {
         for (name, obj) in proxies_map {
-            let node_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
+            let node_type =
+                obj.get("type").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
             // Filter out internal groups and pseudonodes
-            if ["Selector", "URLTest", "Fallback", "Direct", "Reject", "Compatible", "Pass", "PassRule", "RejectDrop", "Relay"].contains(&node_type.as_str())
-                || ["PASS", "PASS-RULE", "REJECT-DROP", "DIRECT", "REJECT", "GLOBAL", "COMPATIBLE"].contains(&name.as_str()) {
+            if [
+                "Selector",
+                "URLTest",
+                "Fallback",
+                "Direct",
+                "Reject",
+                "Compatible",
+                "Pass",
+                "PassRule",
+                "RejectDrop",
+                "Relay",
+            ]
+            .contains(&node_type.as_str())
+                || ["PASS", "PASS-RULE", "REJECT-DROP", "DIRECT", "REJECT", "GLOBAL", "COMPATIBLE"]
+                    .contains(&name.as_str())
+            {
                 continue;
             }
 
@@ -262,9 +269,7 @@ async fn test_node_delay(
     operation_id = "get_proxy_groups",
     responses((status = 200, description = "Success", body = CommonApiResp<Vec<ProxyGroupItem>>))
 )]
-async fn get_groups(
-    State(state): State<LandscapeApp>,
-) -> LandscapeApiResult<Vec<ProxyGroupItem>> {
+async fn get_groups(State(state): State<LandscapeApp>) -> LandscapeApiResult<Vec<ProxyGroupItem>> {
     let raw = match state.proxy_service.get_proxies_from_controller().await {
         Ok(v) => v,
         Err(_) => return LandscapeApiResp::success(Vec::new()),

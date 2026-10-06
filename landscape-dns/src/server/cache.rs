@@ -139,7 +139,7 @@ impl CacheHandle {
                 .iter()
                 .cloned()
                 .map(|mut d| {
-                    d.ttl = *min_ttl - insert_time_elapsed;
+                    d.ttl = d.ttl.saturating_sub(insert_time_elapsed).max(1);
                     d
                 })
                 .collect();
@@ -185,9 +185,6 @@ impl CacheHandle {
             .min()
             .unwrap_or_else(|| self.runtime_config.load().negative_cache_ttl);
 
-        if min_ttl == 0 {
-            return;
-        }
         let cache_item = CacheDNSItem {
             rdatas,
             response_code,
@@ -200,12 +197,16 @@ impl CacheHandle {
         };
         let update_dns_mark_list = cache_item.get_update_rules();
 
-        self.cache.insert((domain_key, query_type), Arc::new(cache_item)).await;
-
-        // hand the resulting marks to the datapath sink
+        // hand the resulting marks to the datapath sink even if TTL is 0
         if !update_dns_mark_list.is_empty() {
             self.sink.record_dns_answer(self.flow_id, update_dns_mark_list.into_iter().collect());
         }
+
+        if min_ttl == 0 {
+            return;
+        }
+
+        self.cache.insert((domain_key, query_type), Arc::new(cache_item)).await;
     }
 
     pub fn resolver_cache_entry(

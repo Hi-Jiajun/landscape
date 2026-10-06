@@ -224,13 +224,22 @@ impl DNSResolveRuntime {
                     hickory_resolver::net::NetError::Dns(
                         hickory_resolver::net::DnsError::NoRecordsFound(no_records),
                     ) => {
-                        tracing::warn!(
-                            flow_id = self.flow_id,
-                            rule_id = %self.rule_id,
-                            domain = %domain,
-                            response_code = ?no_records.response_code,
-                            "upstream answered an error code"
-                        );
+                        if no_records.response_code != hickory_proto::op::ResponseCode::NoError {
+                            tracing::warn!(
+                                flow_id = self.flow_id,
+                                rule_id = %self.rule_id,
+                                domain = %domain,
+                                response_code = ?no_records.response_code,
+                                "upstream answered an error code"
+                            );
+                        } else {
+                            tracing::debug!(
+                                flow_id = self.flow_id,
+                                rule_id = %self.rule_id,
+                                domain = %domain,
+                                "upstream returned no records (NODATA)"
+                            );
+                        }
                         return Err(DnsServiceError::Protocol(no_records.response_code));
                     }
                     hickory_resolver::net::NetError::Timeout => {

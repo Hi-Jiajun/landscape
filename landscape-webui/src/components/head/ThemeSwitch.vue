@@ -10,12 +10,18 @@ const options = computed(() => [
   {
     label: "Landscape 原生经典 (当前推荐)",
     key: "default",
-    icon: themePlugin.currentStyle === "default" ? () => h(NIcon, null, { default: () => h(CheckmarkOutline) }) : undefined,
+    icon:
+      themePlugin.currentStyle === "default"
+        ? () => h(NIcon, null, { default: () => h(CheckmarkOutline) })
+        : undefined,
   },
   {
     label: "Beam (实验性·暂缓开发)",
     key: "beam",
-    icon: themePlugin.currentStyle === "beam" ? () => h(NIcon, null, { default: () => h(CheckmarkOutline) }) : undefined,
+    icon:
+      themePlugin.currentStyle === "beam"
+        ? () => h(NIcon, null, { default: () => h(CheckmarkOutline) })
+        : undefined,
   },
 ]);
 

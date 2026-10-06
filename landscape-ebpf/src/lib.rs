@@ -36,6 +36,8 @@ pub struct LandscapeMapPath {
     // 防火墙黑名单
     pub firewall_ipv4_block: PathBuf,
     pub firewall_ipv6_block: PathBuf,
+    pub firewall_config: PathBuf,
+    pub firewall_allow_ports: PathBuf,
 
     /// Flow
     pub flow_match_map: PathBuf,
@@ -92,6 +94,8 @@ impl LandscapeMapPath {
             // 防火墙黑名单
             firewall_ipv4_block: root.join(firewall::FIREWALL_BLOCK_IP4_MAP_PIN),
             firewall_ipv6_block: root.join(firewall::FIREWALL_BLOCK_IP6_MAP_PIN),
+            firewall_config: root.join(firewall::FIREWALL_CONFIG_PIN),
+            firewall_allow_ports: root.join(firewall::FIREWALL_ALLOW_PORTS_PIN),
 
             // Flow
             flow_match_map: root.join(flow::FLOW_MATCH_MAP_PIN),

@@ -42,8 +42,17 @@ fn flow_match_key_from_rule(rule: &ResolvedFlowEntryRule) -> FlowMatchKey {
             }
         }
     }
+    // `qos` (DSCP) is not part of the BPF lookup key yet: the datapath builds
+    // this key with `tos = 0` (see `match_flow_id_v4/v6` in `flow_match.h`).
+    // Writing a non-zero tos here would make the rule unmatchable — the traffic
+    // would silently fall through to the default flow. Keep both sides at 0 and
+    // make the unsupported setting visible instead.
     if let Some(qos) = rule.qos {
-        match_key.tos = qos as u8;
+        tracing::warn!(
+            qos,
+            "flow match rule sets `qos`, but DSCP-based flow matching is not implemented; \
+             the rule matches by MAC/IP only"
+        );
     }
     match_key
 }

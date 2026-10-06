@@ -14,6 +14,9 @@ pub trait FlowRuleDataplane: Send + Sync {
     /// `flow_id`.
     fn set_dst_ip_marks(&self, flow_id: u32, ips: Vec<IpMarkInfo>);
 
+    /// Delete outer map-in-map entries for `flow_id` when a flow is removed.
+    fn delete_flow(&self, flow_id: u32);
+
     /// Recreate the LAN verdict-cache inner maps (invalidate all cached
     /// verdicts).
     fn invalidate_lan_cache(&self);
@@ -26,6 +29,8 @@ impl FlowRuleDataplane for NoopFlowRuleDataplane {
     fn sync_flow_matches(&self, _configs: &[RuntimeFlowConfig]) {}
 
     fn set_dst_ip_marks(&self, _flow_id: u32, _ips: Vec<IpMarkInfo>) {}
+
+    fn delete_flow(&self, _flow_id: u32) {}
 
     fn invalidate_lan_cache(&self) {}
 }

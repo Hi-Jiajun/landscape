@@ -253,6 +253,11 @@ async fn run_system(
     let route_service =
         startup_phase!("route_service.new", IpRouteService::new(ebpf_rt.clone().route_table()));
 
+    // Created before the flow service so the latter can publish the
+    // `flow_id -> local TProxy listener` mapping the plugin has to deliver.
+    let docker_service = LandscapeDockerService::new(home_path.clone(), route_service.clone());
+    let proxy_service = landscape::proxy::LandscapeProxyService::new(home_path.clone()).await;
+
     let flow_rule_service = startup_phase!(
         "flow_rule_service.new",
         FlowRuleService::new(
@@ -261,6 +266,7 @@ async fn run_system(
             route_service.clone(),
             event_handle.subscribe_device(),
             ebpf_rt.clone().flow_rules(),
+            proxy_service.tproxy_delivery(),
         )
         .await
     );
@@ -507,9 +513,6 @@ async fn run_system(
         event_handle.subscribe_iface(),
     )
     .await;
-
-    let docker_service = LandscapeDockerService::new(home_path.clone(), route_service.clone());
-    let proxy_service = landscape::proxy::LandscapeProxyService::new(home_path.clone()).await;
 
     let pppd_service = PPPDServiceConfigManagerService::new(
         db_store_provider.clone(),

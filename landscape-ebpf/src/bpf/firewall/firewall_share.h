@@ -40,8 +40,8 @@ struct ct_tuple4 {
     __be32 dst_ip;
     __be16 src_port;
     __be16 dst_port;
-    __u8   protocol;
-    __u8   _pad[3];
+    __u8 protocol;
+    __u8 _pad[3];
 };
 
 struct ct_tuple6 {
@@ -49,24 +49,24 @@ struct ct_tuple6 {
     union u_inet_addr dst_ip;
     __be16 src_port;
     __be16 dst_port;
-    __u8   protocol;
-    __u8   _pad[3];
+    __u8 protocol;
+    __u8 _pad[3];
 };
 
 struct ct_entry {
     __u64 last_seen_ns;
     __u32 packets;
     __u32 bytes;
-    __u8  state;
-    __u8  flags;
-    __u8  _pad[6];
+    __u8 state;
+    __u8 flags;
+    __u8 _pad[6];
 };
 
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __type(key, struct ct_tuple4);
     __type(value, struct ct_entry);
-    __uint(max_entries, 65536);
+    __uint(max_entries, 262144);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } firewall_state4_map SEC(".maps");
 
@@ -74,15 +74,17 @@ struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __type(key, struct ct_tuple6);
     __type(value, struct ct_entry);
-    __uint(max_entries, 65536);
+    __uint(max_entries, 262144);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } firewall_state6_map SEC(".maps");
 
-#define CT_TIMEOUT_SYN_SENT_NS  (30ULL * 1000000000ULL)    // 30 seconds
-#define CT_TIMEOUT_ESTAB_NS     (7200ULL * 1000000000ULL)  // 2 hours
-#define CT_TIMEOUT_FIN_WAIT_NS  (60ULL * 1000000000ULL)    // 60 seconds
-#define CT_TIMEOUT_UDP_NS       (180ULL * 1000000000ULL)   // 3 minutes
-#define CT_TIMEOUT_ICMP_NS      (30ULL * 1000000000ULL)    // 30 seconds
+#define CT_TIMEOUT_SYN_SENT_NS (30ULL * 1000000000ULL)  // 30 seconds
+#define CT_TIMEOUT_ESTAB_NS                                                                        \
+    (1200ULL *                                                                                     \
+     1000000000ULL)  // 20 minutes (prevents table exhaustion while preserving active sessions)
+#define CT_TIMEOUT_FIN_WAIT_NS (60ULL * 1000000000ULL)  // 60 seconds
+#define CT_TIMEOUT_UDP_NS (60ULL * 1000000000ULL)  // 1 minute (sufficient for DNS/QUIC/P2P queries)
+#define CT_TIMEOUT_ICMP_NS (15ULL * 1000000000ULL)  // 15 seconds
 
 struct ratelimit_entry {
     __u64 last_time_ns;
@@ -90,9 +92,29 @@ struct ratelimit_entry {
     __u32 _pad;
 };
 
+// Rate-limit buckets are keyed by (address, traffic class) so a ping bucket can
+// never collide with a connection-creation bucket belonging to a different
+// source address (the old `~addr` trick was not a disjoint key space).
+#define FW_RL_CLASS_CONN 1
+#define FW_RL_CLASS_PING 2
+
+// Burst / refill shared by both traffic classes: 300 tokens, 100 tokens/sec.
+#define FW_RL_BURST_TOKENS 300
+#define FW_RL_TOKEN_INTERVAL_NS (10ULL * 1000000ULL)
+
+struct ratelimit_key4 {
+    __be32 addr;
+    __u32 class;
+};
+
+struct ratelimit_key6 {
+    union u_inet_addr addr;
+    __u32 class;
+};
+
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __type(key, __be32);
+    __type(key, struct ratelimit_key4);
     __type(value, struct ratelimit_entry);
     __uint(max_entries, 16384);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
@@ -100,7 +122,7 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __type(key, union u_inet_addr);
+    __type(key, struct ratelimit_key6);
     __type(value, struct ratelimit_entry);
     __uint(max_entries, 16384);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
@@ -122,15 +144,26 @@ struct {
 
 struct port_allow_key {
     __be16 port;
-    __u8   protocol;
-    __u8   _pad;
+    __u8 protocol;
+    // Address family the authorization applies to (FW_PORT_FAMILY_V4 / _V6).
+    // Every entry written by user space carries an explicit family; the
+    // user-space reconcile deletes entries with any other value, so an IPv4
+    // static-NAT authorization can never authorize the same port on IPv6.
+    __u8 family;
 };
+
+#define FW_PORT_FAMILY_V4 4
+#define FW_PORT_FAMILY_V6 6
+
+// `port == 0 && protocol == 0` is the "every port in this family" sentinel used
+// by static NAT configurations that map all ports.
+#define FW_PORT_ALL 0
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, struct port_allow_key);
     __type(value, __u8);
-    __uint(max_entries, 256);
+    __uint(max_entries, 1024);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } firewall_allow_ports_map SEC(".maps");
 

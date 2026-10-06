@@ -59,7 +59,10 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 onMounted(async () => {
   await refreshAll();
   pollTimer = setInterval(async () => {
-    if (status.value?.status.t === "running" || status.value?.status.t === "staring") {
+    if (
+      status.value?.status.t === "running" ||
+      status.value?.status.t === "staring"
+    ) {
       await refreshStatusOnly();
     }
   }, 3000);
@@ -109,7 +112,9 @@ async function handleToggle(enable: boolean) {
   try {
     loading.value = true;
     const res = await toggle_proxy_service(enable);
-    message.success(enable ? "代理服务启动中..." : "代理服务已停止，已释放全部内存");
+    message.success(
+      enable ? "代理服务启动中..." : "代理服务已停止，已释放全部内存",
+    );
     await refreshAll();
   } catch (err: any) {
     message.error("切换代理服务状态失败: " + (err.message || err));
@@ -152,7 +157,10 @@ async function handleAddSubscription() {
   }
   addingSub.value = true;
   try {
-    await create_proxy_subscription(newSubName.value.trim(), newSubUrl.value.trim());
+    await create_proxy_subscription(
+      newSubName.value.trim(),
+      newSubUrl.value.trim(),
+    );
     message.success("订阅添加成功，后台正在拉取节点...");
     showAddModal.value = false;
     newSubName.value = "";
@@ -248,7 +256,8 @@ const filteredNodes = computed(() => {
   if (!nodeSearch.value.trim()) return nodes.value;
   const q = nodeSearch.value.toLowerCase();
   return nodes.value.filter(
-    (n) => n.name.toLowerCase().includes(q) || n.node_type.toLowerCase().includes(q),
+    (n) =>
+      n.name.toLowerCase().includes(q) || n.node_type.toLowerCase().includes(q),
   );
 });
 
@@ -274,7 +283,8 @@ function formatUptime(seconds?: number) {
 }
 
 const zashboardUrl = computed(() => {
-  const host = typeof window !== "undefined" ? window.location.hostname : "192.168.1.1";
+  const host =
+    typeof window !== "undefined" ? window.location.hostname : "192.168.1.1";
   const port = config.value?.api_port || 9090;
   return `http://${host}:${port}/ui`;
 });
@@ -282,7 +292,8 @@ const zashboardUrl = computed(() => {
 function getGroupIcon(name: string) {
   if (name.includes("AI")) return "🤖";
   if (name.includes("流媒体") || name.includes("Media")) return "🎥";
-  if (name.includes("游戏") || name.includes("Game") || name.includes("Steam")) return "🎮";
+  if (name.includes("游戏") || name.includes("Game") || name.includes("Steam"))
+    return "🎮";
   if (name.includes("通讯") || name.includes("IM")) return "💬";
   if (name.includes("漏网之鱼") || name.includes("Final")) return "🐟";
   if (name.includes("节点选择") || name.includes("Proxy")) return "🚀";
@@ -317,16 +328,29 @@ function getNodeIcon(name: string) {
             <span class="hero-logo-icon">🚀</span>
             <h2 class="hero-title">出站代理插件</h2>
             <n-tag
-              :type="isRunning ? 'success' : status?.status.t === 'staring' ? 'warning' : 'default'"
+              :type="
+                isRunning
+                  ? 'success'
+                  : status?.status.t === 'staring'
+                    ? 'warning'
+                    : 'default'
+              "
               round
               size="small"
               class="status-tag"
             >
-              {{ isRunning ? "运行中" : status?.status.t === "staring" ? "启动中" : "已停止 (零资源消耗)" }}
+              {{
+                isRunning
+                  ? "运行中"
+                  : status?.status.t === "staring"
+                    ? "启动中"
+                    : "已停止 (零资源消耗)"
+              }}
             </n-tag>
           </div>
           <p class="hero-subtitle">
-            原生 Linux 守护进程，免 Docker 零虚拟化损耗。直接对接 Landscape eBPF Flow 智能流表与内核分流策略。
+            原生 Linux 守护进程，免 Docker 零虚拟化损耗。直接对接 Landscape eBPF
+            Flow 智能流表与内核分流策略。
           </p>
         </div>
 
@@ -374,8 +398,17 @@ function getNodeIcon(name: string) {
         <div class="metric-chip">
           <span class="chip-label">内核状态 / PID</span>
           <span class="chip-value">
-            <span class="status-indicator-dot" :class="{ running: isRunning }"></span>
-            {{ isRunning ? (status?.pid ? `PID ${status.pid}` : 'Running') : '已释放' }}
+            <span
+              class="status-indicator-dot"
+              :class="{ running: isRunning }"
+            ></span>
+            {{
+              isRunning
+                ? status?.pid
+                  ? `PID ${status.pid}`
+                  : "Running"
+                : "已释放"
+            }}
           </span>
         </div>
         <div class="metric-chip">
@@ -387,7 +420,8 @@ function getNodeIcon(name: string) {
         <div class="metric-chip">
           <span class="chip-label">分流 / 混合 / API 端口</span>
           <span class="chip-value port-value">
-            {{ status?.tproxy_port ?? 17890 }} / {{ status?.mixed_port ?? 7890 }} / {{ status?.api_port ?? 9090 }}
+            {{ status?.tproxy_port ?? 17890 }} /
+            {{ status?.mixed_port ?? 7890 }} / {{ status?.api_port ?? 9090 }}
           </span>
         </div>
         <div class="metric-chip">
@@ -396,19 +430,32 @@ function getNodeIcon(name: string) {
         </div>
         <div class="metric-chip">
           <span class="chip-label">持续在线时长</span>
-          <span class="chip-value">{{ formatUptime(status?.uptime_seconds) }}</span>
+          <span class="chip-value">{{
+            formatUptime(status?.uptime_seconds)
+          }}</span>
         </div>
       </div>
     </div>
 
     <!-- Navigation Tabs -->
-    <n-tabs v-model:value="activeTab" type="line" size="large" class="proxy-tabs">
+    <n-tabs
+      v-model:value="activeTab"
+      type="line"
+      size="large"
+      class="proxy-tabs"
+    >
       <!-- Tab 1: Groups & Proxies -->
       <n-tab-pane name="groups" tab="策略组与节点池">
         <div v-if="!isRunning" class="empty-placeholder">
-          <n-empty description="代理引擎当前处于停止状态（0 进程、0 内存）。开启右上角主控开关即可极速拉起。">
+          <n-empty
+            description="代理引擎当前处于停止状态（0 进程、0 内存）。开启右上角主控开关即可极速拉起。"
+          >
             <template #extra>
-              <n-button type="primary" size="medium" @click="handleToggle(true)">
+              <n-button
+                type="primary"
+                size="medium"
+                @click="handleToggle(true)"
+              >
                 一键启动代理服务
               </n-button>
             </template>
@@ -420,20 +467,31 @@ function getNodeIcon(name: string) {
           <div class="section-heading">
             <div class="heading-left">
               <span class="heading-title">出站策略组 (Proxy Groups)</span>
-              <span class="heading-desc">对应 eBPF 分流目标，点击可直接切换策略出口节点</span>
+              <span class="heading-desc"
+                >对应 eBPF 分流目标，点击可直接切换策略出口节点</span
+              >
             </div>
             <div class="heading-badge">
-              <n-tag size="small" round :bordered="false">{{ groups.length }} 个策略组</n-tag>
+              <n-tag size="small" round :bordered="false"
+                >{{ groups.length }} 个策略组</n-tag
+              >
             </div>
           </div>
 
-          <n-grid cols="1 650:2 1050:3 1450:4 1850:5" :x-gap="14" :y-gap="14" class="groups-grid">
+          <n-grid
+            cols="1 650:2 1050:3 1450:4 1850:5"
+            :x-gap="14"
+            :y-gap="14"
+            class="groups-grid"
+          >
             <n-grid-item v-for="grp in groups" :key="grp.name">
               <div class="group-card">
                 <div class="group-card-header">
                   <div class="group-header-left">
                     <span class="group-icon">{{ getGroupIcon(grp.name) }}</span>
-                    <span class="group-name" :title="grp.name">{{ grp.name }}</span>
+                    <span class="group-name" :title="grp.name">{{
+                      grp.name
+                    }}</span>
                   </div>
                   <n-tag
                     size="tiny"
@@ -442,7 +500,11 @@ function getNodeIcon(name: string) {
                     :type="grp.group_type === 'URLTest' ? 'info' : 'default'"
                     class="group-type-badge"
                   >
-                    {{ grp.group_type === 'URLTest' ? '⚡ 自动选优' : '🎯 手动选择' }}
+                    {{
+                      grp.group_type === "URLTest"
+                        ? "⚡ 自动选优"
+                        : "🎯 手动选择"
+                    }}
                   </n-tag>
                 </div>
 
@@ -450,7 +512,7 @@ function getNodeIcon(name: string) {
                   <span class="now-label">当前出口：</span>
                   <div class="now-pill" :title="grp.now">
                     <span class="active-node-dot"></span>
-                    <span class="now-value">{{ grp.now || '未指定' }}</span>
+                    <span class="now-value">{{ grp.now || "未指定" }}</span>
                   </div>
                 </div>
 
@@ -458,7 +520,9 @@ function getNodeIcon(name: string) {
                   <n-select
                     size="small"
                     :value="grp.now"
-                    :options="grp.all.map((item) => ({ label: item, value: item }))"
+                    :options="
+                      grp.all.map((item) => ({ label: item, value: item }))
+                    "
                     @update:value="handleSelectNode(grp.name, $event)"
                     placeholder="切换当前出口节点"
                     class="node-selector"
@@ -472,7 +536,10 @@ function getNodeIcon(name: string) {
           <div class="section-heading nodes-section-header">
             <div class="heading-left">
               <span class="heading-title">可用节点池 (Nodes Pool)</span>
-              <span class="heading-desc">共加载 {{ nodes.length }} 个代理出站节点，支持低延迟实时检测</span>
+              <span class="heading-desc"
+                >共加载
+                {{ nodes.length }} 个代理出站节点，支持低延迟实时检测</span
+              >
             </div>
             <div class="heading-actions">
               <n-input
@@ -503,15 +570,24 @@ function getNodeIcon(name: string) {
           </div>
 
           <!-- Nodes Cards Grid -->
-          <n-grid cols="1 500:2 800:3 1150:4 1500:5 1900:6" :x-gap="12" :y-gap="12" class="nodes-grid">
+          <n-grid
+            cols="1 500:2 800:3 1150:4 1500:5 1900:6"
+            :x-gap="12"
+            :y-gap="12"
+            class="nodes-grid"
+          >
             <n-grid-item v-for="node in filteredNodes" :key="node.name">
               <div class="node-card">
                 <div class="node-top-row">
                   <span class="node-flag">{{ getNodeIcon(node.name) }}</span>
-                  <span class="node-name" :title="node.name">{{ node.name }}</span>
+                  <span class="node-name" :title="node.name">{{
+                    node.name
+                  }}</span>
                 </div>
                 <div class="node-bottom-row">
-                  <span class="node-proto-tag">{{ node.node_type.toUpperCase() }}</span>
+                  <span class="node-proto-tag">{{
+                    node.node_type.toUpperCase()
+                  }}</span>
                   <div class="node-delay-wrapper">
                     <n-tag
                       size="tiny"
@@ -519,7 +595,11 @@ function getNodeIcon(name: string) {
                       :type="getDelayType(node.delay)"
                       class="node-delay-tag"
                     >
-                      {{ node.delay && node.delay > 0 ? node.delay + ' ms' : '超时 / 未测' }}
+                      {{
+                        node.delay && node.delay > 0
+                          ? node.delay + " ms"
+                          : "超时 / 未测"
+                      }}
                     </n-tag>
                     <n-button
                       quaternary
@@ -547,8 +627,12 @@ function getNodeIcon(name: string) {
         <div class="subscriptions-pane">
           <div class="table-toolbar">
             <div class="heading-left">
-              <span class="toolbar-title">受管订阅列表 ({{ subscriptions.length }})</span>
-              <span class="heading-desc">订阅更新时内核自动平滑重载节点，不中断已有连接</span>
+              <span class="toolbar-title"
+                >受管订阅列表 ({{ subscriptions.length }})</span
+              >
+              <span class="heading-desc"
+                >订阅更新时内核自动平滑重载节点，不中断已有连接</span
+              >
             </div>
             <n-button type="primary" size="small" @click="showAddModal = true">
               <template #icon>
@@ -558,14 +642,19 @@ function getNodeIcon(name: string) {
             </n-button>
           </div>
 
-          <n-table :bordered="true" :single-line="false" size="small" class="subs-table">
+          <n-table
+            :bordered="true"
+            :single-line="false"
+            size="small"
+            class="subs-table"
+          >
             <thead>
               <tr>
-                <th style="width: 25%;">订阅名称</th>
-                <th style="width: 40%;">订阅链接 (URL)</th>
-                <th style="width: 10%;">节点数</th>
-                <th style="width: 12%;">状态</th>
-                <th style="width: 13%;">操作</th>
+                <th style="width: 25%">订阅名称</th>
+                <th style="width: 40%">订阅链接 (URL)</th>
+                <th style="width: 10%">节点数</th>
+                <th style="width: 12%">状态</th>
+                <th style="width: 13%">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -575,16 +664,27 @@ function getNodeIcon(name: string) {
                 </td>
               </tr>
               <tr v-for="sub in subscriptions" :key="sub.id">
-                <td style="font-weight: 600;">{{ sub.name }}</td>
-                <td style="font-family: monospace; font-size: 12px; word-break: break-all;">
+                <td style="font-weight: 600">{{ sub.name }}</td>
+                <td
+                  style="
+                    font-family: monospace;
+                    font-size: 12px;
+                    word-break: break-all;
+                  "
+                >
                   {{ sub.url }}
                 </td>
                 <td>
-                  <n-tag size="small" round type="info">{{ sub.node_count }} 节点</n-tag>
+                  <n-tag size="small" round type="info"
+                    >{{ sub.node_count }} 节点</n-tag
+                  >
                 </td>
                 <td>
-                  <n-tag size="small" :type="sub.enabled ? 'success' : 'default'">
-                    {{ sub.enabled ? '已启用' : '已停用' }}
+                  <n-tag
+                    size="small"
+                    :type="sub.enabled ? 'success' : 'default'"
+                  >
+                    {{ sub.enabled ? "已启用" : "已停用" }}
                   </n-tag>
                 </td>
                 <td>
@@ -596,12 +696,21 @@ function getNodeIcon(name: string) {
                       @click="handleRefreshSub(sub.id)"
                       title="立即更新"
                     >
-                      <template #icon><n-icon><CloudDownload /></n-icon></template>
+                      <template #icon
+                        ><n-icon><CloudDownload /></n-icon
+                      ></template>
                     </n-button>
                     <n-popconfirm @positive-click="handleDeleteSub(sub.id)">
                       <template #trigger>
-                        <n-button size="tiny" type="error" secondary title="删除订阅">
-                          <template #icon><n-icon><TrashCan /></n-icon></template>
+                        <n-button
+                          size="tiny"
+                          type="error"
+                          secondary
+                          title="删除订阅"
+                        >
+                          <template #icon
+                            ><n-icon><TrashCan /></n-icon
+                          ></template>
                         </n-button>
                       </template>
                       确定要删除该订阅吗？
@@ -619,7 +728,9 @@ function getNodeIcon(name: string) {
         <div v-if="config" class="settings-pane">
           <n-card :bordered="false" class="settings-card">
             <template #header>
-              <span class="settings-card-title">⚙️ 底层网络与 API 参数配置</span>
+              <span class="settings-card-title"
+                >⚙️ 底层网络与 API 参数配置</span
+              >
             </template>
             <n-form label-placement="left" label-width="180" size="medium">
               <n-form-item label="透明代理 (TProxy) 端口">
@@ -628,7 +739,7 @@ function getNodeIcon(name: string) {
                   :min="1"
                   :max="65535"
                   placeholder="默认 17890"
-                  style="width: 100%;"
+                  style="width: 100%"
                 />
               </n-form-item>
               <n-form-item label="混合代理 (Mixed) 端口">
@@ -637,7 +748,7 @@ function getNodeIcon(name: string) {
                   :min="1"
                   :max="65535"
                   placeholder="默认 7890"
-                  style="width: 100%;"
+                  style="width: 100%"
                 />
               </n-form-item>
               <n-form-item label="Clash Controller 端口">
@@ -646,7 +757,7 @@ function getNodeIcon(name: string) {
                   :min="1"
                   :max="65535"
                   placeholder="默认 9090"
-                  style="width: 100%;"
+                  style="width: 100%"
                 />
               </n-form-item>
               <n-form-item label="分流运行模式">
@@ -678,8 +789,13 @@ function getNodeIcon(name: string) {
                 />
               </n-form-item>
 
-              <div style="margin-top: 24px; text-align: right;">
-                <n-button type="primary" size="medium" :loading="loading" @click="handleSaveConfig">
+              <div style="margin-top: 24px; text-align: right">
+                <n-button
+                  type="primary"
+                  size="medium"
+                  :loading="loading"
+                  @click="handleSaveConfig"
+                >
                   保存并生效配置
                 </n-button>
               </div>
@@ -694,12 +810,15 @@ function getNodeIcon(name: string) {
       v-model:show="showAddModal"
       preset="card"
       title="添加订阅"
-      style="width: 520px;"
+      style="width: 520px"
       :bordered="false"
     >
       <n-form label-placement="top" size="medium">
         <n-form-item label="订阅名称">
-          <n-input v-model:value="newSubName" placeholder="例如：拼车机场 / 专用中继节点" />
+          <n-input
+            v-model:value="newSubName"
+            placeholder="例如：拼车机场 / 专用中继节点"
+          />
         </n-form-item>
         <n-form-item label="订阅链接 (URL)">
           <n-input
@@ -713,7 +832,11 @@ function getNodeIcon(name: string) {
       <template #footer>
         <n-flex justify="end">
           <n-button @click="showAddModal = false">取消</n-button>
-          <n-button type="primary" :loading="addingSub" @click="handleAddSubscription">
+          <n-button
+            type="primary"
+            :loading="addingSub"
+            @click="handleAddSubscription"
+          >
             确认添加
           </n-button>
         </n-flex>
@@ -736,7 +859,11 @@ function getNodeIcon(name: string) {
 .proxy-hero-card {
   width: 100%;
   box-sizing: border-box;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.02) 100%);
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.05) 0%,
+    rgba(255, 255, 255, 0.02) 100%
+  );
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 14px;
   padding: 20px 24px;

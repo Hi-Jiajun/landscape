@@ -25,7 +25,8 @@ struct flow_match_key {
     u8 l3_protocol;
     // FLOW_ENTRY_MODE_MAC | FLOW_ENTRY_MODE_IP
     u8 is_match_ip;
-    // tos / DSCP value
+    // tos / DSCP value: reserved for future QoS flow steering; currently initialized to 0
+    // so LPM trie prefix matches ignore it uniformly on both BPF and user-space sides.
     u8 tos;
     u8 _pad;
     union {
