@@ -61,3 +61,22 @@ pub struct DnsMarkInstallError {
     pub flow_id: u32,
     pub detail: String,
 }
+
+impl DnsMarkInstallError {
+    /// The answer belongs to a rule generation a rebuild has already replaced,
+    /// so its mark was deliberately not written.
+    ///
+    /// Writing it would re-apply the rules that were just changed — including
+    /// re-adding a mark for a domain the new rules send somewhere else. The
+    /// answer is refused (for load-bearing marks) so the client retries and gets
+    /// a fresh decision under the current rules.
+    pub fn superseded(flow_id: u32, answer_generation: u64, current_generation: u64) -> Self {
+        Self {
+            flow_id,
+            detail: format!(
+                "answer belongs to rule generation {answer_generation}, \
+                 but generation {current_generation} is already in effect"
+            ),
+        }
+    }
+}

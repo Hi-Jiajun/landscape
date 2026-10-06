@@ -43,6 +43,10 @@ pub(crate) struct CacheHandle {
     runtime_config: Arc<ArcSwap<CacheRuntimeConfig>>,
     flow_id: u32,
     sink: Arc<dyn DnsResultSink>,
+    /// Rule generation this cache was built for. It is stamped on every answer
+    /// the cache registers, so a query that finished after a rule change can be
+    /// recognised as belonging to the replaced rules.
+    generation: u64,
 }
 
 impl std::fmt::Debug for CacheHandle {
@@ -60,12 +64,14 @@ impl CacheHandle {
         runtime_config: Arc<ArcSwap<CacheRuntimeConfig>>,
         flow_id: u32,
         sink: Arc<dyn DnsResultSink>,
+        generation: u64,
     ) -> Self {
         Self {
             cache: Self::build_cache(runtime_config.load().as_ref()),
             runtime_config,
             flow_id,
             sink,
+            generation,
         }
     }
 
@@ -84,6 +90,10 @@ impl CacheHandle {
 
     pub fn flow_id(&self) -> u32 {
         self.flow_id
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     #[cfg(test)]
@@ -212,9 +222,11 @@ impl CacheHandle {
 
         // hand the resulting marks to the datapath sink even if TTL is 0
         if !update_dns_mark_list.is_empty()
-            && let Err(e) = self
-                .sink
-                .record_dns_answer(self.flow_id, update_dns_mark_list.into_iter().collect())
+            && let Err(e) = self.sink.record_dns_answer(
+                self.flow_id,
+                self.generation,
+                update_dns_mark_list.into_iter().collect(),
+            )
         {
             if cache_item.mark.mark.requires_route_association() {
                 tracing::error!(
