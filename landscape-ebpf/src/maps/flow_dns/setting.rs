@@ -69,6 +69,10 @@ struct Conflict {
     kept: Candidate,
     /// The claim that was left out.
     dropped: Candidate,
+    /// True when both claims are equally strict, so the strictness ladder did
+    /// not decide this: only the policy did. These are the pairs that need the
+    /// rules reconciled — under the default policy the address is refused.
+    equipollent: bool,
 }
 
 /// The `Drop` mark written when two rules that would send the traffic to
@@ -316,13 +320,27 @@ fn settle_claims(
         let dropped = if candidate_better(&best, &rival) { rival } else { best };
         (
             Candidate::block(priority),
-            Some(Conflict { addr, kept: Candidate::block(priority), dropped }),
+            Some(Conflict {
+                addr,
+                kept: Candidate::block(priority),
+                dropped,
+                equipollent: true,
+            }),
         )
     } else {
         // Either the strictness ladder decided this, or the policy is set to
-        // report only: `rival` is reported as the losing claim, and under
-        // `ReportOnly` the log message says the address would have been blocked.
-        (best, Some(Conflict { addr, kept: best, dropped: rival }))
+        // report only. `rival` is reported as the losing claim; `equipollent`
+        // keeps the report-only case distinguishable from a decision, so the log
+        // still says which pairs the default policy would refuse.
+        (
+            best,
+            Some(Conflict {
+                addr,
+                kept: best,
+                dropped: rival,
+                equipollent: block,
+            }),
+        )
     }
 }
 
@@ -393,9 +411,7 @@ fn report_conflicts(flow_id: u32, conflicts: &[Conflict], policy: ConflictPolicy
                     "shared address is claimed by two DNS rules with different routing at equal \
                      strictness; blocking the address instead of silently choosing one tier"
                 );
-            } else if conflict.kept.mark == SYNTHESIZED_BLOCK_MARK
-                && policy == ConflictPolicy::ReportOnly
-            {
+            } else if conflict.equipollent && policy == ConflictPolicy::ReportOnly {
                 tracing::warn!(
                     flow_id,
                     addr = %conflict.addr,
@@ -1138,6 +1154,18 @@ mod tests {
         assert_eq!(settled.mark, REDIRECT_AI);
         let conflict = conflict.expect("the conflict is still reported");
         assert_eq!(conflict.dropped.mark, REDIRECT_MEDIA);
+        // ... and it must be told apart from a ladder decision, otherwise the
+        // log cannot say which addresses the default policy would refuse.
+        assert!(conflict.equipollent);
+    }
+
+    #[test]
+    fn a_decided_conflict_is_not_marked_as_equipollent() {
+        let shared = shared_addr();
+        let (_, conflict) = settle(shared, &[rule(DIRECT, 100), rule(REDIRECT_AI, 900)]);
+        let conflict = conflict.expect("a proxied rule over a direct one is reported");
+        assert!(!conflict.equipollent);
+        assert_eq!(conflict.kept.mark, REDIRECT_AI);
     }
 
     #[test]
