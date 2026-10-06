@@ -30,7 +30,16 @@ pub trait DnsResultSink: Send + Sync {
     /// This is the authoritative writer: it runs after a rule change and derives
     /// every mark from the whole cache, so its generation is the one later
     /// incremental answers are compared against.
-    fn refresh_dns_marks(&self, flow_id: u32, generation: u64, marks: Vec<FlowMarkInfo>);
+    ///
+    /// Returns an error when the rebuilt table could not be installed. The caller
+    /// must then keep the previous rules rather than adopt the new ones: the
+    /// rules and the table have to describe the same configuration.
+    fn refresh_dns_marks(
+        &self,
+        flow_id: u32,
+        generation: u64,
+        marks: Vec<FlowMarkInfo>,
+    ) -> Result<(), DnsMarkInstallError>;
 
     /// Rebuild the LAN route cache.
     fn rebuild_route_cache(&self);
@@ -49,7 +58,14 @@ impl DnsResultSink for NoopDnsResultSink {
         Ok(())
     }
 
-    fn refresh_dns_marks(&self, _flow_id: u32, _generation: u64, _marks: Vec<FlowMarkInfo>) {}
+    fn refresh_dns_marks(
+        &self,
+        _flow_id: u32,
+        _generation: u64,
+        _marks: Vec<FlowMarkInfo>,
+    ) -> Result<(), DnsMarkInstallError> {
+        Ok(())
+    }
 
     fn rebuild_route_cache(&self) {}
 }

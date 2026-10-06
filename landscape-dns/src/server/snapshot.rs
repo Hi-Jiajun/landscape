@@ -188,12 +188,22 @@ impl SnapshotStore {
         tracing::debug!("add_dns_marks: {:?}", update_dns_mark_list);
         // Publish the rebuilt table before the snapshot that describes it, so a
         // query can never see the new rules while the table still holds the old
-        // ones.
-        self.sink.refresh_dns_marks(
+        // ones. If the table cannot be installed, the new rules are not adopted
+        // at all: rules and table must describe the same configuration, and
+        // serving the new rules with the old table would route addresses by
+        // configuration that is no longer live.
+        if let Err(e) = self.sink.refresh_dns_marks(
             self.flow_id,
             generation,
             update_dns_mark_list.into_iter().collect(),
-        );
+        ) {
+            tracing::error!(
+                flow_id = self.flow_id,
+                "keeping the previous DNS rules because the rebuilt mark table could not be \
+                 installed: {e}"
+            );
+            return;
+        }
         self.runtime.store(Arc::new(RuntimeSnapshot {
             redirect_engine,
             resolve_engine,
@@ -302,11 +312,20 @@ impl SnapshotStore {
     }
 
     pub fn refresh_maps_from_cache(&self, cache: &CacheHandle) {
-        self.sink.refresh_dns_marks(
+        if let Err(e) = self.sink.refresh_dns_marks(
             self.flow_id,
             cache.generation(),
             cache.dns_mark_list().into_iter().collect(),
-        );
+        ) {
+            // The caller already holds the cache it derived these marks from, so
+            // there is nothing to roll back here; the next rebuild retries. The
+            // failure is logged by the sink, and reporting it stops the caller
+            // from treating the maps as converged.
+            tracing::error!(
+                flow_id = self.flow_id,
+                "DNS mark table is out of sync with the cache: {e}"
+            );
+        }
         self.sink.rebuild_route_cache();
     }
 }

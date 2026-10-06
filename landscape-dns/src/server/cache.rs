@@ -219,14 +219,16 @@ impl CacheHandle {
         };
         let update_dns_mark_list = cache_item.get_update_rules();
 
-        // hand the resulting marks to the datapath sink even if TTL is 0
-        if !update_dns_mark_list.is_empty()
-            && let Err(e) = self.sink.record_dns_answer(
-                self.flow_id,
-                self.generation,
-                update_dns_mark_list.into_iter().collect(),
-            )
-        {
+        // Hand the marks to the datapath sink even if TTL is 0, and even when the
+        // list is empty: the call is also how the sink checks that this answer
+        // still belongs to the live rule generation, and an answer with no marks
+        // (a `Direct`/`KeepGoing` one, or a negative answer) can be just as stale
+        // as any other.
+        if let Err(e) = self.sink.record_dns_answer(
+            self.flow_id,
+            self.generation,
+            update_dns_mark_list.into_iter().collect(),
+        ) {
             // An answer from a superseded generation cannot be judged by its own
             // mark: the rules that produced it are gone, so the domain may have
             // been moved to `Redirect`/`Drop` since. Serving it "because it only

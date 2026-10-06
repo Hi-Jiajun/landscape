@@ -36,14 +36,24 @@ impl DnsResultSink for EbpfDnsResultSink {
         })
     }
 
-    fn refresh_dns_marks(&self, flow_id: u32, generation: u64, marks: Vec<FlowMarkInfo>) {
+    fn refresh_dns_marks(
+        &self,
+        flow_id: u32,
+        generation: u64,
+        marks: Vec<FlowMarkInfo>,
+    ) -> Result<(), DnsMarkInstallError> {
         if let Err(e) =
             flow_dns::refreash_flow_dns_inner_map(&self.paths, flow_id, generation, marks)
         {
-            // A refresh recomputes the table from the whole cache, so a failure
-            // leaves the previous inner map in place; the next refresh retries.
-            tracing::error!("failed to refresh the DNS mark table for flow {flow_id}: {e}");
+            // The previous inner map stays in place, and the caller keeps the
+            // previous rules so the two still agree.
+            tracing::error!(
+                flow_id,
+                "failed to refresh the DNS mark table; keeping the previous rules: {e}"
+            );
+            return Err(DnsMarkInstallError::write_failed(flow_id, e.to_string()));
         }
+        Ok(())
     }
 
     fn rebuild_route_cache(&self) {

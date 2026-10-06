@@ -306,11 +306,20 @@ fn admit_generation(flow_id: u32, generation: u64) -> Result<(), FlowDnsWriteErr
 /// from the whole cache, and it advances the generation even when the table it
 /// publishes is empty (an empty table means the new rules removed the marks, so
 /// an answer from the old generation must not put them back).
+///
+/// Movement is forward-only. Rebuilds can also start from paths that hold an
+/// older runtime (a chain refresh, a cache migration), and letting one of those
+/// finish last would drag the published generation back, re-admitting answers
+/// from rules that were already replaced.
 fn publish_generation(flow_id: u32, generation: u64) {
-    published_generations()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(flow_id, generation);
+    let mut published =
+        published_generations().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    match published.get(&flow_id) {
+        Some(current) if *current >= generation => {}
+        _ => {
+            published.insert(flow_id, generation);
+        }
+    }
 }
 
 /// How strongly a stored mark constrains the traffic, from widest to strictest.
@@ -331,7 +340,14 @@ fn publish_generation(flow_id: u32, generation: u64) {
 /// * `Drop` is the strictest: the traffic is refused outright, so a rule that
 ///   demands it always wins over a rule that would merely redirect.
 fn preference_order(mark: u32) -> u8 {
-    match FlowMark::from(mark).action() {
+    let parsed = FlowMark::from(mark);
+    match parsed.action() {
+        // A redirect to flow 0 does not name a managed tier: the datapath keeps
+        // the target id, resolves it to the default flow and falls back to that
+        // flow's own behaviour, which is the same leeway `Direct` gives the
+        // packet. Counting it as a managed tier would let such a rule outrank a
+        // real `Direct` claim while providing no protection at all.
+        FlowMarkAction::Redirect if parsed.flow_id() == 0 => 0,
         FlowMarkAction::Direct => 0,
         FlowMarkAction::KeepGoing => 1,
         FlowMarkAction::Redirect => 2,
@@ -349,6 +365,11 @@ fn routing_identity(mark: u32) -> (u8, u8) {
     let mark = FlowMark::from(mark);
     let action: u8 = mark.action().into();
     match mark.action() {
+        // A redirect to flow 0 names no tier: the datapath resolves it to the
+        // default flow, which is the same leeway `Direct` gives the packet. The
+        // two must share one identity, otherwise they would look like two
+        // incompatible claims and block an address they both send the same way.
+        FlowMarkAction::Redirect if mark.flow_id() == 0 => (FlowMarkAction::Direct.into(), 0),
         // Only a redirect encodes a target flow; everything else resolves
         // against the packet's own flow, so stray low bits must not look like a
         // second identity.
@@ -379,6 +400,25 @@ fn candidate_better(candidate: &Candidate, incumbent: &Candidate) -> bool {
             },
         },
     }
+}
+
+/// The priority the arbitrated entry must be written at.
+///
+/// The datapath only lets a DNS mark override the flow's destination-IP rule when
+/// the mark's priority is at most the rule's (`dns.priority <= priority`), so the
+/// priority decides whether this entry has any say at all. Writing the winner's
+/// own priority was a hole: if a stricter class won on a *larger* priority than a
+/// claim it displaced, the entry could drop below a destination-IP rule that the
+/// displaced claim used to override, and the address would fall back to that
+/// rule — turning a stricter DNS decision into a wider one.
+///
+/// Taking the smallest priority among the claims keeps the entry at least as
+/// strong as any DNS rule that asked for the address, which is the conservative
+/// direction: a proxy or block stays effective instead of being outranked.
+/// When every claim shares one class the winner already holds the smallest
+/// priority, so this changes nothing.
+fn arbitrated_priority(claims: &[Candidate], winner: &Candidate) -> u16 {
+    claims.iter().map(|claim| claim.priority).min().unwrap_or(winner.priority)
 }
 
 /// Fold one candidate into `by_address`, keeping the best claim per routing
@@ -422,6 +462,7 @@ fn settle_claims(
     claims: &[Candidate],
     policy: ConflictPolicy,
 ) -> (Candidate, Candidate, Option<Conflict>) {
+    let arbitration_priority = arbitrated_priority(claims, &claims[0]);
     let mut claims = claims.iter();
     let first = *claims.next().expect("an address is only tracked once a claim exists");
     let mut best = first;
@@ -443,19 +484,28 @@ fn settle_claims(
     }
 
     let Some(rival) = rival else {
+        // One class only: nothing was arbitrated, so the winner's own priority
+        // already is the smallest one.
         return (best, best, None);
     };
 
+    // Whatever survives arbitration is written at the strongest priority any
+    // claim gave the address, so the entry cannot fall below a destination-IP
+    // rule that a displaced claim used to override. The ladder above still used
+    // the rules' own priorities: only the stored value is strengthened.
+    let mut decided = best;
+    decided.priority = decided.priority.min(arbitration_priority);
+
     let block = preference_order(rival.mark) == preference_order(best.mark);
     if block && policy == ConflictPolicy::Block {
-        let priority = best.priority.min(rival.priority);
+        let priority = decided.priority.min(rival.priority);
         // Neither claim may be preferred, so refuse the address. Report the
         // weaker claim as the dropped one so the log names the rule that would
         // have lost the deterministic tie-break.
         let dropped = if candidate_better(&best, &rival) { rival } else { best };
         let block = Candidate::block(priority);
         (
-            best,
+            decided,
             block,
             Some(Conflict {
                 addr,
@@ -471,11 +521,11 @@ fn settle_claims(
         // keeps the report-only case distinguishable from a decision, so the log
         // still says which pairs the default policy would refuse.
         (
-            best,
-            best,
+            decided,
+            decided,
             Some(Conflict {
                 addr,
-                kept: best,
+                kept: decided,
                 dropped: rival,
                 equipollent: block,
                 owned: false,
@@ -616,10 +666,6 @@ pub fn refreash_flow_dns_inner_map(
     // incremental path too, otherwise an answer could be applied to the inner
     // map that is being replaced.
     let _guard = lock_flow_dns_writes();
-    // The rebuild is authoritative: publishing its generation under the same
-    // lock means no incremental write can slip between "the table is rebuilt"
-    // and "the generation changed".
-    publish_generation(flow_id, generation);
 
     let v4 = match libbpf_rs::MapHandle::from_pinned_path(&paths.flow4_dns_map) {
         Ok(outer) => create_flow_dns_inner_map_v4(&outer, paths, flow_id, &data),
@@ -630,7 +676,16 @@ pub fn refreash_flow_dns_inner_map(
         Err(source) => Err(FlowDnsWriteError::OuterMap { family: FAMILY_V6, source }),
     };
 
-    v4.and(v6)
+    let outcome = v4.and(v6);
+    // The rebuild is authoritative, but only once it actually worked: publishing
+    // its generation under the same lock as the write keeps an incremental answer
+    // from slipping between "the table is rebuilt" and "the generation changed",
+    // and publishing it after a *failed* rebuild would let the caller adopt rules
+    // whose table never landed.
+    if outcome.is_ok() {
+        publish_generation(flow_id, generation);
+    }
+    outcome
 }
 
 // ==================
@@ -683,7 +738,7 @@ where
         tracing::error!(
             "failed to populate flow4_dns rules for flow {flow_id}: {e:?}; keeping the previous inner map"
         );
-        return Err(FlowDnsWriteError::Write { family: FAMILY_V4, flow_id, source: e });
+        return Err(e);
     }
     tracing::debug!("put data in map");
 
@@ -707,7 +762,7 @@ fn update_flow_dns_rules_v4<T>(
     paths: &LandscapeMapPath,
     flow_id: u32,
     ips: &[FlowMarkInfo],
-) -> libbpf_rs::Result<()>
+) -> Result<(), FlowDnsWriteError>
 where
     T: MapCore,
 {
@@ -728,7 +783,7 @@ fn apply_flow_dns_rules_v4<T>(
     flow_id: u32,
     ips: &[FlowMarkInfo],
     check_existing: bool,
-) -> libbpf_rs::Result<()>
+) -> Result<(), FlowDnsWriteError>
 where
     T: MapCore,
 {
@@ -765,19 +820,30 @@ where
         // stored one joins them and the arbitration runs over the union.
         let stored = if check_existing {
             match map.lookup(key.as_bytes(), MapFlags::ANY) {
-                Ok(value) => {
-                    value.and_then(|bytes| FlowDnsMatchValueV4::read_from_bytes(&bytes).ok())
-                }
+                Ok(Some(bytes)) => match FlowDnsMatchValueV4::read_from_bytes(&bytes) {
+                    Ok(value) => Some(value),
+                    Err(e) => {
+                        // An unreadable entry is not a missing one, and the
+                        // answer needs this address protected. Refuse the whole
+                        // answer instead of serving an address whose stored mark
+                        // is unknown: it may be `Direct`, and "leave it as it is"
+                        // would let the client use it unprotected.
+                        return Err(FlowDnsWriteError::InnerMap {
+                            family: FAMILY_V4,
+                            flow_id,
+                            reason: format!("unreadable entry for {addr}: {e:?}"),
+                        });
+                    }
+                },
+                Ok(None) => None,
                 Err(e) => {
-                    // The stored value is unknown, and guessing "absent" here
-                    // could replace a proxied entry with a direct one. Fail
-                    // closed: leave the address exactly as the datapath has it.
-                    tracing::error!(
+                    // Same reasoning: an unreadable entry cannot be arbitrated,
+                    // so this answer must not reach the client.
+                    return Err(FlowDnsWriteError::InnerMap {
+                        family: FAMILY_V4,
                         flow_id,
-                        addr = %addr,
-                        "cannot read the stored DNS mark ({e:?}); leaving the address unchanged"
-                    );
-                    continue;
+                        reason: format!("cannot read the entry for {addr}: {e:?}"),
+                    });
                 }
             }
         } else {
@@ -827,7 +893,8 @@ where
         }
     }
     if count > 0 {
-        map.update_batch(&keys, &values, count, MapFlags::ANY, MapFlags::ANY)?;
+        map.update_batch(&keys, &values, count, MapFlags::ANY, MapFlags::ANY)
+            .map_err(|source| FlowDnsWriteError::Write { family: FAMILY_V4, flow_id, source })?;
     }
     // Reported only once the batch is committed, so the message describes the
     // state that is actually in the map.
@@ -882,7 +949,7 @@ where
         tracing::error!(
             "failed to populate flow6_dns rules for flow {flow_id}: {e:?}; keeping the previous inner map"
         );
-        return Err(FlowDnsWriteError::Write { family: FAMILY_V6, flow_id, source: e });
+        return Err(e);
     }
     tracing::debug!("put data in map");
 
@@ -906,7 +973,7 @@ fn update_flow_dns_rules_v6<T>(
     paths: &LandscapeMapPath,
     flow_id: u32,
     ips: &[FlowMarkInfo],
-) -> libbpf_rs::Result<()>
+) -> Result<(), FlowDnsWriteError>
 where
     T: MapCore,
 {
@@ -920,7 +987,7 @@ fn apply_flow_dns_rules_v6<T>(
     flow_id: u32,
     ips: &[FlowMarkInfo],
     check_existing: bool,
-) -> libbpf_rs::Result<()>
+) -> Result<(), FlowDnsWriteError>
 where
     T: MapCore,
 {
@@ -956,18 +1023,25 @@ where
         // arbitration runs over the union.
         let stored = if check_existing {
             match map.lookup(key.as_bytes(), MapFlags::ANY) {
-                Ok(value) => {
-                    value.and_then(|bytes| FlowDnsMatchValueV6::read_from_bytes(&bytes).ok())
-                }
+                Ok(Some(bytes)) => match FlowDnsMatchValueV6::read_from_bytes(&bytes) {
+                    Ok(value) => Some(value),
+                    Err(e) => {
+                        // See the IPv4 branch: an unreadable entry cannot be
+                        // arbitrated, so the answer must not be served.
+                        return Err(FlowDnsWriteError::InnerMap {
+                            family: FAMILY_V6,
+                            flow_id,
+                            reason: format!("unreadable entry for {addr}: {e:?}"),
+                        });
+                    }
+                },
+                Ok(None) => None,
                 Err(e) => {
-                    // See the IPv4 branch: an unreadable entry is not an absent
-                    // one, so leave the address untouched.
-                    tracing::error!(
+                    return Err(FlowDnsWriteError::InnerMap {
+                        family: FAMILY_V6,
                         flow_id,
-                        addr = %addr,
-                        "cannot read the stored DNS mark ({e:?}); leaving the address unchanged"
-                    );
-                    continue;
+                        reason: format!("cannot read the entry for {addr}: {e:?}"),
+                    });
                 }
             }
         } else {
@@ -1014,7 +1088,8 @@ where
         }
     }
     if count > 0 {
-        map.update_batch(&keys, &values, count, MapFlags::ANY, MapFlags::ANY)?;
+        map.update_batch(&keys, &values, count, MapFlags::ANY, MapFlags::ANY)
+            .map_err(|source| FlowDnsWriteError::Write { family: FAMILY_V6, flow_id, source })?;
     }
     report_conflicts(flow_id, &conflicts, policy);
     Ok(())
@@ -1037,9 +1112,29 @@ pub fn update_flow_dns_rule(
     // Checked and applied under one lock: see `admit_generation`.
     admit_generation(flow_id, generation)?;
 
-    let v4 = apply_family_v4(paths, flow_id, &data);
-    let v6 = apply_family_v6(paths, flow_id, &data);
-    v4.and(v6)
+    // An answer that carries no addresses still had to pass the generation check
+    // above, which is the point of calling in with an empty list; there is no map
+    // work to do for it.
+    if data.is_empty() {
+        return Ok(());
+    }
+
+    // Only the family this answer actually uses is written. Touching the other
+    // one would widen the blast radius — an unavailable IPv6 map would fail every
+    // IPv4 answer — and used to risk replacing an unrelated table.
+    let has_v4 = data.iter().any(|mark| mark.ip.is_ipv4());
+    let has_v6 = data.iter().any(|mark| mark.ip.is_ipv6());
+    let mut first_error = None;
+    if has_v4 && let Err(e) = apply_family_v4(paths, flow_id, &data) {
+        first_error = Some(e);
+    }
+    if has_v6 && let Err(e) = apply_family_v6(paths, flow_id, &data) {
+        first_error = first_error.or(Some(e));
+    }
+    match first_error {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 fn apply_family_v4(
@@ -1050,16 +1145,11 @@ fn apply_family_v4(
     let outer = libbpf_rs::MapHandle::from_pinned_path(&paths.flow4_dns_map)
         .map_err(|source| FlowDnsWriteError::OuterMap { family: FAMILY_V4, source })?;
 
-    let key_value = flow_id.as_bytes();
-    if let Ok(Some(fd_id_arr)) = outer.lookup(key_value, MapFlags::ANY)
-        && let Ok(fd) = i32::read_from_bytes(&fd_id_arr)
-        && let Ok(map) = libbpf_rs::MapHandle::from_map_id(fd as u32)
-    {
-        return update_flow_dns_rules_v4(&map, paths, flow_id, data)
-            .map_err(|source| FlowDnsWriteError::Write { family: FAMILY_V4, flow_id, source });
+    match open_inner_map(&outer, flow_id, FAMILY_V4)? {
+        Some(map) => update_flow_dns_rules_v4(&map, paths, flow_id, data),
+        // No slot yet for this flow: build the table from what we have.
+        None => create_flow_dns_inner_map_v4(&outer, paths, flow_id, data),
     }
-
-    create_flow_dns_inner_map_v4(&outer, paths, flow_id, data)
 }
 
 fn apply_family_v6(
@@ -1070,20 +1160,55 @@ fn apply_family_v6(
     let outer = libbpf_rs::MapHandle::from_pinned_path(&paths.flow6_dns_map)
         .map_err(|source| FlowDnsWriteError::OuterMap { family: FAMILY_V6, source })?;
 
-    let key_value = flow_id.as_bytes();
-    if let Ok(Some(fd_id_arr)) = outer.lookup(key_value, MapFlags::ANY)
-        && let Ok(fd) = i32::read_from_bytes(&fd_id_arr)
-        && let Ok(map) = libbpf_rs::MapHandle::from_map_id(fd as u32)
-    {
-        return update_flow_dns_rules_v6(&map, paths, flow_id, data)
-            .map_err(|source| FlowDnsWriteError::Write { family: FAMILY_V6, flow_id, source });
+    match open_inner_map(&outer, flow_id, FAMILY_V6)? {
+        Some(map) => update_flow_dns_rules_v6(&map, paths, flow_id, data),
+        None => create_flow_dns_inner_map_v6(&outer, paths, flow_id, data),
     }
+}
 
-    create_flow_dns_inner_map_v6(&outer, paths, flow_id, data)
+/// The flow's inner map, or `None` when the outer map has no slot for it yet.
+///
+/// "No slot" and "could not read the slot" must not be conflated: rebuilding the
+/// table from only the current batch is correct in the first case and destructive
+/// in the second, because it would discard every other mark already installed for
+/// the flow — including the proxy marks that keep those addresses off native
+/// egress.
+fn open_inner_map(
+    outer: &libbpf_rs::MapHandle,
+    flow_id: u32,
+    family: &'static str,
+) -> Result<Option<libbpf_rs::MapHandle>, FlowDnsWriteError> {
+    let value = match outer.lookup(flow_id.as_bytes(), MapFlags::ANY) {
+        Ok(value) => value,
+        Err(source) => return Err(FlowDnsWriteError::OuterMap { family, source }),
+    };
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let id = i32::read_from_bytes(&value).map_err(|e| FlowDnsWriteError::InnerMap {
+        family,
+        flow_id,
+        reason: format!("unreadable inner map id: {e:?}"),
+    })?;
+    let map =
+        libbpf_rs::MapHandle::from_map_id(id as u32).map_err(|e| FlowDnsWriteError::InnerMap {
+            family,
+            flow_id,
+            reason: format!("cannot open inner map id {id}: {e:?}"),
+        })?;
+    Ok(Some(map))
 }
 
 pub fn delete_flow_dns(paths: &LandscapeMapPath, flow_id: u32) -> LdEbpfResult<()> {
     let _guard = lock_flow_dns_writes();
+
+    // Bump the published generation before dropping the slot, so an answer that
+    // is still in flight for this flow cannot re-create its table: its generation
+    // no longer matches, while the next rebuild (higher generation) can publish a
+    // fresh one. Without this, a deleted flow's table comes back from a single
+    // late answer.
+    let next = published_generation(flow_id).unwrap_or(1) + 1;
+    publish_generation(flow_id, next);
 
     let key = flow_id.to_ne_bytes();
     let map4 = libbpf_rs::MapHandle::from_pinned_path(&paths.flow4_dns_map)?;
@@ -1223,12 +1348,13 @@ mod tests {
     #[test]
     fn a_decided_conflict_is_ordered_by_rule_priority() {
         let shared = shared_addr();
-        // Same action, different target flow, different strictness order is not
-        // involved: this is a tie, so it blocks. But `Drop` vs `Redirect` is a
-        // decision, and the smaller priority only breaks ties inside a class.
+        // The ladder decides this one: proxy outranks direct. The stored entry
+        // then carries the smallest priority of any claim, not the winner's own,
+        // so it cannot fall below a destination-IP rule that the displaced
+        // direct claim used to override.
         let (settled, _) = settle(shared, &[rule(REDIRECT_AI, 900), rule(DIRECT, 100)]);
         assert_eq!(settled.mark, REDIRECT_AI);
-        assert_eq!(settled.priority, 900);
+        assert_eq!(settled.priority, 100);
     }
 
     #[test]
@@ -1270,8 +1396,52 @@ mod tests {
 
         for (settled, _) in [&a, &b, &c] {
             assert!(settled.synthesized_block);
-            assert_eq!(settled.priority, 200);
+            // The block is as strong as the strongest claim on the address
+            // (the direct rule at 100), not just as strong as the two tiers.
+            assert_eq!(settled.priority, 100);
         }
+    }
+
+    #[test]
+    fn a_stricter_decision_never_loses_priority_to_the_claim_it_displaced() {
+        // The counterexample this guards against: a proxied claim whose small
+        // priority is what made the DNS entry override a destination-IP rule,
+        // plus a stricter claim with a large priority. Writing the stricter
+        // claim's own priority would push the entry below that rule, and the
+        // address would fall back to it — a stricter DNS decision turning into a
+        // wider one.
+        let shared = shared_addr();
+        let (settled, _) = settle(shared, &[rule(REDIRECT_AI, 10), rule(DROP, 900)]);
+        assert_eq!(settled.mark, DROP, "the strictest class wins");
+        assert_eq!(
+            settled.priority, 10,
+            "the entry must stay at the strongest priority any claim gave it"
+        );
+        // Concretely: a destination-IP rule at 50 must still be overridden,
+        // because the displaced proxy claim at 10 used to override it.
+        assert!(settled.priority <= 50);
+
+        // Same shape with a synthesized block instead of a real Drop rule.
+        let (settled, _) = settle(shared, &[rule(REDIRECT_AI, 10), rule(REDIRECT_MEDIA, 900)]);
+        assert!(settled.synthesized_block);
+        assert_eq!(settled.priority, 10);
+    }
+
+    #[test]
+    fn an_undecided_address_keeps_its_own_priority() {
+        // One class, so nothing was arbitrated and the winner's priority is
+        // already the smallest one.
+        let shared = shared_addr();
+        let (settled, conflict) = settle(shared, &[rule(REDIRECT_AI, 300)]);
+        assert_eq!(settled.priority, 300);
+        assert!(conflict.is_none());
+
+        let mut claims: HashMap<IpAddr, Vec<Candidate>> = HashMap::new();
+        fold_candidate(&mut claims, shared, rule(REDIRECT_AI, 300));
+        fold_candidate(&mut claims, shared, rule(REDIRECT_AI, 120));
+        let claims = claims[&shared].clone();
+        let (_, applied, _) = settle_claims(shared, &claims, ConflictPolicy::Block);
+        assert_eq!(applied.priority, 120);
     }
 
     #[test]
@@ -1425,6 +1595,58 @@ mod tests {
         assert!(admit_generation(9106, 1).is_ok());
         assert_eq!(published_generation(9105), Some(2));
         assert_eq!(published_generation(9106), Some(1));
+    }
+
+    #[test]
+    fn publishing_never_moves_the_generation_backwards() {
+        publish_generation(9201, 5);
+        // A rebuild started from an older runtime must not drag the published
+        // generation back and re-admit answers from rules that were replaced.
+        publish_generation(9201, 3);
+        assert_eq!(published_generation(9201), Some(5));
+        assert!(admit_generation(9201, 3).is_err());
+        // Moving forward still works.
+        publish_generation(9201, 6);
+        assert_eq!(published_generation(9201), Some(6));
+    }
+
+    #[test]
+    fn a_deleted_flow_refuses_the_answers_that_are_still_in_flight() {
+        // `delete_flow_dns` bumps the generation before dropping the slot, so an
+        // answer that was already running cannot re-create a deleted flow's table.
+        publish_generation(9202, 4);
+        let next = published_generation(9202).unwrap_or(1) + 1;
+        publish_generation(9202, next);
+        assert_eq!(published_generation(9202), Some(5));
+        assert!(admit_generation(9202, 4).is_err());
+        // A rebuild (higher generation) can still publish a fresh table.
+        assert!(admit_generation(9202, 6).is_err(), "only a rebuild may take over");
+        publish_generation(9202, 6);
+        assert!(admit_generation(9202, 6).is_ok());
+    }
+
+    #[test]
+    fn a_redirect_without_a_target_is_not_a_managed_tier() {
+        // `Redirect` to flow 0 names no managed tier: the datapath resolves it to
+        // the default flow and falls back to that flow's own behaviour, so it must
+        // not outrank a real `Direct` claim as if it were protection.
+        assert_eq!(preference_order(0x0300), preference_order(DIRECT));
+        // A redirect that does name a tier keeps its place in the ladder.
+        assert!(preference_order(REDIRECT_AI) > preference_order(DIRECT));
+        assert!(preference_order(DROP) > preference_order(REDIRECT_AI));
+
+        let shared = shared_addr();
+        // It also shares one identity with `Direct`, so the two are one claim
+        // rather than two incompatible ones, and the address is not blocked.
+        assert_eq!(routing_identity(0x0300), routing_identity(DIRECT));
+        let (settled, conflict) = settle(shared, &[rule(0x0300, 10), rule(DIRECT, 900)]);
+        assert!(!settled.synthesized_block, "two direct-shaped claims must not block");
+        assert_eq!(settled.mark, 0x0300, "the higher-precedence claim wins the fold");
+        assert!(conflict.is_none());
+        // A target-less redirect is still the widest class, so a proxied claim
+        // displaces it.
+        let (settled, _) = settle(shared, &[rule(0x0300, 10), rule(REDIRECT_AI, 900)]);
+        assert_eq!(settled.mark, REDIRECT_AI);
     }
 
     #[test]
