@@ -23,6 +23,11 @@ pub struct FlowMark {
 }
 
 impl FlowMark {
+    /// The routing action this mark selects.
+    pub fn action(&self) -> FlowMarkAction {
+        self.action
+    }
+
     /// Whether a DNS answer carrying this mark should be registered with the
     /// datapath. `KeepGoing` flows only register when reuse-port is allowed;
     /// the addressed action types (Direct/Drop/Redirect) always register.
