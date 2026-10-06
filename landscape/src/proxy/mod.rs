@@ -373,11 +373,19 @@ impl LandscapeProxyService {
         }
 
         let mut listeners_arr = Vec::new();
-        let active_listeners = if cfg.listeners.is_empty() {
+        let mut active_listeners = if cfg.listeners.is_empty() {
             landscape_common::proxy::default_listeners()
         } else {
             cfg.listeners.clone()
         };
+        // Auto-augment any missing default listeners (such as DNS tunnels or new flow ports)
+        let default_lis = landscape_common::proxy::default_listeners();
+        for def in default_lis {
+            if !active_listeners.iter().any(|l| l.port == def.port || l.name == def.name) {
+                active_listeners.push(def);
+            }
+        }
+
         for lis in active_listeners {
             let mut lis_obj = serde_json::Map::new();
             lis_obj.insert("name".to_string(), json!(lis.name));
@@ -385,6 +393,14 @@ impl LandscapeProxyService {
             lis_obj.insert("port".to_string(), json!(lis.port));
             if let Some(ref p) = lis.proxy {
                 lis_obj.insert("proxy".to_string(), json!(p));
+            }
+            if let Some(ref t) = lis.target {
+                lis_obj.insert("target".to_string(), json!(t));
+            }
+            if let Some(ref net) = lis.network {
+                lis_obj.insert("network".to_string(), json!(net));
+            } else if lis.listener_type == "tunnel" {
+                lis_obj.insert("network".to_string(), json!(vec!["tcp", "udp"]));
             }
             listeners_arr.push(serde_json::Value::Object(lis_obj));
         }

@@ -74,6 +74,16 @@ impl GeoIpService {
                 ticker.tick().await;
             }
         });
+        let service_init = service.clone();
+        spawn_task(task_label::task::GEO_IP_OBSERVER, async move {
+            let configs = service_init.store.list().await.unwrap_or_default();
+            for config in configs {
+                if !service_init.has_cached_name(&config.name).await {
+                    service_init.try_restore_from_raw(&config).await;
+                }
+            }
+        });
+
         service
     }
 
@@ -82,7 +92,19 @@ impl GeoIpService {
         geo_key: &landscape_common::config_service::geo::GeoConfigKey,
     ) -> Vec<landscape_common::flow::ip_mark::IpConfig> {
         let mut lock = self.file_cache.lock().await;
-        if let Some(geo_ip_config) = lock.get(&geo_key.get_file_cache_key()) {
+        let file_key = geo_key.get_file_cache_key();
+        let ips_opt = lock.get(&file_key)
+            .or_else(|| {
+                let mut upper = file_key.clone();
+                upper.key = upper.key.to_uppercase();
+                lock.get(&upper)
+            })
+            .or_else(|| {
+                let mut lower = file_key.clone();
+                lower.key = lower.key.to_lowercase();
+                lock.get(&lower)
+            });
+        if let Some(geo_ip_config) = ips_opt {
             geo_ip_config.values
         } else {
             vec![]
@@ -108,7 +130,19 @@ impl GeoIpService {
             for each in config.source.into_iter() {
                 match each {
                     WanIPRuleSource::GeoKey(config_key) => {
-                        if let Some(ips) = lock.get(&config_key.get_file_cache_key()) {
+                        let file_key = config_key.get_file_cache_key();
+                        let ips_opt = lock.get(&file_key)
+                            .or_else(|| {
+                                let mut upper = file_key.clone();
+                                upper.key = upper.key.to_uppercase();
+                                lock.get(&upper)
+                            })
+                            .or_else(|| {
+                                let mut lower = file_key.clone();
+                                lower.key = lower.key.to_lowercase();
+                                lock.get(&lower)
+                            });
+                        if let Some(ips) = ips_opt {
                             result.reserve(ips.values.len());
                             for cidr in ips.values {
                                 if seen.insert(cidr.clone()) {
@@ -197,6 +231,7 @@ impl GeoIpService {
             Ok(result) if !result.is_empty() => {
                 self.replace_cache_by_name(&config.name, result).await;
                 tracing::info!("restored geo ip cache '{}' from {:?}", config.name, dat_path);
+                self.notify_dst_ip_updated();
             }
             Ok(_) => {}
             Err(e) => {

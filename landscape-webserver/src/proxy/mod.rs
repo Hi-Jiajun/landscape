@@ -200,22 +200,12 @@ async fn get_nodes(
         Err(_) => return LandscapeApiResp::success(Vec::new()),
     };
 
-    let cfg = state.proxy_service.get_config().await;
-    let mut dialer_proxies = std::collections::HashSet::new();
-    for node in &cfg.custom_nodes {
-        if let Some(dp) = node.get("dialer-proxy").and_then(|v| v.as_str()) {
-            dialer_proxies.insert(dp.to_string());
-        }
-    }
-
     let mut items = Vec::new();
     if let Some(proxies_map) = raw.get("proxies").and_then(|v| v.as_object()) {
         for (name, obj) in proxies_map {
             let node_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
-            // Filter out internal groups, dialer jump-boxes (e.g. Transit), and pseudonodes
-            if dialer_proxies.contains(name)
-                || name.contains("Transit")
-                || ["Selector", "URLTest", "Fallback", "Direct", "Reject", "Compatible", "Pass", "PassRule", "RejectDrop", "Relay"].contains(&node_type.as_str())
+            // Filter out internal groups and pseudonodes
+            if ["Selector", "URLTest", "Fallback", "Direct", "Reject", "Compatible", "Pass", "PassRule", "RejectDrop", "Relay"].contains(&node_type.as_str())
                 || ["PASS", "PASS-RULE", "REJECT-DROP", "DIRECT", "REJECT", "GLOBAL", "COMPATIBLE"].contains(&name.as_str()) {
                 continue;
             }
@@ -280,14 +270,6 @@ async fn get_groups(
         Err(_) => return LandscapeApiResp::success(Vec::new()),
     };
 
-    let cfg = state.proxy_service.get_config().await;
-    let mut dialer_proxies = std::collections::HashSet::new();
-    for node in &cfg.custom_nodes {
-        if let Some(dp) = node.get("dialer-proxy").and_then(|v| v.as_str()) {
-            dialer_proxies.insert(dp.to_string());
-        }
-    }
-
     let mut groups = Vec::new();
     if let Some(proxies_map) = raw.get("proxies").and_then(|v| v.as_object()) {
         for (name, obj) in proxies_map {
@@ -303,11 +285,7 @@ async fn get_groups(
                 .map(|arr| {
                     arr.iter()
                         .filter_map(|v| v.as_str())
-                        .filter(|s| {
-                            !dialer_proxies.contains(*s)
-                                && !s.contains("Transit")
-                                && !["PASS", "PASS-RULE", "REJECT-DROP"].contains(s)
-                        })
+                        .filter(|s| !["PASS", "PASS-RULE", "REJECT-DROP"].contains(s))
                         .map(|s| s.to_string())
                         .collect()
                 })

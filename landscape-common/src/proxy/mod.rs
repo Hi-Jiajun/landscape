@@ -67,6 +67,10 @@ pub struct ProxyListenerConfig {
     pub port: u16,
     #[serde(default)]
     pub proxy: Option<String>,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub network: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,41 +198,103 @@ impl Default for ProxyPluginConfig {
 
 pub fn default_listeners() -> Vec<ProxyListenerConfig> {
     vec![
+        // TProxy inbound listeners (L4 redirect from eBPF flow rules)
         ProxyListenerConfig {
             name: "flow-ai".to_string(),
             listener_type: "tproxy".to_string(),
             port: 7892,
             proxy: Some("🤖 AI服务".to_string()),
+            target: None,
+            network: None,
         },
         ProxyListenerConfig {
             name: "flow-stream".to_string(),
             listener_type: "tproxy".to_string(),
             port: 7893,
             proxy: Some("🎥 流媒体".to_string()),
+            target: None,
+            network: None,
         },
         ProxyListenerConfig {
             name: "flow-game".to_string(),
             listener_type: "tproxy".to_string(),
             port: 7894,
             proxy: Some("🎮 外服游戏".to_string()),
+            target: None,
+            network: None,
         },
         ProxyListenerConfig {
             name: "flow-im".to_string(),
             listener_type: "tproxy".to_string(),
             port: 7895,
             proxy: Some("💬 即时通讯".to_string()),
+            target: None,
+            network: None,
         },
         ProxyListenerConfig {
             name: "flow-final".to_string(),
             listener_type: "tproxy".to_string(),
             port: 7896,
             proxy: Some("🐟 漏网之鱼".to_string()),
+            target: None,
+            network: None,
         },
         ProxyListenerConfig {
             name: "flow-steam".to_string(),
             listener_type: "tproxy".to_string(),
             port: 7897,
             proxy: Some("🎮 Steam".to_string()),
+            target: None,
+            network: None,
+        },
+        // DNS inbound tunnels (forwarding DNS queries through specific proxy groups to avoid pollution & optimize CDN)
+        ProxyListenerConfig {
+            name: "dns-ai".to_string(),
+            listener_type: "tunnel".to_string(),
+            port: 1054,
+            proxy: Some("🤖 AI服务".to_string()),
+            target: Some("1.1.1.1:53".to_string()),
+            network: Some(vec!["tcp".to_string(), "udp".to_string()]),
+        },
+        ProxyListenerConfig {
+            name: "dns-stream".to_string(),
+            listener_type: "tunnel".to_string(),
+            port: 1055,
+            proxy: Some("🎥 流媒体".to_string()),
+            target: Some("1.1.1.1:53".to_string()),
+            network: Some(vec!["tcp".to_string(), "udp".to_string()]),
+        },
+        ProxyListenerConfig {
+            name: "dns-game".to_string(),
+            listener_type: "tunnel".to_string(),
+            port: 1056,
+            proxy: Some("🎮 外服游戏".to_string()),
+            target: Some("1.1.1.1:53".to_string()),
+            network: Some(vec!["tcp".to_string(), "udp".to_string()]),
+        },
+        ProxyListenerConfig {
+            name: "dns-im".to_string(),
+            listener_type: "tunnel".to_string(),
+            port: 1057,
+            proxy: Some("💬 即时通讯".to_string()),
+            target: Some("1.1.1.1:53".to_string()),
+            network: Some(vec!["tcp".to_string(), "udp".to_string()]),
+        },
+        ProxyListenerConfig {
+            name: "dns-final".to_string(),
+            listener_type: "tunnel".to_string(),
+            port: 1053,
+            proxy: Some("🐟 漏网之鱼".to_string()),
+            target: Some("1.1.1.1:53".to_string()),
+            network: Some(vec!["tcp".to_string(), "udp".to_string()]),
+        },
+        ProxyListenerConfig {
+            name: "dns-steam".to_string(),
+            listener_type: "tunnel".to_string(),
+            port: 1058,
+            proxy: Some("🎮 Steam".to_string()),
+            target: Some("1.1.1.1:53".to_string()),
+            network: Some(vec!["tcp".to_string(), "udp".to_string()]),
         },
     ]
 }
