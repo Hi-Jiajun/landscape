@@ -222,21 +222,19 @@ impl CacheHandle {
         // cache.
         let needs_association = cache_item.mark.mark.requires_route_association();
 
-        // Cache first, then install the marks. A rebuild derives its table from
-        // the cache, so an answer that is already cached cannot be missed by it
-        // (the next rebuild installs its marks), whereas an answer that installs
-        // its marks first can be dropped by a rebuild that read the cache just
-        // before the insert — leaving an address the client already holds with no
-        // mark at all.
-        if min_ttl != 0 {
-            self.cache.insert((domain_key.clone(), query_type), Arc::new(cache_item)).await;
-        }
-
         // Hand the marks to the datapath sink even if TTL is 0, and even when the
         // list is empty: the call is also how the sink checks that this answer
         // still belongs to the live rule generation, and an answer with no marks
         // (a `Direct`/`KeepGoing` one, or a negative answer) can be just as stale
         // as any other.
+        //
+        // The entry is cached only once this succeeded. Caching first would make
+        // the address reachable through the cache before its mark exists, so a
+        // concurrent query could serve it unprotected; and the failure path would
+        // have to remove the entry again, without being able to tell its own entry
+        // from one a later answer wrote under the same key. The rebuild side
+        // cannot lose this answer's mark either, because it derives its list while
+        // holding the same datapath write.
         if let Err(e) = self.sink.record_dns_answer(
             self.flow_id,
             self.generation,
@@ -255,10 +253,6 @@ impl CacheHandle {
                     superseded = e.superseded,
                     "refusing an answer whose route association could not be installed: {e}"
                 );
-                // The entry was cached before the marks were installed, so drop it
-                // again: the answer is being refused, and a later lookup must not
-                // serve it from the cache with its marks missing.
-                self.cache.invalidate(&(domain_key, query_type)).await;
                 return Err(e);
             }
             // `Direct`/`KeepGoing` ask for native egress or for the flow's own
@@ -270,6 +264,13 @@ impl CacheHandle {
             );
         }
 
+        if min_ttl == 0 {
+            // A zero TTL answer is served once and never cached; its marks were
+            // installed above, so the address stays covered.
+            return Ok(());
+        }
+
+        self.cache.insert((domain_key, query_type), Arc::new(cache_item)).await;
         Ok(())
     }
 

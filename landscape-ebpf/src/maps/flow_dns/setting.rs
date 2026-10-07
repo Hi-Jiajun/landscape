@@ -667,7 +667,7 @@ pub fn refreash_flow_dns_inner_map(
     paths: &LandscapeMapPath,
     flow_id: u32,
     generation: u64,
-    data: Vec<FlowMarkInfo>,
+    collect: Box<dyn FnOnce() -> Vec<FlowMarkInfo> + Send + '_>,
 ) -> Result<(), FlowDnsWriteError> {
     // Rebuilding the outer slots has to be mutually exclusive with the
     // incremental path too, otherwise an answer could be applied to the inner
@@ -684,6 +684,10 @@ pub fn refreash_flow_dns_inner_map(
         });
     }
 
+    // Derived here, under the lock, so no answer can complete between the
+    // snapshot of the cache and the table it is published into.
+    let data = collect();
+
     let outer4 = libbpf_rs::MapHandle::from_pinned_path(&paths.flow4_dns_map)
         .map_err(|source| FlowDnsWriteError::OuterMap { family: FAMILY_V4, source })?;
     let outer6 = libbpf_rs::MapHandle::from_pinned_path(&paths.flow6_dns_map)
@@ -693,8 +697,41 @@ pub fn refreash_flow_dns_inner_map(
     // tables are complete.
     let built4 = build_flow_dns_inner_map_v4(paths, flow_id, &data)?;
     let built6 = build_flow_dns_inner_map_v6(paths, flow_id, &data)?;
+
+    // Remember the slots being replaced so a half-published pair can be put back.
+    // The two outer slots are separate maps, so publishing them is two writes:
+    // without this, a failure between them leaves one family on the new rules and
+    // the other on the old ones, while the caller keeps the old rules entirely.
+    let previous4 = open_inner_map(&outer4, flow_id, FAMILY_V4)?;
+    // Read, not used: a failure here must still abort before anything is
+    // published, and opening the slot is what establishes that.
+    let _previous6 = open_inner_map(&outer6, flow_id, FAMILY_V6)?;
+
     publish_inner_map(&outer4, flow_id, &built4, FAMILY_V4)?;
-    publish_inner_map(&outer6, flow_id, &built6, FAMILY_V6)?;
+    if let Err(e) = publish_inner_map(&outer6, flow_id, &built6, FAMILY_V6) {
+        // Put IPv4 back so both families keep the rules the runtime still holds.
+        match previous4 {
+            Some(previous) => {
+                if let Err(restore) = publish_inner_map(&outer4, flow_id, &previous, FAMILY_V4) {
+                    tracing::error!(
+                        flow_id,
+                        "could not restore the previous IPv4 table after a failed rebuild; the \
+                         two families now hold different rule generations: {restore:?}"
+                    );
+                }
+            }
+            // There was no table before, so remove the one just published.
+            None => {
+                if let Err(remove) = outer4.delete(flow_id.as_bytes()) {
+                    tracing::error!(
+                        flow_id,
+                        "could not remove the IPv4 table published by a failed rebuild: {remove:?}"
+                    );
+                }
+            }
+        }
+        return Err(e);
+    }
 
     // The rebuild is authoritative, but only once it actually worked: publishing
     // its generation under the same lock as the write keeps an incremental answer

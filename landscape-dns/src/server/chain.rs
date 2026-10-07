@@ -474,10 +474,12 @@ impl<'a> ResolveChain<'a> {
     }
 
     fn refresh_maps_from_cache(&self) {
+        // Collected by the sink under its datapath write: see the trait method.
+        let cache = &self.runtime.cache;
         if let Err(e) = self.sink.refresh_dns_marks(
             self.flow_id,
-            self.runtime.cache.generation(),
-            self.runtime.cache.dns_mark_list().into_iter().collect(),
+            cache.generation(),
+            Box::new(|| cache.dns_mark_list().into_iter().collect()),
         ) {
             // The cache this was derived from is already live, so there is
             // nothing to roll back; the failure is logged here so the maps are

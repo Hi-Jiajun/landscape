@@ -25,20 +25,27 @@ pub trait DnsResultSink: Send + Sync {
         marks: Vec<FlowMarkInfo>,
     ) -> Result<(), DnsMarkInstallError>;
 
-    /// Recompute the DNS mark table for a flow from its whole cache.
+    /// Recompute the DNS mark table for a flow, deriving the marks from the whole
+    /// cache with `collect`.
     ///
-    /// This is the authoritative writer: it runs after a rule change and derives
-    /// every mark from the whole cache, so its generation is the one later
-    /// incremental answers are compared against.
+    /// This is the authoritative writer: it runs after a rule change, and its
+    /// generation is the one later incremental answers are compared against.
+    ///
+    /// `collect` is called **while the datapath write is held**, which is the
+    /// point of passing a closure instead of a finished list. A caller that
+    /// collected the marks first would take a snapshot of the cache and publish
+    /// it later, so an answer that finished in between — installed its marks and
+    /// cached itself, both successfully — would be erased by the older list, and
+    /// the address the client was just handed would lose its mark.
     ///
     /// Returns an error when the rebuilt table could not be installed. The caller
     /// must then keep the previous rules rather than adopt the new ones: the
     /// rules and the table have to describe the same configuration.
-    fn refresh_dns_marks(
+    fn refresh_dns_marks<'a>(
         &self,
         flow_id: u32,
         generation: u64,
-        marks: Vec<FlowMarkInfo>,
+        collect: Box<dyn FnOnce() -> Vec<FlowMarkInfo> + Send + 'a>,
     ) -> Result<(), DnsMarkInstallError>;
 
     /// Rebuild the LAN route cache.
@@ -58,12 +65,13 @@ impl DnsResultSink for NoopDnsResultSink {
         Ok(())
     }
 
-    fn refresh_dns_marks(
+    fn refresh_dns_marks<'a>(
         &self,
         _flow_id: u32,
         _generation: u64,
-        _marks: Vec<FlowMarkInfo>,
+        collect: Box<dyn FnOnce() -> Vec<FlowMarkInfo> + Send + 'a>,
     ) -> Result<(), DnsMarkInstallError> {
+        let _ = collect();
         Ok(())
     }
 

@@ -13,7 +13,12 @@ pub fn main() {
 
     // Generation 1 both rebuilds the table and becomes the published
     // generation, so the incremental writes below are admitted.
-    let _ = landscape_ebpf::maps::flow_dns::refreash_flow_dns_inner_map(paths, 12, 1, vec![]);
+    let _ = landscape_ebpf::maps::flow_dns::refreash_flow_dns_inner_map(
+        paths,
+        12,
+        1,
+        Box::new(Vec::new),
+    );
     let _ = landscape_ebpf::maps::flow_dns::update_flow_dns_rule(
         paths,
         12,

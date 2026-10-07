@@ -36,14 +36,14 @@ impl DnsResultSink for EbpfDnsResultSink {
         })
     }
 
-    fn refresh_dns_marks(
+    fn refresh_dns_marks<'a>(
         &self,
         flow_id: u32,
         generation: u64,
-        marks: Vec<FlowMarkInfo>,
+        collect: Box<dyn FnOnce() -> Vec<FlowMarkInfo> + Send + 'a>,
     ) -> Result<(), DnsMarkInstallError> {
         if let Err(e) =
-            flow_dns::refreash_flow_dns_inner_map(&self.paths, flow_id, generation, marks)
+            flow_dns::refreash_flow_dns_inner_map(&self.paths, flow_id, generation, collect)
         {
             // The previous inner map stays in place, and the caller keeps the
             // previous rules so the two still agree.

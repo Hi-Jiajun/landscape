@@ -1,11 +1,11 @@
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 #[cfg(test)]
 use arc_swap::Guard;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use landscape_common::flow::{DnsResultSink, FlowMarkInfo};
+use landscape_common::flow::DnsResultSink;
 
 use crate::{
     CacheDNSItem,
@@ -193,20 +193,23 @@ impl SnapshotStore {
         ttl_cap: Option<u32>,
         generation: u64,
     ) {
-        let (new_cache, update_dns_mark_list) =
+        let new_cache =
             self.rebuild_cache(&redirect_engine, &resolve_engine, ttl_cap, generation).await;
 
-        tracing::debug!("add_dns_marks: {:?}", update_dns_mark_list);
         // Publish the rebuilt table before the snapshot that describes it, so a
         // query can never see the new rules while the table still holds the old
         // ones. If the table cannot be installed, the new rules are not adopted
         // at all: rules and table must describe the same configuration, and
         // serving the new rules with the old table would route addresses by
         // configuration that is no longer live.
+        //
+        // The marks are derived inside the sink's datapath write, which is also
+        // what keeps an answer that lands during the rebuild from being left out
+        // of the table it publishes.
         if let Err(e) = self.sink.refresh_dns_marks(
             self.flow_id,
             generation,
-            update_dns_mark_list.into_iter().collect(),
+            Box::new(|| new_cache.dns_mark_list().into_iter().collect()),
         ) {
             tracing::error!(
                 flow_id = self.flow_id,
@@ -229,7 +232,7 @@ impl SnapshotStore {
         resolves: &ResolveEngine,
         ttl_cap: Option<u32>,
         generation: u64,
-    ) -> (CacheHandle, HashSet<FlowMarkInfo>) {
+    ) -> CacheHandle {
         let new_cache = CacheHandle::new(
             self.runtime_config.clone(),
             self.flow_id,
@@ -238,8 +241,7 @@ impl SnapshotStore {
         );
         self.migrate_cache(&new_cache, redirects, resolves, ttl_cap).await;
         new_cache.run_pending_tasks().await;
-        let update_dns_mark_list = new_cache.dns_mark_list();
-        (new_cache, update_dns_mark_list)
+        new_cache
     }
 
     async fn remove_redirected_cache(
@@ -332,10 +334,13 @@ impl SnapshotStore {
         &self,
         cache: &CacheHandle,
     ) -> Result<(), landscape_common::flow::DnsMarkInstallError> {
+        // The marks are derived by the sink while it holds the datapath write, so
+        // an answer that finishes during the rebuild cannot be left out of the
+        // table the rebuild publishes.
         let result = self.sink.refresh_dns_marks(
             self.flow_id,
             cache.generation(),
-            cache.dns_mark_list().into_iter().collect(),
+            Box::new(|| cache.dns_mark_list().into_iter().collect()),
         );
         if let Err(e) = &result {
             // The cache these marks came from is already live, so nothing is
