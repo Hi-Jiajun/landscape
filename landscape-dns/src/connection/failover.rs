@@ -196,6 +196,36 @@ mod tests {
         );
     }
 
+    /// The two shapes of "the upstream answered, and the answer is that there is
+    /// nothing": NXDOMAIN, and NoError with no records (NODATA).
+    ///
+    /// This is the case the whole domestic-primary design stands on, and the case
+    /// that fails silently if it is wrong: misclassify either one and a single
+    /// name that does not exist sets the primary aside, so every other domain in
+    /// the house is resolved by the backup for the next minute - with the
+    /// operator's own resolver silently no longer in use. hickory reports both as
+    /// `NoRecordsFound`, whose `response_code` is what distinguishes them.
+    #[test]
+    fn a_negative_answer_is_an_answer_not_a_failure() {
+        use hickory_resolver::proto::op::{Query, ResponseCode};
+        use hickory_resolver::proto::rr::{Name, RecordType};
+
+        for (code, what) in [
+            (ResponseCode::NXDomain, "the name does not exist"),
+            (ResponseCode::NoError, "the name exists but has no record of this type"),
+        ] {
+            let name = Name::from_ascii("does-not-exist.example.").expect("a literal name");
+            let query = Query::query(name, RecordType::AAAA);
+            let no_records = hickory_resolver::net::NoRecords::new(query, code);
+            let error = NetError::Dns(hickory_resolver::net::DnsError::NoRecordsFound(no_records));
+            assert_eq!(
+                classify(&error),
+                Outcome::Answer,
+                "{what} is the primary's own answer, so it must not switch or count as a failure"
+            );
+        }
+    }
+
     #[test]
     fn the_primary_is_set_aside_only_after_repeated_failures() {
         let mut breaker = Breaker::default();
