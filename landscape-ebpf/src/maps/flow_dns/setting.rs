@@ -65,16 +65,17 @@ pub enum FlowDnsWriteError {
     Superseded { flow_id: u32, answer_generation: u64, published_generation: u64 },
 
     /// A rebuild failed and the family it had already published could not be put
-    /// back, so the two families now describe different rule generations.
+    /// back, so the two families are now in different publication states.
     ///
     /// Distinct from a plain failure because the caller must not treat the old
     /// rules as still describing the datapath: one family is already on the rules
-    /// the caller is about to keep using, which is not a state a retry alone
-    /// repairs.
+    /// the caller is about to keep using. A later complete rebuild can converge
+    /// them again, but until one succeeds the datapath is not described by any
+    /// single set of rules.
     #[error(
         "flow {flow_id}: rebuilding the DNS tables failed ({first}) and the already published \
-         family could not be restored ({restore}); the families now describe different rule \
-         generations"
+         family could not be restored ({restore}); the two address families are in different \
+         publication states"
     )]
     PartiallyPublished {
         flow_id: u32,
@@ -254,7 +255,19 @@ impl Candidate {
 /// on top of a proxied entry that appeared in between, which is precisely the
 /// leak the arbitration exists to prevent. Every writer lives in this process,
 /// so a single lock makes the read-decide-write sequence atomic.
-static FLOW_DNS_WRITE_LOCK: Mutex<()> = Mutex::new(());
+/// One write lock per flow.
+///
+/// Every user-space writer of a flow's mark table takes that flow's lock, so
+/// arbitration and the rebuild's commit are one critical section per flow. The
+/// lock is per flow rather than process-wide because the work inside it is
+/// synchronous (map syscalls) and is reached from the async DNS path: a
+/// process-wide lock would make one flow's rebuild stall every other flow's
+/// answers on a Tokio worker thread.
+static FLOW_DNS_WRITE_LOCKS: OnceLock<Mutex<HashMap<u32, &'static Mutex<()>>>> = OnceLock::new();
+
+fn flow_dns_write_locks() -> &'static Mutex<HashMap<u32, &'static Mutex<()>>> {
+    FLOW_DNS_WRITE_LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 /// Rule generation each flow's mark table currently reflects.
 ///
@@ -263,8 +276,8 @@ static FLOW_DNS_WRITE_LOCK: Mutex<()> = Mutex::new(());
 /// that match the published generation keeps the replaced rules from being
 /// re-applied to one address.
 ///
-/// The check runs **inside** [`FLOW_DNS_WRITE_LOCK`] together with the write it
-/// guards. Checking and writing as two separate steps would leave exactly the
+/// The check runs **inside** the flow's mark-table write lock together with the
+/// write it guards. Checking and writing as two separate steps would leave exactly the
 /// window this exists to close: an answer could pass the check, the rebuild
 /// could publish, and the answer would then write the old mark over the new one.
 static PUBLISHED_GENERATION: OnceLock<Mutex<HashMap<u32, u64>>> = OnceLock::new();
@@ -280,8 +293,22 @@ static REPORTED_CONFLICTS: OnceLock<Mutex<HashSet<ConflictId>>> = OnceLock::new(
 /// Number of conflict observations suppressed by the dedup above.
 static SUPPRESSED_CONFLICTS: AtomicU64 = AtomicU64::new(0);
 
-fn lock_flow_dns_writes() -> MutexGuard<'static, ()> {
-    FLOW_DNS_WRITE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+/// This flow's write lock. The mutex is leaked so its address is stable for the
+/// life of the process: a writer that took a copy of the map entry could
+/// otherwise lock a different mutex than the one a later writer takes, which is
+/// exactly the exclusion this has to provide. Flow ids are bounded by the map
+/// layout, so the leaked set is small.
+fn flow_dns_write_lock(flow_id: u32) -> &'static Mutex<()> {
+    flow_dns_write_locks()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entry(flow_id)
+        .or_insert_with(|| Box::leak(Box::new(Mutex::new(()))))
+}
+
+/// Lock the mark-table writes for `flow_id`. Held for the length of the operation.
+fn lock_flow_dns_writes(flow_id: u32) -> MutexGuard<'static, ()> {
+    flow_dns_write_lock(flow_id).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// The generation currently published for a flow, if any.
@@ -691,7 +718,7 @@ pub fn refreash_flow_dns_inner_map(
     // Rebuilding the outer slots has to be mutually exclusive with the
     // incremental path too, otherwise an answer could be applied to the inner
     // map that is being replaced.
-    let _guard = lock_flow_dns_writes();
+    let _guard = lock_flow_dns_writes(flow_id);
 
     if let Some(published) = published_generation(flow_id)
         && generation < published
@@ -921,7 +948,7 @@ where
 /// map are arbitrated against first; a freshly created map is known to be empty
 /// and skips those lookups.
 ///
-/// The caller must hold [`FLOW_DNS_WRITE_LOCK`] so that the `lookup`/decide/
+/// The caller must hold the flow's write lock so that the `lookup`/decide/
 /// `update_batch` sequence below cannot interleave with another writer.
 fn apply_flow_dns_rules_v4<T>(
     map: &T,
@@ -1188,7 +1215,7 @@ pub fn update_flow_dns_rule(
     generation: u64,
     data: Vec<FlowMarkInfo>,
 ) -> Result<(), FlowDnsWriteError> {
-    let _guard = lock_flow_dns_writes();
+    let _guard = lock_flow_dns_writes(flow_id);
     // Checked and applied under one lock: see `admit_generation`.
     admit_generation(flow_id, generation)?;
 
@@ -1280,7 +1307,7 @@ fn open_inner_map(
 }
 
 pub fn delete_flow_dns(paths: &LandscapeMapPath, flow_id: u32) -> LdEbpfResult<()> {
-    let _guard = lock_flow_dns_writes();
+    let _guard = lock_flow_dns_writes(flow_id);
 
     // Bump the published generation before dropping the slot, so an answer that
     // is still in flight for this flow cannot re-create its table: its generation
@@ -1792,5 +1819,64 @@ mod tests {
         // A ladder decision has no block to override.
         let (settled, _) = settle(shared, &[rule(DIRECT, 100), rule(REDIRECT_AI, 900)]);
         assert!(!owner_dominates(&settled, Some(1)));
+    }
+
+    /// The re-arbitration that runs once an answer is in the cache folds the
+    /// answer's claims together with whatever the table already holds.
+    fn rearbitrate(shared: IpAddr, batch: &[Candidate], stored: Candidate) -> Candidate {
+        let (_, applied, _) =
+            settle_with_stored(shared, batch, Some(stored), ConflictPolicy::Block);
+        applied
+    }
+
+    #[test]
+    fn a_stricter_answer_escalates_an_address_the_table_already_proxies() {
+        let shared = shared_addr();
+        // The first answer put the address on a proxy tier; a later answer for
+        // the same address demands `Drop`. Re-arbitrating must escalate, not skip
+        // because an entry already exists — otherwise the address keeps the wider
+        // rule until an unrelated rebuild happens to fix it.
+        let settled = rearbitrate(shared, &[rule(DROP, 200)], rule(REDIRECT_AI, 100));
+        assert_eq!(settled.mark, DROP);
+    }
+
+    #[test]
+    fn a_weaker_answer_cannot_downgrade_the_stored_decision() {
+        let shared = shared_addr();
+        // A stored `Drop` is strictly stricter, so a proxy answer for the same
+        // address must not weaken it back into a proxy route.
+        let settled = rearbitrate(shared, &[rule(REDIRECT_AI, 10)], rule(DROP, 900));
+        assert_eq!(settled.mark, DROP);
+
+        // Same for a stored block against a direct answer.
+        let settled = rearbitrate(shared, &[rule(DIRECT, 10)], Candidate::block(500));
+        assert!(settled.synthesized_block);
+    }
+
+    #[test]
+    fn re_arbitration_is_idempotent() {
+        let shared = shared_addr();
+        // The first pass wrote this; the second pass sees it as the stored value
+        // and must reach the same conclusion.
+        let first = settle(shared, &[rule(REDIRECT_AI, 100)]).0;
+        let stored = Candidate::from_stored(first.mark, first.priority, 0);
+        let second = rearbitrate(shared, &[rule(REDIRECT_AI, 100)], stored);
+        assert_eq!(second, first);
+        let third = rearbitrate(shared, &[rule(REDIRECT_AI, 100)], second);
+        assert_eq!(third, first);
+    }
+
+    #[test]
+    fn a_block_from_re_arbitration_survives_the_next_pass() {
+        let shared = shared_addr();
+        // Two tiers make the address block; the block is stored with its marker
+        // and the following pass must keep blocking rather than pick a tier.
+        let settled = rearbitrate(shared, &[rule(REDIRECT_AI, 100)], rule(REDIRECT_MEDIA, 100));
+        assert!(settled.synthesized_block);
+
+        let stored =
+            Candidate::from_stored(settled.mark, settled.priority, VALUE_FLAG_SYNTHESIZED_BLOCK);
+        let again = rearbitrate(shared, &[rule(REDIRECT_AI, 100)], stored);
+        assert!(again.synthesized_block);
     }
 }
