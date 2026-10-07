@@ -14,6 +14,7 @@ use crate::runtime::EbpfRuntime;
 use landscape_common::ebpf::DataplaneGuard;
 use landscape_common::flow::dataplane::FlowRuleDataplane;
 use landscape_common::flow::dataplane::UnclassifiedPolicy;
+use landscape_common::flow::dataplane::UnclassifiedStats;
 use landscape_common::lan_service::lan_ipv6::dataplane::Ip6DaoFilterDataplane;
 use landscape_common::lan_service::lan_route::dataplane::LanRouteDataplane;
 use landscape_common::lan_service::mac_binding::MacBindingDataplane;
@@ -546,6 +547,10 @@ impl FlowRuleDataplane for EbpfFlowRuleDataplane {
         if let Err(e) = maps::route::apply_unclassified_policy(&self.rt.paths, policy) {
             tracing::error!("failed to apply the unclassified-destination policy: {e}");
         }
+    }
+
+    fn unclassified_stats(&self) -> Result<UnclassifiedStats, String> {
+        maps::route::read_route_unclassified_stats(&self.rt.paths)
     }
 
     fn invalidate_lan_cache(&self) {

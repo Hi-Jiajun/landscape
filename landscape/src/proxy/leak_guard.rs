@@ -36,6 +36,8 @@ pub struct LeakGuardInput<'a> {
     pub routing_default: RoutingDefault,
     /// The datapath's policy for a destination nothing classified.
     pub unclassified: landscape_common::flow::dataplane::UnclassifiedPolicy,
+    /// What that policy has actually done, per family and reason.
+    pub unclassified_stats: landscape_common::flow::dataplane::UnclassifiedStats,
 }
 
 /// The rules a destination reaches when no earlier rule claims it.
@@ -216,9 +218,32 @@ fn check_routing_default(report: &mut LeakGuardReport, input: &LeakGuardInput<'_
                  delivery target the packet is refused rather than forwarded, so the fallback \
                  cannot silently become a direct path."
             ),
-            evidence: vec![format!(
-                "datapath policy for an unclassified destination: tier {flow_id}"
-            )],
+            evidence: {
+                let stats = &input.unclassified_stats;
+                let mut evidence = vec![format!(
+                    "datapath policy for an unclassified destination: tier {flow_id}"
+                )];
+                evidence.push(format!(
+                    "handed to the fallback: v4 {} / v6 {} packet(s)",
+                    stats.fallback_v4, stats.fallback_v6
+                ));
+                evidence.push(format!(
+                    "refused by the policy: v4 {} / v6 {}",
+                    stats.refused_policy_v4, stats.refused_policy_v6
+                ));
+                // Kept as its own line and its own wording: this is the number that
+                // means "the router refused this on purpose", which is what an
+                // operator needs in order not to read a refusal as a broken
+                // network. It is not a proxy-delivery result - the datapath cannot
+                // know that, and does not claim to.
+                evidence.push(format!(
+                    "refused for want of a route target: v4 {} / v6 {} - a destination that stops \
+                     working with this counter moving was refused deliberately, not by a network \
+                     fault",
+                    stats.dropped_no_target_v4, stats.dropped_no_target_v6
+                ));
+                evidence
+            },
         }),
     }
 
@@ -937,6 +962,7 @@ mod tests {
             // has to say so - which is how `passthrough_for_unclassified...` fails
             // loudly if this default is ever relaxed.
             unclassified: UnclassifiedPolicy::ProxyTier { flow_id: 14 },
+            unclassified_stats: Default::default(),
         }
     }
 
@@ -1371,6 +1397,46 @@ mod tests {
         // The tier number has to be in the finding, or the reader cannot tell which
         // tier unclassified traffic actually goes to.
         assert!(finding.detail.contains("14"), "{}", finding.detail);
+    }
+
+    /// A deliberate refusal has to be distinguishable from a network fault. The
+    /// counters are the only place that distinction exists: "the router refused
+    /// this because nothing could deliver it" is not the same message as "the
+    /// connection failed", and the datapath deliberately does not claim to know
+    /// whether the proxy delivered.
+    #[test]
+    fn the_fallback_finding_separates_refusal_from_delivery() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.unclassified = UnclassifiedPolicy::ProxyTier { flow_id: 14 };
+        input.unclassified_stats = landscape_common::flow::dataplane::UnclassifiedStats {
+            fallback_v4: 10,
+            fallback_v6: 20,
+            refused_policy_v4: 1,
+            refused_policy_v6: 2,
+            dropped_no_target_v4: 3,
+            dropped_no_target_v6: 4,
+        };
+        let report = evaluate(input);
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.check == "unclassified_destination_is_direct")
+            .unwrap();
+
+        let joined = finding.evidence.join(" | ");
+        assert!(joined.contains("v4 10 / v6 20"), "the fallback hits must be shown: {joined}");
+        assert!(joined.contains("v4 1 / v6 2"), "policy refusals must be shown: {joined}");
+        assert!(joined.contains("v4 3 / v6 4"), "no-target refusals must be shown: {joined}");
+        assert!(
+            joined.contains("refused deliberately, not by a network fault"),
+            "the no-target line must say what it means: {joined}"
+        );
+        // And it must not claim to know about proxy delivery.
+        assert!(
+            !joined.to_lowercase().contains("delivered"),
+            "the datapath cannot report proxy delivery: {joined}"
+        );
     }
 
     #[test]

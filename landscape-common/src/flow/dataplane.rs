@@ -26,6 +26,35 @@ pub enum UnclassifiedPolicy {
     ProxyTier { flow_id: u32 },
 }
 
+/// What the unclassified-destination policy has actually done.
+///
+/// The categories are kept apart on purpose. A fallback hit is the policy
+/// working; a refusal decided by the policy is policy doing what it was told; and
+/// a refusal because no route target exists is the datapath failing closed. Only
+/// the last two are worth investigating, and mixing them with the first would
+/// make normal operation look like trouble.
+///
+/// What is deliberately **absent** is whether the proxy delivered the traffic.
+/// The datapath knows it handed the packet to the engine; whether the node could
+/// carry it is only knowable from the engine's side. Reporting a delivery failure
+/// from here would dress up an upstream problem as a policy decision.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct UnclassifiedStats {
+    /// Unclassified traffic sent to the fallback tier.
+    pub fallback_v4: u64,
+    pub fallback_v6: u64,
+    /// Refused by the policy itself: an explicit drop, or a fallback that names no
+    /// tier.
+    pub refused_policy_v4: u64,
+    pub refused_policy_v6: u64,
+    /// Dropped because the verdict named a tier with no route target. This is the
+    /// fail-closed path, and it is the one an operator should look at first when a
+    /// destination stops working: it means the router refused it deliberately.
+    pub dropped_no_target_v4: u64,
+    pub dropped_no_target_v6: u64,
+}
+
 /// eBPF capability for the flow rule services.
 pub trait FlowRuleDataplane: Send + Sync {
     /// Reconcile the flow-match map to `configs` (also invalidates the
@@ -49,6 +78,10 @@ pub trait FlowRuleDataplane: Send + Sync {
     /// the outcome of the old policy, and leaving it in place would keep serving
     /// the previous decision for every destination that was already resolved.
     fn set_unclassified_policy(&self, policy: UnclassifiedPolicy);
+
+    /// Read the policy's counters. `None` when the datapath maps are not
+    /// available, which is worth reporting rather than showing zeros.
+    fn unclassified_stats(&self) -> Result<UnclassifiedStats, String>;
 }
 
 /// No-op implementation for tests.
@@ -64,4 +97,8 @@ impl FlowRuleDataplane for NoopFlowRuleDataplane {
     fn invalidate_lan_cache(&self) {}
 
     fn set_unclassified_policy(&self, _policy: UnclassifiedPolicy) {}
+
+    fn unclassified_stats(&self) -> Result<UnclassifiedStats, String> {
+        Ok(UnclassifiedStats::default())
+    }
 }

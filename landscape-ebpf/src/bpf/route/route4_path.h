@@ -390,7 +390,7 @@ keep_going:
     // the fresh decision; the caller caches whatever this returns, so a fallback
     // tier is what gets cached rather than a bare flow 0.
     u32 verdict = flow_mark_action;
-    if (route_unclassified_apply(&verdict)) return TC_ACT_SHOT;
+    if (route_unclassified_apply(&verdict, LANDSCAPE_IPV4_TYPE)) return TC_ACT_SHOT;
     *init_flow_id_ = verdict;
     return TC_ACT_OK;
 #undef BPF_LOG_TOPIC

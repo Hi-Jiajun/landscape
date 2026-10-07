@@ -338,6 +338,17 @@ impl LandscapeProxyService {
         self.flow_dataplane.set_unclassified_policy(policy);
     }
 
+    /// What the unclassified-destination policy has actually done.
+    ///
+    /// A read failure is reported as an error rather than as zeros: "no counter
+    /// moved" and "the counters are unavailable" look the same in a graph and mean
+    /// opposite things.
+    pub fn unclassified_stats(
+        &self,
+    ) -> Result<landscape_common::flow::dataplane::UnclassifiedStats, String> {
+        self.flow_dataplane.unclassified_stats()
+    }
+
     /// Borrow the delivery fabric so the flow service can publish the
     /// `flow_id -> listener port` mapping it owns.
     pub fn tproxy_delivery(&self) -> Arc<TproxyDelivery> {

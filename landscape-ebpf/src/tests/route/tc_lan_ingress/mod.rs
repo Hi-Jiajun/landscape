@@ -60,7 +60,7 @@ use crate::{
                 lookup_rt4_cache_value, put_rt4_cache_full, put_rt4_cache_ifindex,
                 put_rt4_cache_value, seed_flow_match_ip_v4, seed_flow_match_mac,
             },
-            packet_builder::{simple_ipv4_tcp, simple_ipv6_tcp_syn},
+            packet_builder::{simple_ipv4_tcp, simple_ipv4_udp, simple_ipv6_tcp_syn},
         },
     },
 };
@@ -196,3 +196,4 @@ fn arp_frame() -> Vec<u8> {
 
 mod cache_paths;
 mod first_packet;
+mod unclassified;

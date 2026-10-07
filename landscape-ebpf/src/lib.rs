@@ -80,6 +80,8 @@ pub struct LandscapeMapPath {
     /// Policy for a destination nothing classified: pass through, drop, or a
     /// fallback tier. Read by the flow verdict in both address families.
     pub route_unclassified_cfg: PathBuf,
+    /// What the unclassified-destination policy did, per family and reason.
+    pub route_unclassified_stats: PathBuf,
 
     // IP MAC
     pub ip_mac_v4: PathBuf,
@@ -151,6 +153,7 @@ impl LandscapeMapPath {
             rt4_cache_map: root.join(route::RT4_CACHE_MAP_PIN),
             rt6_cache_map: root.join(route::RT6_CACHE_MAP_PIN),
             route_unclassified_cfg: root.join(route::ROUTE_UNCLASSIFIED_PIN),
+            route_unclassified_stats: root.join(route::ROUTE_UNCLASSIFIED_STATS_PIN),
 
             // IP MAC
             ip_mac_v4: root.join(mac::IP_MAC_V4_PIN),

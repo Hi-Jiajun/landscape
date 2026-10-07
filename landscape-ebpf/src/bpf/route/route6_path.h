@@ -385,7 +385,7 @@ keep_going:
     // }
     // Same policy and same reasoning as the IPv4 verdict.
     u32 verdict = flow_mark_action;
-    if (route_unclassified_apply(&verdict)) return TC_ACT_SHOT;
+    if (route_unclassified_apply(&verdict, LANDSCAPE_IPV6_TYPE)) return TC_ACT_SHOT;
     *init_flow_id_ = verdict;
     return TC_ACT_OK;
 #undef BPF_LOG_TOPIC

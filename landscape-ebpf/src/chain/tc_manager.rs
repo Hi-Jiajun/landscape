@@ -275,6 +275,13 @@ impl TcChainManager {
             ),
             "tc_wan_ingress_exit pin route_unclassified_cfg_map"
         )?;
+        crate::bpf_ctx!(
+            pin_and_reuse_map(
+                &mut open_skel.maps.route_unclassified_stats_map,
+                &paths.route_unclassified_stats
+            ),
+            "tc_wan_ingress_exit pin route_unclassified_stats_map"
+        )?;
         let skel = bpf_ctx!(open_skel.load(), "load tc_wan_ingress_exit skeleton")?;
         let exit_fd = skel.progs.tc_wan_ingress_exit_redirect.as_fd().as_raw_fd();
         skel.maps.tc_pipe_exits_wan_ingress.update(

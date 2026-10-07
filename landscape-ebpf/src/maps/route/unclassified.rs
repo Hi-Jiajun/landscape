@@ -17,6 +17,10 @@ use landscape_common::flow::dataplane::UnclassifiedPolicy;
 
 /// Pin file name = the C map symbol in `route_unclassified.h`.
 pub(crate) const ROUTE_UNCLASSIFIED_PIN: &str = "route_unclassified_cfg_map";
+pub(crate) const ROUTE_UNCLASSIFIED_STATS_PIN: &str = "route_unclassified_stats_map";
+
+/// Number of `route_unclassified_stat` slots; keep in step with the C enum.
+pub(crate) const ROUTE_UNCLASSIFIED_STAT_MAX: u32 = 6;
 
 /// `struct route_unclassified_cfg`: two flags, explicit padding, then the tier.
 /// The padding is spelled out because `IntoBytes` rejects implicit padding.
@@ -72,6 +76,49 @@ pub(crate) const ROUTE_UNCLASSIFIED_MAP_SPEC: MapCreateSpec = MapCreateSpec {
 /// Create or reuse the pinned policy map.
 pub fn init_route_unclassified_map(path: &Path) -> LdEbpfResult<MapHandle> {
     ensure_pinned_map(&ROUTE_UNCLASSIFIED_MAP_SPEC, path)
+}
+
+/// `route_unclassified_stats_map`: per-family reason counters, `u64` each.
+pub(crate) const ROUTE_UNCLASSIFIED_STATS_MAP_SPEC: MapCreateSpec = MapCreateSpec {
+    map_type: MapType::Array,
+    name: ROUTE_UNCLASSIFIED_STATS_PIN,
+    key_size: size_of::<u32>() as u32,
+    value_size: size_of::<u64>() as u32,
+    max_entries: ROUTE_UNCLASSIFIED_STAT_MAX,
+    map_flags: 0,
+    inner: None,
+};
+
+pub fn init_route_unclassified_stats_map(path: &Path) -> LdEbpfResult<MapHandle> {
+    ensure_pinned_map(&ROUTE_UNCLASSIFIED_STATS_MAP_SPEC, path)
+}
+
+/// Re-exported so callers name one type: the shape lives in `landscape-common`
+/// with the other state that crosses the crate boundary.
+pub use landscape_common::flow::dataplane::UnclassifiedStats;
+
+pub fn read_route_unclassified_stats(
+    paths: &crate::LandscapeMapPath,
+) -> Result<UnclassifiedStats, String> {
+    let map = MapHandle::from_pinned_path(&paths.route_unclassified_stats).map_err(|e| {
+        format!("open route_unclassified_stats_map ({:?}): {e}", paths.route_unclassified_stats)
+    })?;
+    let at = |index: u32| -> u64 {
+        map.lookup(&index.to_ne_bytes(), libbpf_rs::MapFlags::ANY)
+            .ok()
+            .flatten()
+            .filter(|value| value.len() >= 8)
+            .map(|value| u64::from_ne_bytes(value[..8].try_into().unwrap_or_default()))
+            .unwrap_or(0)
+    };
+    Ok(UnclassifiedStats {
+        fallback_v4: at(0),
+        fallback_v6: at(1),
+        refused_policy_v4: at(2),
+        refused_policy_v6: at(3),
+        dropped_no_target_v4: at(4),
+        dropped_no_target_v6: at(5),
+    })
 }
 
 /// Programme the policy, and invalidate the verdict cache it invalidates.

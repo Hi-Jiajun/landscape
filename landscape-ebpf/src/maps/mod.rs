@@ -601,6 +601,8 @@ pub(crate) fn init_path(paths: &LandscapeMapPath) {
     // name-based pinning, for the same reason as every other shared map.
     route::init_route_unclassified_map(&paths.route_unclassified_cfg)
         .expect("init route_unclassified_cfg_map failed");
+    route::init_route_unclassified_stats_map(&paths.route_unclassified_stats)
+        .expect("init route_unclassified_stats_map failed");
 
     // IP <-> MAC + DAD NS events
     mac::init_ip_mac_v4(&paths.ip_mac_v4).expect("init ip_mac_v4 failed");
@@ -668,6 +670,8 @@ pub(crate) fn init_maps_for_test(paths: &LandscapeMapPath) {
         .expect("test init rt4/6 cache maps");
     route::init_route_unclassified_map(&paths.route_unclassified_cfg)
         .expect("test init route_unclassified_cfg_map");
+    route::init_route_unclassified_stats_map(&paths.route_unclassified_stats)
+        .expect("test init route_unclassified_stats_map");
 
     mac::init_ip_mac_v4(&paths.ip_mac_v4).expect("test init ip_mac_v4");
     mac::init_ip_mac_v6(&paths.ip_mac_v6).expect("test init ip_mac_v6");

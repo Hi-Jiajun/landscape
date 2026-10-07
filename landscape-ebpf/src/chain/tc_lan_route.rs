@@ -101,6 +101,13 @@ pub fn init_tc_lan_route(
         "tc_lan_route pin route_unclassified_cfg_map"
     )?;
     crate::bpf_ctx!(
+        pin_and_reuse_map(
+            &mut open_skel.maps.route_unclassified_stats_map,
+            &paths.route_unclassified_stats
+        ),
+        "tc_lan_route pin route_unclassified_stats_map"
+    )?;
+    crate::bpf_ctx!(
         pin_and_reuse_map(&mut open_skel.maps.ip_mac_v4, &paths.ip_mac_v4),
         "tc_lan_route pin ip_mac_v4"
     )?;

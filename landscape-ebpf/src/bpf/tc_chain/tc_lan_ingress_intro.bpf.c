@@ -10,6 +10,7 @@
 #include "route/route6_path.h"
 #include "route/route4_context.h"
 #include "route/route6_context.h"
+#include "route/route_unclassified.h"
 #include "neigh_learn.h"
 
 #include "chain/tc_cb.h"
@@ -38,6 +39,10 @@ static __always_inline int tc_route4_pick_wan_in_lan(struct __sk_buff *skb, u32 
     struct route4_target_info *target_info = bpf_map_lookup_elem(&rt4_slot_map, &slot_key);
 
     if (target_info == NULL) {
+        // Fail closed, and say so: the verdict named a tier but there is no route
+        // target for it. This is the outcome the routing contract wants, but it
+        // should be visible rather than look like a network fault.
+        route_unclassified_count(ROUTE_UNCLASSIFIED_STAT_DROPPED_NO_TARGET_V4);
         if (resolved_flow_id == 0) {
             ld_bpf_log("DROP default flow v4, no target for: %pI4", &context->saddr);
             return TC_ACT_SHOT;
@@ -112,6 +117,7 @@ static __always_inline int tc_route6_pick_wan_in_lan(struct __sk_buff *skb, u32 
     struct route6_target_info *target_info = bpf_map_lookup_elem(&rt6_slot_map, &slot_key);
 
     if (target_info == NULL) {
+        route_unclassified_count(ROUTE_UNCLASSIFIED_STAT_DROPPED_NO_TARGET_V6);
         if (resolved_flow_id == 0) {
             ld_bpf_log("DROP default flow v6, no target");
             return TC_ACT_SHOT;

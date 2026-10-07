@@ -187,6 +187,13 @@ async fn get_leak_report(State(state): State<LandscapeApp>) -> LandscapeApiResul
         proxied_flows,
         routing_default,
         unclassified: config.unclassified,
+        unclassified_stats: state.proxy_service.unclassified_stats().unwrap_or_else(|e| {
+            // Not swallowed: the finding that reads these counters says they were
+            // unavailable, rather than showing zeros that look like "nothing
+            // happened".
+            tracing::warn!("cannot read the unclassified-destination counters: {e}");
+            Default::default()
+        }),
     });
     LandscapeApiResp::success(report)
 }
