@@ -796,20 +796,38 @@ fn check_dns(report: &mut LeakGuardReport, input: &LeakGuardInput<'_>) {
     // redirecting a TCP query to a listener that does not is a refused query
     // rather than a managed one. So the state is a declared choice with a
     // counter, not an assumption - and while it is open, say so.
-    if input.dns_guard.enabled && input.dns_guard.counters.plaintext_tcp_left > 0 {
+    // Driven by whether the hijack is installed, not by the counter: the counter is
+    // cumulative and keeps the packets that went un-hijacked while the switch was
+    // off, so reading it as the current state would report an open path forever
+    // after the path was closed. (The same mistake as comparing counters with
+    // different lifetimes - the durable evidence is the rule.)
+    let tcp_hijack_installed = input
+        .dns_guard
+        .rules
+        .iter()
+        // The protocol matters: without it the plaintext UDP hijack satisfies this
+        // too, and the check would never report an un-hijacked TCP path at all -
+        // a check that cannot fire is worse than no check.
+        .any(|rule| {
+            rule.contains("--dport 53") && rule.contains("REDIRECT") && rule.contains("-p tcp")
+        });
+    if input.dns_guard.enabled && !tcp_hijack_installed {
         report.push(LeakFinding {
             class: LeakClass::Dns,
             severity: LeakSeverity::Warn,
             check: "plaintext_dns_tcp_open".into(),
-            detail: "Plaintext DNS over TCP is not intercepted: the TCP hijack is switched off \
-                     because the managed resolver had not been confirmed to serve TCP. A client \
-                     that asks over TCP reaches the resolver it names. UDP is managed."
+            detail: "Plaintext DNS over TCP is not intercepted: no TCP redirect into the managed \
+                     resolver is installed. A client that asks over TCP reaches the resolver it \
+                     names. UDP is managed."
                 .into(),
-            evidence: vec![format!(
-                "{} TCP quer(ies) left on their normal path; turn the TCP hijack on only after \
-                 the managed resolver answers `dig +tcp`",
-                input.dns_guard.counters.plaintext_tcp_left
-            )],
+            evidence: vec![
+                "no `--dport 53 ... REDIRECT` rule among the installed rules".to_string(),
+                format!(
+                    "TCP queries seen while it was off: {} earlier (cumulative, not current state)",
+                    input.dns_guard.counters.plaintext_tcp_left
+                ),
+                "switch it on only once the managed resolver answers `dig +tcp`".to_string(),
+            ],
         });
     }
 
@@ -1193,6 +1211,15 @@ mod tests {
             rules: vec![
                 "iptables -t mangle -A LANDSCAPE_DNS_GUARD -p tcp --dport 853 -j DROP".into(),
                 "iptables -t mangle -A LANDSCAPE_DNS_GUARD -p udp --dport 853 -j DROP".into(),
+                // The plaintext hijack, both transports. TCP is part of a compliant
+                // configuration now that the resolver can serve it - it could not
+                // before, which is why a guard without it used to count as complete.
+                "iptables -t nat -A LANDSCAPE_DNS_HIJACK -p udp --dport 53 -j REDIRECT \
+                 --to-ports 53"
+                    .into(),
+                "iptables -t nat -A LANDSCAPE_DNS_HIJACK -p tcp --dport 53 -j REDIRECT \
+                 --to-ports 53"
+                    .into(),
             ],
             doh_blocked: 0,
             exempted_hosts: 0,
@@ -1820,6 +1847,43 @@ mod tests {
         assert_eq!(finding.severity, LeakSeverity::Ok);
         assert!(finding.detail.contains("not dropped anything yet"), "{}", finding.detail);
         assert!(finding.detail.contains("no way to return the error"), "{}", finding.detail);
+    }
+
+    /// The check has to read whether the hijack is installed, not a counter: the
+    /// counter keeps every TCP query that went un-hijacked while the switch was off,
+    /// so reading it as current state reports an open path forever after the path
+    /// was closed. That is the same mistake as comparing counters with different
+    /// lifetimes, and it was made here once.
+    #[test]
+    fn an_installed_tcp_hijack_is_closed_even_with_a_historical_counter() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.dns_guard = enabled_dns_guard();
+        input.dns_guard.counters.plaintext_tcp_left = 4_242;
+        let report = evaluate(input);
+        assert_eq!(severity_of(&report, "plaintext_dns_tcp_open"), None);
+    }
+
+    /// ... and its absence is reported, because that is a path a client can take.
+    #[test]
+    fn a_guard_without_a_tcp_hijack_reports_the_open_path() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.dns_guard = enabled_dns_guard();
+        input.dns_guard.rules.retain(|rule| !(rule.contains("--dport 53") && rule.contains("tcp")));
+        let report = evaluate(input);
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.check == "plaintext_dns_tcp_open")
+            .expect("an un-hijacked TCP path must be reported");
+        assert_eq!(finding.severity, LeakSeverity::Warn);
+        // The counter is published as history, and labelled as history.
+        assert!(
+            finding.evidence.iter().any(|line| line.contains("cumulative, not current state")),
+            "{:?}",
+            finding.evidence
+        );
     }
 
     #[test]

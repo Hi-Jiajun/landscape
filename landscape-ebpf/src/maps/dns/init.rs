@@ -14,14 +14,17 @@ use crate::maps::{MapCreateSpec, ensure_pinned_map};
 /// Pin 文件名 = C map 符号名（见 `land_dns_dispatcher.h`）。
 pub(crate) const DNS_FLOW_SOCKS_PIN: &str = "dns_flow_socks";
 
-/// `dns_flow_socks`: `BPF_MAP_TYPE_SOCKMAP`, key `u32`, value `u64`,
-/// 512 entries.
+/// `dns_flow_socks`: `BPF_MAP_TYPE_SOCKMAP`, key `u32`, value `u64`, 2048 entries.
+///
+/// A SOCKMAP's key is an index and must stay inside this size, so the per-flow keys
+/// for three listeners (`(flow_id << 2) | kind`) need four slots per flow - 2048
+/// covers every flow id the mark can carry.
 pub(crate) const DNS_FLOW_SOCKS_SPEC: MapCreateSpec = MapCreateSpec {
     map_type: MapType::Sockmap,
     name: DNS_FLOW_SOCKS_PIN,
     key_size: 4,
     value_size: 8,
-    max_entries: 512,
+    max_entries: 2048,
     map_flags: 0,
     inner: None,
 };

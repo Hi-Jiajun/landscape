@@ -5,7 +5,9 @@
 
 struct {
     __uint(type, BPF_MAP_TYPE_SOCKMAP);
-    __uint(max_entries, 512);
+    // Three sockets per flow (plaintext UDP, plaintext TCP, DoH) at four keys
+    // each, with room for every flow id the mark can carry (0..=255).
+    __uint(max_entries, 2048);
     __type(key, __u32);
     __type(value, __u64);
     __uint(pinning, LIBBPF_PIN_BY_NAME);

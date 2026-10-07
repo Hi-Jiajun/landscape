@@ -29,9 +29,15 @@ const volatile u8 listener_kind = 0;
 #define DNS_LISTENER_KIND_PLAINTEXT 0
 #define DNS_LISTENER_KIND_DOH 1
 
-// DoH keys live above the plaintext `(flow_id << 1) | proto_bit` space, which for a
-// one-byte flow id cannot reach this high.
-#define DNS_DOH_KEY_BASE 0x80000000u
+// Three sockets per flow, so the key carries two bits of listener kind rather than
+// the one bit that only had room for UDP-versus-TCP.
+//
+// The key has to stay inside `max_entries`: a SOCKMAP's key is an index, and the
+// kernel rejects one at or beyond the size (`-E2BIG`, measured while trying to give
+// DoH a namespace above the plaintext space).
+#define DNS_LISTENER_KIND_PLAINTEXT_UDP 0
+#define DNS_LISTENER_KIND_PLAINTEXT_TCP 1
+#define DNS_LISTENER_KIND_DOH 2
 
 SEC("sk_reuseport/migrate")
 int reuseport_dns_dispatcher(struct sk_reuseport_md *reuse_md) {
@@ -85,17 +91,17 @@ int reuseport_dns_dispatcher(struct sk_reuseport_md *reuse_md) {
         flow_id = *flow_id_ptr;
     }
 
-    __u32 flow_sock_key;
+    // key = (flow_id << 2) | listener kind. Which kind applies comes from the
+    // reuseport group this program instance was loaded for, not from the packet:
+    // the plaintext TCP and DoH listeners are both TCP and can only be told apart
+    // by their group.
+    __u32 kind = DNS_LISTENER_KIND_PLAINTEXT_UDP;
     if (listener_kind == DNS_LISTENER_KIND_DOH) {
-        flow_sock_key = DNS_DOH_KEY_BASE | flow_id;
-    } else {
-        // keep UDP/TCP sockets in separate key spaces:
-        // key = (flow_id << 1) | proto_bit, where UDP=0, TCP=1
-        flow_sock_key = (flow_id << 1);
-        if (reuse_md->ip_protocol == IPPROTO_TCP) {
-            flow_sock_key |= 1;
-        }
+        kind = DNS_LISTENER_KIND_DOH;
+    } else if (reuse_md->ip_protocol == IPPROTO_TCP) {
+        kind = DNS_LISTENER_KIND_PLAINTEXT_TCP;
     }
+    __u32 flow_sock_key = (flow_id << 2) | kind;
 
     // ld_bpf_log("find flow_id: %d, key: %d", flow_id, flow_sock_key);
     ret = bpf_sk_select_reuseport(reuse_md, &dns_flow_socks, &flow_sock_key, 0);

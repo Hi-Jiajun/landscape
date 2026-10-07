@@ -28,10 +28,17 @@ pub enum ListenerKind {
 
 impl ListenerKind {
     /// Must match `DNS_LISTENER_KIND_*` in `land_dns_dispatcher.bpf.c`.
+    ///
+    /// The plaintext value covers both the UDP and the TCP plaintext listener: the
+    /// program tells those two apart by protocol, which is what the key's own kind
+    /// field needs two bits for. DoH needs the same number as its key kind, because
+    /// the program compares this value against it - giving it a different number
+    /// here silently routes the DoH group down the plaintext path, which selects a
+    /// socket from another reuseport group and is refused with EBADFD.
     fn rodata_value(self) -> u8 {
         match self {
             ListenerKind::Plaintext => 0,
-            ListenerKind::Doh => 1,
+            ListenerKind::Doh => 2,
         }
     }
 }
@@ -83,4 +90,61 @@ pub fn attach_reuseport_ebpf(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ListenerKind;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    /// The listener-kind numbers the BPF program compares against.
+    fn bpf_listener_kinds() -> BTreeMap<String, u8> {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/bpf/land_dns_dispatcher.bpf.c");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let mut found = BTreeMap::new();
+        for line in source.lines() {
+            let Some(rest) = line.strip_prefix("#define DNS_LISTENER_KIND_") else { continue };
+            let mut parts = rest.split_whitespace();
+            let (Some(name), Some(value)) = (parts.next(), parts.next()) else { continue };
+            if let Ok(value) = value.parse::<u8>() {
+                found.insert(name.to_string(), value);
+            }
+        }
+        found
+    }
+
+    /// The value this side writes into the program's read-only data has to be the
+    /// number the program compares it against.
+    ///
+    /// These live in two languages and two files, and getting them out of step is
+    /// silent: the program takes the wrong branch, asks the socket map for a key
+    /// that belongs to another listener, and the kernel refuses the selection -
+    /// which is exactly how DoH broke while the plaintext path kept working.
+    #[test]
+    fn the_rust_listener_kinds_match_the_program() {
+        let kinds = bpf_listener_kinds();
+        assert!(
+            kinds.contains_key("DOH") && kinds.contains_key("PLAINTEXT"),
+            "the program's listener kinds were not found: {kinds:?}"
+        );
+
+        assert_eq!(
+            ListenerKind::Plaintext.rodata_value(),
+            kinds["PLAINTEXT"],
+            "the plaintext value must be the number the program tests for plaintext"
+        );
+        assert_eq!(
+            ListenerKind::Doh.rodata_value(),
+            kinds["DOH"],
+            "the DoH value must be the number the program tests for DoH"
+        );
+        assert_ne!(
+            ListenerKind::Plaintext.rodata_value(),
+            ListenerKind::Doh.rodata_value(),
+            "the two listeners are both TCP and can only be told apart by this value"
+        );
+    }
 }
