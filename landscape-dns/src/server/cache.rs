@@ -108,15 +108,6 @@ impl ClaimIndex {
         std::mem::take(&mut *self.stale.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
-    /// Whether any claim still justifies a value for `address`.
-    fn is_claimed(&self, address: IpAddr) -> bool {
-        self.claims
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&address)
-            .is_some_and(|owners| !owners.is_empty())
-    }
-
     /// Every claim on `address`, including the ones other answers registered.
     fn claims_for(&self, address: IpAddr) -> Vec<FlowMarkInfo> {
         self.claims
@@ -454,33 +445,52 @@ impl CacheHandle {
         }
 
         // Addresses whose claim set shrank while this answer was being processed
-        // are reconciled here, inside the same flow write: entries no claim
-        // justifies any more are dropped so the address falls back to the flow's
-        // own policy instead of keeping a decision nothing supports.
-        self.reconcile_unclaimed().await;
+        // are re-arbitrated here, inside the same flow write: the winner changes
+        // when the claim that won is the one that left, and keeping the old value
+        // would enforce a decision the remaining claims do not support.
+        self.reconcile_stale_claims();
         Ok(())
     }
 
-    /// Drop the datapath entries for addresses nothing claims any more.
-    async fn reconcile_unclaimed(&self) {
+    /// Re-arbitrate the addresses whose claim set changed.
+    ///
+    /// An address that still has claims is written from those claims, so the
+    /// datapath follows the winner the live answers actually produce. An address
+    /// left with no claim at all is deliberately **left as it is**: dropping the
+    /// entry would let the address fall back to the flow's own policy, which can
+    /// be `Direct`, and widening access is the one outcome this path exists to
+    /// prevent. The stale entry is released by the next rebuild.
+    fn reconcile_stale_claims(&self) {
         let stale = self.claims.take_stale();
         if stale.is_empty() {
             return;
         }
-        let unclaimed: Vec<IpAddr> =
-            stale.into_iter().filter(|address| !self.claims.is_claimed(*address)).collect();
-        if unclaimed.is_empty() {
+        let mut remaining = Vec::new();
+        let mut unclaimed = 0usize;
+        for address in stale {
+            let claims = self.claims.claims_for(address);
+            if claims.is_empty() {
+                unclaimed += 1;
+            } else {
+                remaining.extend(claims);
+            }
+        }
+        if unclaimed > 0 {
+            // Kept on purpose; see above.
+            tracing::debug!(
+                flow_id = self.flow_id,
+                addresses = unclaimed,
+                "route marks are no longer claimed by a cached answer; they stay until the next \
+                 rebuild rather than being dropped, which could widen direct access"
+            );
+        }
+        if remaining.is_empty() {
             return;
         }
-        tracing::debug!(
-            flow_id = self.flow_id,
-            addresses = unclaimed.len(),
-            "dropping route marks no cached answer claims any more"
-        );
-        if let Err(e) = self.sink.forget_dns_marks(self.flow_id, self.generation, unclaimed) {
+        if let Err(e) = self.sink.record_dns_answer(self.flow_id, self.generation, remaining) {
             tracing::error!(
                 flow_id = self.flow_id,
-                "could not drop the route marks of unclaimed addresses: {e}"
+                "could not re-arbitrate the addresses whose claims changed: {e}"
             );
         }
     }
@@ -613,7 +623,7 @@ mod claim_index_tests {
         assert!(index.take_stale().is_empty(), "nothing is stale while it is claimed");
 
         index.remove(&HashSet::from([claim.clone()]));
-        assert!(!index.is_claimed(claim.ip));
+        assert!(index.claims_for(claim.ip).is_empty());
         assert_eq!(
             index.take_stale(),
             HashSet::from([claim.ip]),
@@ -632,7 +642,30 @@ mod claim_index_tests {
         index.add(&holder);
 
         index.remove(&holder);
-        assert!(index.is_claimed(shared.ip));
+        assert!(!index.claims_for(shared.ip).is_empty());
         assert!(index.take_stale().is_empty(), "a surviving claim keeps the value valid");
+    }
+
+    /// The reverse case: the claim that *won* left, another one remains. The
+    /// address must be queued for re-arbitration — filtering on "has no claim at
+    /// all" would skip it and keep enforcing the departed claim's decision.
+    #[test]
+    fn an_address_whose_winning_claim_left_is_queued_even_while_another_remains() {
+        let index = ClaimIndex::default();
+        let blocker = claim(0x0200, 9); // won: Drop is the strictest class
+        let proxy = claim(0x0305, 9);
+        index.add(&HashSet::from([blocker.clone(), proxy.clone()]));
+        assert!(index.take_stale().is_empty());
+
+        index.remove(&HashSet::from([blocker]));
+        assert!(
+            index.take_stale().contains(&proxy.ip),
+            "the surviving claim must trigger a re-arbitration of this address"
+        );
+        assert_eq!(
+            index.claims_for(proxy.ip),
+            vec![proxy],
+            "and the remaining claim is what the datapath should be written from"
+        );
     }
 }
