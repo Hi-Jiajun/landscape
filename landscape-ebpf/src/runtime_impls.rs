@@ -13,6 +13,7 @@ use crate::maps;
 use crate::runtime::EbpfRuntime;
 use landscape_common::ebpf::DataplaneGuard;
 use landscape_common::flow::dataplane::FlowRuleDataplane;
+use landscape_common::flow::dataplane::UnclassifiedPolicy;
 use landscape_common::lan_service::lan_ipv6::dataplane::Ip6DaoFilterDataplane;
 use landscape_common::lan_service::lan_route::dataplane::LanRouteDataplane;
 use landscape_common::lan_service::mac_binding::MacBindingDataplane;
@@ -534,6 +535,16 @@ impl FlowRuleDataplane for EbpfFlowRuleDataplane {
         }
         if let Err(e) = maps::flow_dns::delete_flow_dns(&self.rt.paths, flow_id) {
             tracing::error!("failed to delete flow_dns outer slot for flow {flow_id}: {e:?}");
+        }
+    }
+
+    fn set_unclassified_policy(&self, policy: UnclassifiedPolicy) {
+        // `apply` invalidates the LAN verdict cache itself, which is not optional:
+        // every cached verdict is the outcome of the policy in force when it was
+        // written, so without it the previous decision keeps being served for each
+        // destination already resolved.
+        if let Err(e) = maps::route::apply_unclassified_policy(&self.rt.paths, policy) {
+            tracing::error!("failed to apply the unclassified-destination policy: {e}");
         }
     }
 

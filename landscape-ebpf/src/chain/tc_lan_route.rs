@@ -92,6 +92,14 @@ pub fn init_tc_lan_route(
         pin_and_reuse_map(&mut open_skel.maps.rt6_cache_map, &paths.rt6_cache_map),
         "tc_lan_route pin rt6_cache_map"
     )?;
+    // The unclassified-destination policy, read by both flow verdicts.
+    crate::bpf_ctx!(
+        pin_and_reuse_map(
+            &mut open_skel.maps.route_unclassified_cfg_map,
+            &paths.route_unclassified_cfg
+        ),
+        "tc_lan_route pin route_unclassified_cfg_map"
+    )?;
     crate::bpf_ctx!(
         pin_and_reuse_map(&mut open_skel.maps.ip_mac_v4, &paths.ip_mac_v4),
         "tc_lan_route pin ip_mac_v4"

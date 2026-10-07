@@ -581,6 +581,7 @@ async fn run_system(
     let proxy_service = landscape::proxy::LandscapeProxyService::new(
         home_path.clone(),
         ebpf_rt.clone().dns_guard(),
+        ebpf_rt.clone().flow_rules(),
     )
     .await;
 

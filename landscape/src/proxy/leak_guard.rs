@@ -34,6 +34,8 @@ pub struct LeakGuardInput<'a> {
     pub proxied_flows: Vec<u8>,
     /// What the DNS rules do with a destination nothing more specific matched.
     pub routing_default: RoutingDefault,
+    /// The datapath's policy for a destination nothing classified.
+    pub unclassified: landscape_common::flow::dataplane::UnclassifiedPolicy,
 }
 
 /// The rules a destination reaches when no earlier rule claims it.
@@ -171,6 +173,55 @@ pub fn evaluate(input: LeakGuardInput<'_>) -> LeakGuardReport {
 /// resolves to `Direct` rather than to any proxy. Both are read from the rules
 /// themselves, so the finding names the rule instead of describing a hypothesis.
 fn check_routing_default(report: &mut LeakGuardReport, input: &LeakGuardInput<'_>) {
+    // The policy that actually decides where an unclassified destination goes.
+    // This is the check that matters for it: a rule set can be perfect and the
+    // datapath still send an unclassified destination out directly, which is what
+    // happened until this policy existed.
+    use landscape_common::flow::dataplane::UnclassifiedPolicy;
+    match input.unclassified {
+        UnclassifiedPolicy::Passthrough => report.push(LeakFinding {
+            class: LeakClass::RealIp,
+            severity: LeakSeverity::Leak,
+            check: "unclassified_destination_is_direct".into(),
+            detail: "A destination that no DNS rule and no destination-IP rule classified keeps \
+                     the flow the packet already had, and with no device-to-flow assignment that \
+                     flow is 0 - a plain forward. It therefore leaves from the client's own \
+                     address, which is exactly what the routing contract forbids. Measured on \
+                     2026-10-07: a LAN client's real IPv6 address reached three independent \
+                     external reflectors, confirmed on the WAN."
+                .into(),
+            evidence: vec![
+                "datapath policy for an unclassified destination: passthrough".into(),
+                "flow 0 has no tier, so passthrough resolves to a direct forward".into(),
+                "the route cache holds these verdicts as mark 0x00000000 (KeepGoing, flow 0), \
+                 while a destination a rule sent direct is cached as 0x00000100 (Direct)"
+                    .to_string(),
+            ],
+        }),
+        UnclassifiedPolicy::Drop => report.push(LeakFinding {
+            class: LeakClass::RealIp,
+            severity: LeakSeverity::Ok,
+            check: "unclassified_destination_is_direct".into(),
+            detail: "A destination nothing classified is refused in the datapath, so it cannot \
+                     leave from the client's own address."
+                .into(),
+            evidence: vec!["datapath policy for an unclassified destination: drop".into()],
+        }),
+        UnclassifiedPolicy::ProxyTier { flow_id } => report.push(LeakFinding {
+            class: LeakClass::RealIp,
+            severity: LeakSeverity::Ok,
+            check: "unclassified_destination_is_direct".into(),
+            detail: format!(
+                "A destination nothing classified is sent to tier {flow_id}. If that tier has no \
+                 delivery target the packet is refused rather than forwarded, so the fallback \
+                 cannot silently become a direct path."
+            ),
+            evidence: vec![format!(
+                "datapath policy for an unclassified destination: tier {flow_id}"
+            )],
+        }),
+    }
+
     for rule in &input.routing_default.targetless_redirects {
         report.push(LeakFinding {
             class: LeakClass::RealIp,
@@ -830,6 +881,7 @@ async fn run_iptables(arguments: &[&str]) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use landscape_common::flow::dataplane::UnclassifiedPolicy;
     use landscape_common::flow::mark::FlowMark;
     use landscape_common::proxy::{TproxyFamilyStatus, TproxyTargetStatus};
 
@@ -866,6 +918,12 @@ mod tests {
             dns_guard: enabled_dns_guard(),
             proxied_flows: vec![14],
             routing_default: RoutingDefault::default(),
+            // The contract for this gateway: an unclassified destination goes to a
+            // managed tier rather than out directly. The fixture is the *compliant*
+            // configuration, so a test that wants to exercise the non-compliant one
+            // has to say so - which is how `passthrough_for_unclassified...` fails
+            // loudly if this default is ever relaxed.
+            unclassified: UnclassifiedPolicy::ProxyTier { flow_id: 14 },
         }
     }
 
@@ -1239,6 +1297,61 @@ mod tests {
         let finding = report.findings.iter().find(|f| f.check == "dns_terminal_rule_is_not_a_tier");
         let finding = finding.expect("the terminal rule must be reported");
         assert_eq!(finding.severity, LeakSeverity::Warn);
+    }
+
+    /// The check that matters for the observed leak: with the datapath's policy
+    /// left at passthrough, an unclassified destination leaves from the client's
+    /// own address, and the report must say so rather than calling `real_ip` fine.
+    #[test]
+    fn passthrough_for_unclassified_destinations_is_a_leak() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.unclassified = UnclassifiedPolicy::Passthrough;
+        let report = evaluate(input);
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.check == "unclassified_destination_is_direct")
+            .expect("passthrough must be reported");
+        assert_eq!(finding.severity, LeakSeverity::Leak);
+        assert_eq!(finding.class, LeakClass::RealIp);
+        assert!(
+            finding.evidence.iter().any(|e| e.contains("0x00000000")),
+            "the evidence must cite what the cache actually holds: {:?}",
+            finding.evidence
+        );
+    }
+
+    #[test]
+    fn a_fallback_tier_closes_the_unclassified_path() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.unclassified = UnclassifiedPolicy::ProxyTier { flow_id: 14 };
+        let report = evaluate(input);
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.check == "unclassified_destination_is_direct")
+            .unwrap();
+        assert_eq!(finding.severity, LeakSeverity::Ok);
+        assert_eq!(finding.class, LeakClass::RealIp);
+        // The tier number has to be in the finding, or the reader cannot tell which
+        // tier unclassified traffic actually goes to.
+        assert!(finding.detail.contains("14"), "{}", finding.detail);
+    }
+
+    #[test]
+    fn dropping_unclassified_destinations_closes_it_too() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.unclassified = UnclassifiedPolicy::Drop;
+        let report = evaluate(input);
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.check == "unclassified_destination_is_direct")
+            .unwrap();
+        assert_eq!(finding.severity, LeakSeverity::Ok);
     }
 
     #[test]

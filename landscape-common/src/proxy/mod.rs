@@ -118,6 +118,15 @@ pub struct ProxyPluginConfig {
     /// Block the DNS paths that bypass the managed resolver.
     #[serde(default)]
     pub dns_guard: DnsGuardConfig,
+
+    /// What the datapath does with a destination nothing classified.
+    ///
+    /// The routing contract is that an unclassified destination goes to a managed
+    /// tier or is refused, never silently direct. Defaults to `Passthrough`, which
+    /// is the historical behaviour: turning this on is a decision about where the
+    /// whole house's unclassified traffic goes.
+    #[serde(default)]
+    pub unclassified: crate::flow::dataplane::UnclassifiedPolicy,
 }
 
 /// How aggressively to block DNS paths that bypass the managed resolver.
@@ -579,6 +588,7 @@ impl Default for ProxyPluginConfig {
             external_ui: default_external_ui(),
             mode: default_mode(),
             log_level: default_log_level(),
+            unclassified: crate::flow::dataplane::UnclassifiedPolicy::default(),
             subscriptions: Vec::new(),
             groups: vec![
                 ProxyGroupConfig {

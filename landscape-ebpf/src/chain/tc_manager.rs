@@ -266,6 +266,15 @@ impl TcChainManager {
             pin_and_reuse_map(&mut open_skel.maps.xdp_redirect_able, &paths.xdp_redirect_able),
             "tc_wan_ingress_exit pin xdp_redirect_able"
         )?;
+        // Same reasoning as the ingress/egress intro loaders: this skeleton declares
+        // the policy map, so it needs the shared pin rather than a root one.
+        crate::bpf_ctx!(
+            pin_and_reuse_map(
+                &mut open_skel.maps.route_unclassified_cfg_map,
+                &paths.route_unclassified_cfg
+            ),
+            "tc_wan_ingress_exit pin route_unclassified_cfg_map"
+        )?;
         let skel = bpf_ctx!(open_skel.load(), "load tc_wan_ingress_exit skeleton")?;
         let exit_fd = skel.progs.tc_wan_ingress_exit_redirect.as_fd().as_raw_fd();
         skel.maps.tc_pipe_exits_wan_ingress.update(

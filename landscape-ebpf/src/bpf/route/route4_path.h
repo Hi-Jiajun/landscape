@@ -13,6 +13,7 @@
 #include "route4_lan.h"
 #include "route4_slot.h"
 #include "route_common.h"
+#include "route_unclassified.h"
 
 #include "../chain/redirect_able.h"
 #include "../flow_match.h"
@@ -385,7 +386,12 @@ keep_going:
     //     ld_bpf_log("get_flow_id value is : %u", get_flow_id(flow_mark_action));
     //     ld_bpf_log("dst ip: %pI4", context->daddr.in6_u.u6_addr32);
     // }
-    *init_flow_id_ = flow_mark_action;
+    // The unclassified-destination policy is applied to the verdict, so it covers
+    // the fresh decision; the caller caches whatever this returns, so a fallback
+    // tier is what gets cached rather than a bare flow 0.
+    u32 verdict = flow_mark_action;
+    if (route_unclassified_apply(&verdict)) return TC_ACT_SHOT;
+    *init_flow_id_ = verdict;
     return TC_ACT_OK;
 #undef BPF_LOG_TOPIC
 }

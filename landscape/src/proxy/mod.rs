@@ -130,6 +130,14 @@ pub struct LandscapeProxyService {
     tproxy: Arc<TproxyDelivery>,
     /// Blocks the DNS paths that bypass the managed resolver.
     dns_guard: Arc<dns_guard::DnsLeakGuard>,
+    /// Programs the datapath's policy for a destination nothing classified.
+    ///
+    /// The policy lives in this plugin's configuration because it is a statement
+    /// about where managed traffic goes, and the tiers it can fall back to are the
+    /// ones this plugin owns. It is programmed through the flow service's
+    /// dataplane, which is what also owns invalidating the verdict cache the
+    /// policy change invalidates.
+    flow_dataplane: Arc<dyn landscape_common::flow::dataplane::FlowRuleDataplane>,
     http_client: reqwest::Client,
 }
 
@@ -143,6 +151,7 @@ impl LandscapeProxyService {
     pub async fn new(
         home_path: PathBuf,
         dns_guard_dataplane: Arc<dyn landscape_common::proxy::dataplane::DnsGuardDataplane>,
+        flow_dataplane: Arc<dyn landscape_common::flow::dataplane::FlowRuleDataplane>,
     ) -> Self {
         let proxy_dir = home_path.join("proxy");
         let _ = fs::create_dir_all(&proxy_dir);
@@ -178,6 +187,7 @@ impl LandscapeProxyService {
                 initial_config.tproxy_missing_listener,
             )),
             dns_guard: dns_guard::DnsLeakGuard::new(dns_guard_dataplane),
+            flow_dataplane,
             http_client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
@@ -318,6 +328,16 @@ impl LandscapeProxyService {
         self.dns_guard.apply().await;
     }
 
+    /// Push the unclassified-destination policy into the datapath.
+    ///
+    /// Called wherever the configuration can change it. `set_unclassified_policy`
+    /// invalidates the LAN verdict cache, because every cached verdict is the
+    /// outcome of the policy that was in force when it was written.
+    pub async fn apply_unclassified_policy(&self) {
+        let policy = self.config.read().await.unclassified;
+        self.flow_dataplane.set_unclassified_policy(policy);
+    }
+
     /// Borrow the delivery fabric so the flow service can publish the
     /// `flow_id -> listener port` mapping it owns.
     pub fn tproxy_delivery(&self) -> Arc<TproxyDelivery> {
@@ -346,6 +366,9 @@ impl LandscapeProxyService {
         // The DNS guard follows the configuration the same way: applied when
         // saved, removed when turned off.
         self.apply_dns_guard().await;
+        // And so does the unclassified-destination policy, which is the other half
+        // of "managed traffic goes where the configuration says".
+        self.apply_unclassified_policy().await;
         Ok(())
     }
 
@@ -372,6 +395,7 @@ impl LandscapeProxyService {
             self.tproxy.teardown().await;
         }
         self.apply_dns_guard().await;
+        self.apply_unclassified_policy().await;
         Ok(())
     }
 
@@ -619,6 +643,10 @@ impl LandscapeProxyService {
         // a restart must not leave the encrypted-DNS path open because the guard
         // was only ever applied when the configuration was saved.
         self.apply_dns_guard().await;
+        // A restart must not leave the previous policy in the map either: the map
+        // outlives the process, so a policy changed while the engine was stopped
+        // would otherwise only take effect on the next save.
+        self.apply_unclassified_policy().await;
 
         Ok(())
     }

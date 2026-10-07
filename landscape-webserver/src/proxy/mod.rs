@@ -41,12 +41,21 @@ pub struct SetDnsGuardReq {
     pub plaintext_tcp: Option<bool>,
 }
 
+/// Set the policy for a destination nothing classified.
+#[derive(Debug, Clone, serde::Deserialize, utoipa::ToSchema)]
+pub struct SetUnclassifiedReq {
+    /// `{"mode":"passthrough"}`, `{"mode":"drop"}`, or
+    /// `{"mode":"proxy_tier","flow_id":14}`.
+    pub policy: landscape_common::flow::dataplane::UnclassifiedPolicy,
+}
+
 pub fn build_proxy_openapi_router() -> OpenApiRouter<LandscapeApp> {
     OpenApiRouter::new()
         .routes(routes!(get_proxy_status))
         .routes(routes!(get_tproxy_status))
         .routes(routes!(get_leak_report))
         .routes(routes!(get_dns_guard, set_dns_guard))
+        .routes(routes!(get_unclassified, set_unclassified))
         .routes(routes!(get_proxy_config, update_proxy_config))
         .routes(routes!(toggle_proxy))
         .routes(routes!(restart_proxy))
@@ -177,6 +186,7 @@ async fn get_leak_report(State(state): State<LandscapeApp>) -> LandscapeApiResul
         dns_guard: state.proxy_service.dns_guard_status().await,
         proxied_flows,
         routing_default,
+        unclassified: config.unclassified,
     });
     LandscapeApiResp::success(report)
 }
@@ -258,6 +268,49 @@ async fn set_dns_guard(
         .await
         .map_err(LandscapeApiError::Proxy)?;
     LandscapeApiResp::success(state.proxy_service.dns_guard_status().await)
+}
+
+#[utoipa::path(
+    get,
+    path = "/unclassified",
+    tag = "Proxy Plugin",
+    operation_id = "get_proxy_unclassified",
+    responses((
+        status = 200,
+        description = "The datapath policy for a destination nothing classified",
+        body = CommonApiResp<landscape_common::flow::dataplane::UnclassifiedPolicy>
+    ))
+)]
+async fn get_unclassified(
+    State(state): State<LandscapeApp>,
+) -> LandscapeApiResult<landscape_common::flow::dataplane::UnclassifiedPolicy> {
+    LandscapeApiResp::success(state.proxy_service.get_config().await.unclassified)
+}
+
+#[utoipa::path(
+    post,
+    path = "/unclassified",
+    tag = "Proxy Plugin",
+    operation_id = "set_proxy_unclassified",
+    request_body = SetUnclassifiedReq,
+    responses((
+        status = 200,
+        description = "The policy was written to the datapath and the LAN verdict cache was \
+                       invalidated, so it is in effect rather than merely recorded",
+        body = CommonApiResp<landscape_common::flow::dataplane::UnclassifiedPolicy>
+    ))
+)]
+async fn set_unclassified(
+    State(state): State<LandscapeApp>,
+    JsonBody(req): JsonBody<SetUnclassifiedReq>,
+) -> LandscapeApiResult<landscape_common::flow::dataplane::UnclassifiedPolicy> {
+    let policy = req.policy;
+    state
+        .proxy_service
+        .update_config(|config| config.unclassified = policy)
+        .await
+        .map_err(LandscapeApiError::Proxy)?;
+    LandscapeApiResp::success(policy)
 }
 
 #[utoipa::path(

@@ -6,17 +6,20 @@
 //! * `wan.rs` — per-flow WAN target-slot writes
 //! * `trace.rs` — flow match/verdict/cache queries
 //! * `cache.rs` — verdict cache inner-map lifecycle
+//! * `unclassified.rs` — the policy for a destination nothing classified
 
 pub mod cache;
 mod init;
 mod lan;
 mod trace;
 pub(crate) mod types;
+mod unclassified;
 mod wan;
 
 pub use init::*;
 pub use lan::*;
 pub use trace::*;
+pub use unclassified::*;
 pub use wan::*;
 
 #[cfg(test)]
