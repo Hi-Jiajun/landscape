@@ -36,6 +36,16 @@ pub struct LandscapeMapPath {
     // 防火墙黑名单
     pub firewall_ipv4_block: PathBuf,
     pub firewall_ipv6_block: PathBuf,
+    pub firewall_config: PathBuf,
+    pub firewall_allow_ports: PathBuf,
+    /// Connection table: the stateful half of the firewall. Shared, and created
+    /// up front so a layout change replaces the map instead of making the load
+    /// fail.
+    pub firewall_state4: PathBuf,
+    pub firewall_state6: PathBuf,
+    /// Token buckets for connection-creation and ping rate limiting.
+    pub firewall_ratelimit4: PathBuf,
+    pub firewall_ratelimit6: PathBuf,
 
     /// Flow
     pub flow_match_map: PathBuf,
@@ -92,6 +102,12 @@ impl LandscapeMapPath {
             // 防火墙黑名单
             firewall_ipv4_block: root.join(firewall::FIREWALL_BLOCK_IP4_MAP_PIN),
             firewall_ipv6_block: root.join(firewall::FIREWALL_BLOCK_IP6_MAP_PIN),
+            firewall_config: root.join(firewall::FIREWALL_CONFIG_PIN),
+            firewall_allow_ports: root.join(firewall::FIREWALL_ALLOW_PORTS_PIN),
+            firewall_state4: root.join(firewall::FIREWALL_STATE4_PIN),
+            firewall_state6: root.join(firewall::FIREWALL_STATE6_PIN),
+            firewall_ratelimit4: root.join(firewall::FIREWALL_RATELIMIT4_PIN),
+            firewall_ratelimit6: root.join(firewall::FIREWALL_RATELIMIT6_PIN),
 
             // Flow
             flow_match_map: root.join(flow::FLOW_MATCH_MAP_PIN),
