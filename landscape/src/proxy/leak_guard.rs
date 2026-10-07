@@ -38,6 +38,30 @@ pub struct LeakGuardInput<'a> {
     pub unclassified: landscape_common::flow::dataplane::UnclassifiedPolicy,
     /// What that policy has actually done, per family and reason.
     pub unclassified_stats: landscape_common::flow::dataplane::UnclassifiedStats,
+    /// How the hostnames the engine needs for its own startup actually resolve.
+    pub bootstrap: Vec<BootstrapResolution>,
+}
+
+/// Where one of the engine's own hostnames resolves.
+///
+/// The engine cannot start without an address for each of its nodes, and cannot
+/// fetch a subscription it has not fetched. So if one of those hostnames resolves
+/// *through* the engine, the dependency is circular and the tunnel never comes up
+/// - which presents as "the proxy is broken", not as "a domain is routed wrong".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootstrapResolution {
+    pub hostname: String,
+    /// What needs it: a node, a provider, a subscription.
+    pub source: String,
+    /// The rule that answered, as `(index, name)`.
+    pub rule: Option<(u32, String)>,
+    /// The action that rule's mark resolves to, when a rule matched.
+    pub action: Option<FlowMarkAction>,
+    /// The tier the action names, when it names one.
+    pub flow_id: Option<u8>,
+    /// Whether the resolver actually produced an address. A hostname that does
+    /// not resolve cannot be reached whether or not it is routed correctly.
+    pub resolved: bool,
 }
 
 /// The rules a destination reaches when no earlier rule claims it.
@@ -164,8 +188,129 @@ pub fn evaluate(input: LeakGuardInput<'_>) -> LeakGuardReport {
     check_ipv6(&mut report, &input);
     check_real_ip(&mut report, &input);
     check_routing_default(&mut report, &input);
+    check_bootstrap(&mut report, &input);
     report.matrix = matrix(&input);
     report
+}
+
+/// Whether the engine can resolve what it needs to start.
+///
+/// This is a static, explainable check with evidence - it reports and suggests, it
+/// does not change routing. The fix for a circular requirement is a rule change,
+/// and a rule change that widens direct access is exactly the kind the contract
+/// says a human confirms.
+fn check_bootstrap(report: &mut LeakGuardReport, input: &LeakGuardInput<'_>) {
+    use landscape_common::flow::dataplane::UnclassifiedPolicy;
+
+    let mut circular: Vec<String> = Vec::new();
+    let mut unresolvable: Vec<String> = Vec::new();
+
+    for entry in &input.bootstrap {
+        // A hostname with no matching rule reaches the terminal rule, which keeps
+        // the packet's own flow. With no device-to-flow assignment that is flow 0,
+        // and then the unclassified policy decides - so a proxy fallback there is
+        // circular for exactly the same reason a proxied rule is.
+        let proxied_by_action = entry.action == Some(FlowMarkAction::Redirect)
+            && entry.flow_id.is_some_and(|id| id != 0);
+        let proxied_by_policy = entry.action.is_none()
+            && matches!(input.unclassified, UnclassifiedPolicy::ProxyTier { .. });
+        let refused = entry.action == Some(FlowMarkAction::Drop);
+        let refused_by_policy =
+            entry.action.is_none() && matches!(input.unclassified, UnclassifiedPolicy::Drop);
+
+        if proxied_by_action || proxied_by_policy || refused || refused_by_policy {
+            let how = if proxied_by_action {
+                format!(
+                    "rule {} ({}) sends it to tier {}",
+                    entry.rule.as_ref().map(|(index, _)| *index).unwrap_or(0),
+                    entry.rule.as_ref().map(|(_, name)| name.as_str()).unwrap_or("?"),
+                    entry.flow_id.unwrap_or(0)
+                )
+            } else if proxied_by_policy {
+                "no rule claims it, so the unclassified policy sends it to a tier".to_string()
+            } else if refused {
+                "the rule that claims it drops it".to_string()
+            } else {
+                "no rule claims it, so the unclassified policy drops it".to_string()
+            };
+            circular.push(format!("{} ({}): {how}", entry.hostname, entry.source));
+        }
+
+        if !entry.resolved {
+            unresolvable.push(format!("{} ({})", entry.hostname, entry.source));
+        }
+    }
+
+    if !circular.is_empty() {
+        report.push(LeakFinding {
+            class: LeakClass::ProxyFailure,
+            severity: LeakSeverity::Leak,
+            check: "engine_bootstrap_is_circular".into(),
+            detail: "The proxy engine needs these hostnames before it can work, and they are \
+                     routed through the engine. That is circular: the tunnel cannot come up, and \
+                     the failure looks like a broken proxy rather than a routing mistake. Each \
+                     one needs a rule that resolves it without the engine - which widens direct \
+                     access for those domains, so it is a decision to confirm rather than an \
+                     automatic fix."
+                .into(),
+            evidence: circular,
+        });
+    } else if input.bootstrap.is_empty() {
+        // Saying nothing would be indistinguishable from "checked and fine", and
+        // this check is the one that is skipped when the engine's rendered config
+        // cannot be read.
+        report.push(LeakFinding {
+            class: LeakClass::ProxyFailure,
+            severity: LeakSeverity::Warn,
+            check: "engine_bootstrap_is_circular".into(),
+            detail: "The proxy engine's own hostnames could not be collected (its rendered \
+                     configuration was not readable), so this check did not run."
+                .into(),
+            evidence: vec!["no engine hostnames available to check".to_string()],
+        });
+    } else {
+        report.push(LeakFinding {
+            class: LeakClass::ProxyFailure,
+            severity: LeakSeverity::Ok,
+            check: "engine_bootstrap_is_circular".into(),
+            detail: format!(
+                "The {} hostname(s) the engine needs for its own startup resolve without it, so \
+                 a tunnel that is down can still be brought up.",
+                input.bootstrap.len()
+            ),
+            evidence: input
+                .bootstrap
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "{} ({}) -> {}",
+                        entry.hostname,
+                        entry.source,
+                        match &entry.rule {
+                            Some((index, name)) => format!(
+                                "rule {index} {name:?}, {:?}",
+                                entry.action.unwrap_or(FlowMarkAction::KeepGoing)
+                            ),
+                            None => "no rule (terminal default)".to_string(),
+                        }
+                    )
+                })
+                .collect(),
+        });
+    }
+
+    if !unresolvable.is_empty() {
+        report.push(LeakFinding {
+            class: LeakClass::ProxyFailure,
+            severity: LeakSeverity::Warn,
+            check: "engine_bootstrap_does_not_resolve".into(),
+            detail: "These hostnames the engine needs produced no address when asked. Routing may \
+                     be correct and the tunnel still fail to start, so this is reported separately \
+                     from a circular requirement."
+                .into(),
+            evidence: unresolvable,
+        });
+    }
 }
 
 /// Where a destination goes when no earlier rule claims it.
@@ -963,6 +1108,19 @@ mod tests {
             // loudly if this default is ever relaxed.
             unclassified: UnclassifiedPolicy::ProxyTier { flow_id: 14 },
             unclassified_stats: Default::default(),
+            // The engine's own hostnames resolve direct in the healthy case; a
+            // test that wants the circular shape builds its own entries.
+            bootstrap: vec![BootstrapResolution {
+                resolved: true,
+                ..BootstrapResolution {
+                    hostname: "node.example.com".into(),
+                    source: "node \"hk-1\"".into(),
+                    rule: Some((50, "nodes direct".to_string())),
+                    action: Some(FlowMarkAction::Direct),
+                    flow_id: Some(0),
+                    resolved: true,
+                }
+            }],
         }
     }
 
@@ -1451,6 +1609,105 @@ mod tests {
             .find(|f| f.check == "unclassified_destination_is_direct")
             .unwrap();
         assert_eq!(finding.severity, LeakSeverity::Ok);
+    }
+
+    fn bootstrap_entry(action: Option<FlowMarkAction>, flow_id: Option<u8>) -> BootstrapResolution {
+        BootstrapResolution {
+            hostname: "node.example.com".into(),
+            source: "node \"hk-1\"".into(),
+            rule: action.map(|_| (50, "节点与订阅直连解析".to_string())),
+            action,
+            flow_id,
+            resolved: true,
+        }
+    }
+
+    /// The dependency that breaks a tunnel: the engine cannot resolve its own node
+    /// because the resolution goes through the engine.
+    #[test]
+    fn a_node_domain_routed_through_the_engine_is_a_leak() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.bootstrap = vec![bootstrap_entry(Some(FlowMarkAction::Redirect), Some(14))];
+        let report = evaluate(input);
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.check == "engine_bootstrap_is_circular")
+            .expect("a circular requirement must be reported");
+        assert_eq!(finding.severity, LeakSeverity::Leak);
+        assert_eq!(finding.class, LeakClass::ProxyFailure);
+        assert!(finding.evidence[0].contains("tier 14"), "{:?}", finding.evidence);
+    }
+
+    /// A node domain the engine's own unclassified policy would proxy is circular
+    /// for the same reason, and is easy to create by accident: it is what happens
+    /// when no rule claims the node's hostname.
+    #[test]
+    fn a_node_domain_caught_by_a_proxy_fallback_policy_is_a_leak() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        // `base` already sets the policy to a proxy tier.
+        input.bootstrap = vec![BootstrapResolution {
+            rule: None,
+            action: None,
+            flow_id: None,
+            ..bootstrap_entry(None, None)
+        }];
+        let report = evaluate(input);
+        let finding =
+            report.findings.iter().find(|f| f.check == "engine_bootstrap_is_circular").unwrap();
+        assert_eq!(finding.severity, LeakSeverity::Leak);
+        assert!(finding.evidence[0].contains("unclassified policy"), "{:?}", finding.evidence);
+    }
+
+    /// The healthy shape: an early direct rule claims the node domain.
+    #[test]
+    fn a_node_domain_routed_direct_is_fine() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.bootstrap = vec![bootstrap_entry(Some(FlowMarkAction::Direct), Some(0))];
+        let report = evaluate(input);
+        let finding =
+            report.findings.iter().find(|f| f.check == "engine_bootstrap_is_circular").unwrap();
+        assert_eq!(finding.severity, LeakSeverity::Ok);
+        assert!(finding.evidence[0].contains("node.example.com"), "{:?}", finding.evidence);
+    }
+
+    /// An unreadable rendered config must not look like a pass.
+    #[test]
+    fn a_bootstrap_check_that_could_not_run_says_so() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.bootstrap = Vec::new();
+        let report = evaluate(input);
+        let finding =
+            report.findings.iter().find(|f| f.check == "engine_bootstrap_is_circular").unwrap();
+        assert_eq!(finding.severity, LeakSeverity::Warn);
+        assert!(finding.detail.contains("did not run"), "{}", finding.detail);
+    }
+
+    /// Routing can be right and the name still not resolve; that is a separate,
+    /// separately-worded finding.
+    #[test]
+    fn a_node_domain_that_does_not_resolve_is_reported_separately() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.bootstrap = vec![BootstrapResolution {
+            resolved: false,
+            ..bootstrap_entry(Some(FlowMarkAction::Direct), Some(0))
+        }];
+        let report = evaluate(input);
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.check == "engine_bootstrap_does_not_resolve")
+            .expect("an unresolvable requirement must be reported");
+        assert_eq!(finding.severity, LeakSeverity::Warn);
+        // ... and the origin is not claimed as a leak in that case.
+        let circular =
+            report.findings.iter().find(|f| f.check == "engine_bootstrap_is_circular").unwrap();
+        assert_eq!(circular.severity, LeakSeverity::Ok);
     }
 
     #[test]

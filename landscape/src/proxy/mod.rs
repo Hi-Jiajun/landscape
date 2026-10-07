@@ -11,6 +11,7 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 use uuid::Uuid;
 
+pub mod bootstrap;
 pub mod dns_guard;
 pub mod leak_guard;
 pub mod tproxy;
@@ -347,6 +348,35 @@ impl LandscapeProxyService {
         &self,
     ) -> Result<landscape_common::flow::dataplane::UnclassifiedStats, String> {
         self.flow_dataplane.unclassified_stats()
+    }
+
+    /// The hostnames the engine must be able to resolve before it can start.
+    ///
+    /// Read from the engine's **rendered** configuration, not from the plugin's
+    /// inputs: it is the rendered file the engine reads, so it is what decides
+    /// whether the engine starts. Returns an empty list when the rendered config
+    /// is not readable, and the caller reports that the check did not run rather
+    /// than treating it as a pass.
+    pub async fn engine_hostnames(&self) -> Vec<bootstrap::EngineHostname> {
+        let rendered = match fs::read_to_string(self.generated_config_path()) {
+            Ok(text) => serde_json::from_str::<serde_json::Value>(&text).ok(),
+            Err(e) => {
+                tracing::warn!(
+                    path = %self.generated_config_path().display(),
+                    "cannot read the engine's rendered config for the bootstrap check: {e}"
+                );
+                None
+            }
+        };
+        let subscriptions: Vec<(String, String)> = self
+            .config
+            .read()
+            .await
+            .subscriptions
+            .iter()
+            .map(|subscription| (subscription.name.clone(), subscription.url.clone()))
+            .collect();
+        bootstrap::engine_hostnames(rendered.as_ref(), &subscriptions)
     }
 
     /// Borrow the delivery fabric so the flow service can publish the

@@ -107,8 +107,8 @@ async fn get_tproxy_status(
 )]
 async fn get_leak_report(State(state): State<LandscapeApp>) -> LandscapeApiResult<LeakGuardReport> {
     use landscape::proxy::leak_guard::{
-        LeakGuardInput, RoutingDefault, RoutingRule, dns_hijack_rules, evaluate,
-        wan_has_global_ipv6,
+        BootstrapResolution, LeakGuardInput, RoutingDefault, RoutingRule, dns_hijack_rules,
+        evaluate, wan_has_global_ipv6,
     };
     use landscape_common::flow::config::FlowTarget;
     use landscape_common::service::controller::ConfigStoreController;
@@ -177,6 +177,51 @@ async fn get_leak_report(State(state): State<LandscapeApp>) -> LandscapeApiResul
         }
     };
 
+    // Whether the engine can resolve what it needs to start. Each hostname is put
+    // through the same classification the resolver uses (`/dns/service/check`), and
+    // the rule that answers it is looked up to read its mark - so the verdict comes
+    // from the engine's own decision path rather than from a reimplementation of it.
+    // The resolver reports which rule answered; the rule's own list supplies what
+    // a reader needs to act on that (its index and name) and the mark that decides
+    // where the answer's traffic goes.
+    let rules_by_id: std::collections::HashMap<
+        uuid::Uuid,
+        (u32, String, landscape_common::flow::mark::FlowMark),
+    > = state
+        .dns_rule_service
+        .list()
+        .await
+        .map(|rules| {
+            rules
+                .into_iter()
+                .map(|rule| (rule.id, (rule.index, rule.name.clone(), rule.mark)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut bootstrap = Vec::new();
+    for requirement in state.proxy_service.engine_hostnames().await {
+        let checked = state
+            .dns_service
+            .check_domain(landscape_common::dns::check::CheckDnsReq {
+                flow_id: 0,
+                domain: requirement.hostname.clone(),
+                record_type: landscape_common::dns::rule::LandscapeDnsRecordType::A,
+                apply_filter: false,
+            })
+            .await;
+        let matched = checked.rule_id.and_then(|id| rules_by_id.get(&id));
+        bootstrap.push(BootstrapResolution {
+            // Either list counts: a cached answer is an answer.
+            resolved: checked.records.as_ref().is_some_and(|list| !list.is_empty())
+                || checked.cache_records.as_ref().is_some_and(|list| !list.is_empty()),
+            hostname: requirement.hostname,
+            source: requirement.source,
+            rule: matched.map(|(index, name, _)| (*index, name.clone())),
+            action: matched.map(|(_, _, mark)| mark.action()),
+            flow_id: matched.map(|(_, _, mark)| mark.flow_id()),
+        });
+    }
+
     let report = evaluate(LeakGuardInput {
         tproxy: &tproxy,
         engine_running,
@@ -194,6 +239,7 @@ async fn get_leak_report(State(state): State<LandscapeApp>) -> LandscapeApiResul
             tracing::warn!("cannot read the unclassified-destination counters: {e}");
             Default::default()
         }),
+        bootstrap,
     });
     LandscapeApiResp::success(report)
 }
