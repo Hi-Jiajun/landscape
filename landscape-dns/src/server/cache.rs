@@ -238,7 +238,7 @@ impl CacheHandle {
         if let Err(e) = self.sink.record_dns_answer(
             self.flow_id,
             self.generation,
-            update_dns_mark_list.into_iter().collect(),
+            update_dns_mark_list.iter().cloned().collect(),
         ) {
             // An answer from a superseded generation cannot be judged by its own
             // mark: the rules that produced it are gone, so the domain may have
@@ -270,7 +270,24 @@ impl CacheHandle {
             return Ok(());
         }
 
-        self.cache.insert((domain_key, query_type), Arc::new(cache_item)).await;
+        self.cache.insert((domain_key.clone(), query_type), Arc::new(cache_item)).await;
+
+        // The answer is now part of the cache a rebuild derives its table from,
+        // but it was not when the last rebuild collected. Fill in any address the
+        // table lost in that gap, so an answer the client is being handed always
+        // has its marks in place. Existing entries are left alone: a rebuild may
+        // have blocked this address on purpose.
+        if let Err(e) = self.sink.ensure_dns_marks(
+            self.flow_id,
+            self.generation,
+            update_dns_mark_list.into_iter().collect(),
+        ) {
+            tracing::error!(
+                flow_id = self.flow_id,
+                domain = %domain_key,
+                "could not confirm the route marks after caching the answer: {e}"
+            );
+        }
         Ok(())
     }
 

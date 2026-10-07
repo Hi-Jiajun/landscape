@@ -63,6 +63,25 @@ pub enum FlowDnsWriteError {
          but generation {published_generation} is already in effect"
     )]
     Superseded { flow_id: u32, answer_generation: u64, published_generation: u64 },
+
+    /// A rebuild failed and the family it had already published could not be put
+    /// back, so the two families now describe different rule generations.
+    ///
+    /// Distinct from a plain failure because the caller must not treat the old
+    /// rules as still describing the datapath: one family is already on the rules
+    /// the caller is about to keep using, which is not a state a retry alone
+    /// repairs.
+    #[error(
+        "flow {flow_id}: rebuilding the DNS tables failed ({first}) and the already published \
+         family could not be restored ({restore}); the families now describe different rule \
+         generations"
+    )]
+    PartiallyPublished {
+        flow_id: u32,
+        #[source]
+        first: Box<FlowDnsWriteError>,
+        restore: String,
+    },
 }
 
 /// Priority of the per-flow destination-IP rule that covers `addr`, if any.
@@ -709,6 +728,7 @@ pub fn refreash_flow_dns_inner_map(
 
     publish_inner_map(&outer4, flow_id, &built4, FAMILY_V4)?;
     if let Err(e) = publish_inner_map(&outer6, flow_id, &built6, FAMILY_V6) {
+        let mut restore_failure: Option<String> = None;
         // Put IPv4 back so both families keep the rules the runtime still holds.
         match previous4 {
             Some(previous) => {
@@ -718,6 +738,7 @@ pub fn refreash_flow_dns_inner_map(
                         "could not restore the previous IPv4 table after a failed rebuild; the \
                          two families now hold different rule generations: {restore:?}"
                     );
+                    restore_failure = Some(restore.to_string());
                 }
             }
             // There was no table before, so remove the one just published.
@@ -727,10 +748,19 @@ pub fn refreash_flow_dns_inner_map(
                         flow_id,
                         "could not remove the IPv4 table published by a failed rebuild: {remove:?}"
                     );
+                    restore_failure = Some(remove.to_string());
                 }
             }
         }
-        return Err(e);
+        return Err(match restore_failure {
+            // Reported apart from the original error: the caller has to know that
+            // the datapath is now inconsistent, not merely that the rebuild
+            // failed and the previous state is intact.
+            Some(restore) => {
+                FlowDnsWriteError::PartiallyPublished { flow_id, first: Box::new(e), restore }
+            }
+            None => e,
+        });
     }
 
     // The rebuild is authoritative, but only once it actually worked: publishing
@@ -1184,6 +1214,126 @@ pub fn update_flow_dns_rule(
     match first_error {
         Some(e) => Err(e),
         None => Ok(()),
+    }
+}
+
+/// Install marks only for addresses that have no entry in the flow's tables.
+///
+/// The DNS side cannot make "install these marks" and "cache this answer" one
+/// step: the install takes the datapath write while the cache commit is an
+/// `await`. A rebuild that collects the cache in that gap publishes a table
+/// derived from an answer it could not see, deleting that answer's marks while
+/// the client is already being handed the address. Calling this once the answer
+/// is cached fills exactly those holes.
+///
+/// Existing entries are never replaced. A rebuild resolves a shared address over
+/// the whole cache and may have decided to block it; one answer's marks must not
+/// weaken that decision.
+pub fn ensure_flow_dns_marks(
+    paths: &LandscapeMapPath,
+    flow_id: u32,
+    generation: u64,
+    data: Vec<FlowMarkInfo>,
+) -> Result<(), FlowDnsWriteError> {
+    let _guard = lock_flow_dns_writes();
+    admit_generation(flow_id, generation)?;
+
+    if data.is_empty() {
+        return Ok(());
+    }
+
+    let mut missing = Vec::new();
+    for candidate in data.iter().filter(|mark| mark.ip.is_ipv4()) {
+        if !stored_mark_v4(paths, flow_id, &candidate.ip)? {
+            missing.push(candidate.clone());
+        }
+    }
+    for candidate in data.iter().filter(|mark| mark.ip.is_ipv6()) {
+        if !stored_mark_v6(paths, flow_id, &candidate.ip)? {
+            missing.push(candidate.clone());
+        }
+    }
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+    tracing::warn!(
+        flow_id,
+        missing = missing.len(),
+        "re-installing route marks for addresses a rebuild had dropped"
+    );
+    update_flow_dns_rule(paths, flow_id, generation, missing)
+}
+
+/// Whether the flow's IPv4 table already has an entry for `addr`.
+fn stored_mark_v4(
+    paths: &LandscapeMapPath,
+    flow_id: u32,
+    addr: &IpAddr,
+) -> Result<bool, FlowDnsWriteError> {
+    let IpAddr::V4(v4) = addr else {
+        return Ok(true);
+    };
+    let outer = libbpf_rs::MapHandle::from_pinned_path(&paths.flow4_dns_map)
+        .map_err(|source| FlowDnsWriteError::OuterMap { family: FAMILY_V4, source })?;
+    let Some(inner) = open_inner_map(&outer, flow_id, FAMILY_V4)? else {
+        return Ok(false);
+    };
+    let key = FlowDnsMatchKeyV4 { addr: v4.to_bits().to_be() };
+    match inner.lookup(key.as_bytes(), MapFlags::ANY) {
+        Ok(Some(bytes)) => {
+            // An unreadable entry still occupies the slot, and this path must not
+            // replace it.
+            let _ = FlowDnsMatchValueV4::read_from_bytes(&bytes).map_err(|e| {
+                FlowDnsWriteError::InnerMap {
+                    family: FAMILY_V4,
+                    flow_id,
+                    reason: format!("unreadable entry for {addr}: {e:?}"),
+                }
+            })?;
+            Ok(true)
+        }
+        Ok(None) => Ok(false),
+        Err(e) => Err(FlowDnsWriteError::InnerMap {
+            family: FAMILY_V4,
+            flow_id,
+            reason: format!("cannot read the entry for {addr}: {e:?}"),
+        }),
+    }
+}
+
+/// Whether the flow's IPv6 table already has an entry for `addr`.
+fn stored_mark_v6(
+    paths: &LandscapeMapPath,
+    flow_id: u32,
+    addr: &IpAddr,
+) -> Result<bool, FlowDnsWriteError> {
+    let IpAddr::V6(v6) = addr else {
+        return Ok(true);
+    };
+    let outer = libbpf_rs::MapHandle::from_pinned_path(&paths.flow6_dns_map)
+        .map_err(|source| FlowDnsWriteError::OuterMap { family: FAMILY_V6, source })?;
+    let Some(inner) = open_inner_map(&outer, flow_id, FAMILY_V6)? else {
+        return Ok(false);
+    };
+    let key = FlowDnsMatchKeyV6 { addr: v6.to_bits().to_be_bytes() };
+    match inner.lookup(key.as_bytes(), MapFlags::ANY) {
+        Ok(Some(bytes)) => {
+            let _ = FlowDnsMatchValueV6::read_from_bytes(&bytes).map_err(|e| {
+                FlowDnsWriteError::InnerMap {
+                    family: FAMILY_V6,
+                    flow_id,
+                    reason: format!("unreadable entry for {addr}: {e:?}"),
+                }
+            })?;
+            Ok(true)
+        }
+        Ok(None) => Ok(false),
+        Err(e) => Err(FlowDnsWriteError::InnerMap {
+            family: FAMILY_V6,
+            flow_id,
+            reason: format!("cannot read the entry for {addr}: {e:?}"),
+        }),
     }
 }
 
