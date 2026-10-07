@@ -732,9 +732,26 @@ impl CertService {
                 config.status_message = Some("cancelled by user".to_string());
             }
             Err(e) => {
-                config.status = CertStatus::Invalid;
-                config.status_message = Some(e.to_string());
-                tracing::error!("Certificate issuance failed for cert {id}: {e}");
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as f64;
+                let still_valid = config.certificate.is_some()
+                    && config.expires_at.map(|exp| exp > now).unwrap_or(false);
+
+                if still_valid {
+                    // Keep existing certificate valid so HTTPS continues working,
+                    // but record error message and let future checks retry.
+                    config.status = CertStatus::Valid;
+                    config.status_message = Some(format!("Auto-renewal failed: {e}"));
+                    tracing::warn!(
+                        "Auto-renewal failed for cert {id}, existing cert remains valid: {e}"
+                    );
+                } else {
+                    config.status = CertStatus::Invalid;
+                    config.status_message = Some(e.to_string());
+                    tracing::error!("Certificate issuance failed for cert {id}: {e}");
+                }
             }
         }
 

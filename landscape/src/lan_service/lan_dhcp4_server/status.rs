@@ -37,7 +37,7 @@ pub struct PerMacDhcpOptions {
 pub enum IpAllocSource {
     Static(MacAddr),
     Dynamic,
-    Declined,
+    Declined(Instant),
 }
 
 #[derive(Debug, Clone)]
@@ -79,12 +79,17 @@ impl DhcpV4AssignStatus {
         config: &DHCPv4ServerConfig,
         enrolled_devices: Vec<EnrolledDevice>,
     ) -> Self {
-        let ip_range_start = Ipv4Inet::new(config.ip_range_start, config.network_mask).unwrap();
+        let ip_range_start = Ipv4Inet::new(config.ip_range_start, config.network_mask)
+            .unwrap_or_else(|_| {
+                Ipv4Inet::new(config.ip_range_start, 24)
+                    .unwrap_or_else(|_| Ipv4Inet::new_host(config.ip_range_start))
+            });
         let ip_addr_end = match config.ip_range_end {
             Some(addr) if addr != Ipv4Addr::UNSPECIFIED => addr,
             _ => ip_range_start.last_address(),
         };
-        let range_capacity = u32::from(ip_addr_end) - u32::from(config.ip_range_start);
+        let range_capacity =
+            u32::from(ip_addr_end).saturating_sub(u32::from(config.ip_range_start));
 
         let mut status = DhcpV4AssignStatus {
             ip_range_start,
@@ -268,13 +273,20 @@ impl DhcpV4AssignStatus {
             return Some(*ip);
         }
 
+        if self.range_capacity == 0 {
+            return None;
+        }
+
         let mut seed = mac_addr.u32_ckecksum();
+        let mut loop_count = 0u32;
         loop {
-            if self.allocated_host.len() as u32 == self.range_capacity
+            if (self.allocated_host.len() as u32 >= self.range_capacity
+                || loop_count >= self.range_capacity)
                 && self.clean_expire_ip().is_empty()
             {
                 break;
             }
+            loop_count += 1;
             let index = seed % self.range_capacity;
             let (client_addr, _overflow) = self.ip_range_start.overflowing_add_u32(index);
             let address = client_addr.address();
@@ -370,7 +382,11 @@ impl DhcpV4AssignStatus {
             }
         });
 
-        self.allocated_host.retain(|_key, source| !matches!(source, IpAllocSource::Declined));
+        const DECLINE_HOLD_DOWN_SECS: u64 = 600;
+        self.allocated_host.retain(|_key, source| match source {
+            IpAllocSource::Declined(since) => since.elapsed().as_secs() < DECLINE_HOLD_DOWN_SECS,
+            _ => true,
+        });
 
         for (_, ip, _) in &expired {
             self.allocated_host.remove(ip);
@@ -420,14 +436,30 @@ impl DhcpV4AssignStatus {
         false
     }
 
+    /// Record a DHCPDECLINE for `ip`.
+    ///
+    /// An address that still belongs to a static binding or a live dynamic
+    /// lease must keep that ownership: overwriting it with `Declined` would let
+    /// a client free (and later have re-assigned) an address that is in use,
+    /// producing duplicate assignments.
     pub fn add_decline_ip(&mut self, ip: Ipv4Addr) {
-        self.allocated_host.entry(ip).or_insert(IpAllocSource::Declined);
+        let still_owned = matches!(
+            self.allocated_host.get(&ip),
+            Some(IpAllocSource::Static(_)) | Some(IpAllocSource::Dynamic)
+        );
+        if still_owned {
+            tracing::warn!(
+                "ignoring DHCPDECLINE for {ip}: the address is still owned by a static binding or an active lease"
+            );
+            return;
+        }
+        self.allocated_host.insert(ip, IpAllocSource::Declined(Instant::now()));
     }
 
     pub fn is_ip_in_range(&self, ip: Ipv4Addr) -> bool {
         let ip_u32 = u32::from(ip);
         let start = u32::from(self.ip_range_start.address());
-        let end = start + self.range_capacity;
+        let end = start.saturating_add(self.range_capacity);
         ip_u32 >= start && ip_u32 < end
     }
 
