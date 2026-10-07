@@ -111,21 +111,19 @@ impl MatcherBuilder {
                 continue;
             };
             if upstream.is_placeholder() {
-                // Never resolve through the seed placeholder: doing so would send
-                // this rule's queries to whatever address it happens to carry,
-                // which nobody chose. Fail loudly and leave the rule without a
-                // resolver so the operator sees it in the logs and in the DNS
-                // status instead of getting an implicit public upstream.
+                // The rule keeps its place in the order and keeps matching: the
+                // runtime refuses its queries with a reason. Removing it here
+                // would let the same domains be answered by a *different* rule's
+                // upstream, which is a silent fallback rather than a refusal.
                 tracing::error!(
                     rule_id = %rule.id,
                     rule = %rule.name,
                     index = rule.index,
                     "DNS rule has no real upstream (it still points at the unconfigured \
-                     placeholder); this rule will not resolve anything until an upstream is \
-                     chosen for it"
+                     placeholder); it keeps matching its domains and refuses them until an \
+                     upstream is chosen"
                 );
                 dependencies.placeholder_rules.push(rule.name.clone());
-                continue;
             }
             let Some(matcher) = self.build_rule_matcher(rule.source, true, &mut dependencies).await
             else {
@@ -394,8 +392,39 @@ mod tests {
             .build_flow(0, vec![seed_rule.clone()], vec![], vec![], vec![seed_upstream])
             .await;
 
-        assert_eq!(resolve_engine.iter().count(), 0, "the placeholder rule resolves nothing");
+        // The rule is still built, so it keeps its place in the order and its
+        // domains cannot be answered by a different rule's upstream.
+        assert_eq!(
+            resolve_engine.iter().count(),
+            1,
+            "the placeholder rule keeps matching; it refuses at lookup time"
+        );
         assert_eq!(dependencies.placeholder_rules, vec![seed_rule.name.clone()]);
+
+        // And a lookup through it fails with the reason, rather than resolving.
+        let (_, runtime) = resolve_engine.iter().next().expect("the rule was built");
+        let err = runtime
+            .lookup("any.example", RecordType::A)
+            .await
+            .expect_err("an unconfigured upstream must not resolve");
+        assert!(
+            matches!(err, landscape_common::dns::error::DnsServiceError::UpstreamNotConfigured(_)),
+            "expected UpstreamNotConfigured, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_placeholder_rule_still_matches_its_domains() {
+        // Matching is what keeps the refusal attributable to this rule instead of
+        // letting the query reach a later one.
+        let (seed_rule, seed_upstream) = landscape_common::dns::gen_default_dns_rule_and_upstream();
+        let (builder, _) = builder();
+        let (_, resolve_engine, _) =
+            builder.build_flow(0, vec![seed_rule], vec![], vec![], vec![seed_upstream]).await;
+
+        let (_, runtime) = resolve_engine.iter().next().expect("the rule was built");
+        // The seed rule matches everything (empty source = match all).
+        assert!(runtime.is_match(&pd("some-other.example")));
     }
 
     #[tokio::test]

@@ -7,7 +7,7 @@ use hickory_proto::rr::{
 };
 use uuid::Uuid;
 
-use landscape_common::dns::error::DnsResult;
+use landscape_common::dns::error::{DnsResult, DnsServiceError};
 use landscape_common::dns::redirect::DnsRedirectAnswerMode;
 use landscape_common::flow::mark::FlowMark;
 use landscape_common::{
@@ -133,7 +133,12 @@ pub struct DNSResolveRuntime {
     filter: FilterResult,
     flow_id: u32,
     mark: DnsRuntimeMarkInfo,
-    resolver: Arc<LandscapeMarkDNSResolver>,
+    /// `None` when the upstream is unconfigured. The rule still matches its
+    /// domains — it keeps its place in the order instead of letting the query
+    /// fall through to a different resolver — but every lookup through it fails
+    /// with a reason, so an unfinished configuration is loud rather than silently
+    /// answered by someone else's upstream.
+    resolver: Option<Arc<LandscapeMarkDNSResolver>>,
 
     enable_ip_validation: bool,
 }
@@ -155,9 +160,14 @@ impl DNSResolveRuntime {
 
         let enable_ip_validation = upstream.enable_ip_validation.unwrap_or(false);
         let dns_mark = mark_config.get_dns_mark(flow_id);
-        let Some(resolver) = pool.get_or_create(flow_id, dns_mark, &upstream) else {
-            tracing::warn!(rule_id = %rule_id, flow_id = flow_id, "skip DNS rule: failed to build resolver");
-            return None;
+        let resolver = if upstream.is_placeholder() {
+            None
+        } else {
+            let Some(resolver) = pool.get_or_create(flow_id, dns_mark, &upstream) else {
+                tracing::warn!(rule_id = %rule_id, flow_id = flow_id, "skip DNS rule: failed to build resolver");
+                return None;
+            };
+            Some(resolver)
         };
 
         let mark = DnsRuntimeMarkInfo { mark: mark_config, priority: order as u16 };
@@ -179,7 +189,7 @@ impl DNSResolveRuntime {
 
     #[cfg(test)]
     pub fn shared_resolver(&self) -> &Arc<LandscapeMarkDNSResolver> {
-        &self.resolver
+        self.resolver.as_ref().expect("this rule has a configured upstream")
     }
 
     pub fn filter_mode(&self) -> FilterResult {
@@ -200,7 +210,19 @@ impl DNSResolveRuntime {
     }
 
     pub async fn lookup(&self, domain: &str, query_type: RecordType) -> DnsResult<Vec<Record>> {
-        match self.resolver.lookup(domain, query_type).await {
+        let Some(resolver) = self.resolver.as_ref() else {
+            // Refuse rather than let the query be answered by another rule: this
+            // rule owns these domains and its upstream has not been chosen yet.
+            tracing::error!(
+                flow_id = self.flow_id,
+                rule_id = %self.rule_id,
+                domain = %domain,
+                "DNS rule has no configured upstream; refusing the query instead of resolving it \
+                 through some other resolver"
+            );
+            return Err(DnsServiceError::UpstreamNotConfigured(domain.to_string()));
+        };
+        match resolver.lookup(domain, query_type).await {
             Ok(lookup) => {
                 let result = if self.enable_ip_validation {
                     lookup
@@ -219,7 +241,6 @@ impl DNSResolveRuntime {
                 Ok(result)
             }
             Err(e) => {
-                use landscape_common::dns::error::DnsServiceError;
                 match &e {
                     hickory_resolver::net::NetError::Dns(
                         hickory_resolver::net::DnsError::NoRecordsFound(no_records),

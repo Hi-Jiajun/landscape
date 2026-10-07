@@ -35,6 +35,16 @@ pub enum DnsServiceError {
     #[api_error(id = "dns_service.timeout", status = 504)]
     Timeout,
 
+    /// The rule matched, but the upstream it points at has no address to query.
+    ///
+    /// Distinct from a timeout or an upstream error because nothing was ever
+    /// asked: the rule is unconfigured. Reporting it this way keeps the failure
+    /// loud and attributable instead of letting the query silently fall through
+    /// to whatever resolver the next rule happens to use.
+    #[error("DNS upstream for '{0}' is not configured (no address to query)")]
+    #[api_error(id = "dns_service.upstream_not_configured", status = 502)]
+    UpstreamNotConfigured(String),
+
     #[error("Internal error: {0}")]
     #[api_error(id = "dns_service.internal", status = 500)]
     Internal(String),
