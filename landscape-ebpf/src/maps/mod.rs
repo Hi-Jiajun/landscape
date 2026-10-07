@@ -548,6 +548,18 @@ pub(crate) fn init_path(paths: &LandscapeMapPath) {
         .expect("init firewall_block_ip6_map failed");
     firewall::init_firewall_conn_metric_events(&paths.firewall_conn_metric_events)
         .expect("init firewall_conn_metric_events failed");
+    firewall::init_firewall_config_map(&paths.firewall_config)
+        .expect("init firewall_config_map failed");
+    firewall::init_firewall_allow_ports_map(&paths.firewall_allow_ports)
+        .expect("init firewall_allow_ports_map failed");
+    firewall::init_firewall_state4_map(&paths.firewall_state4)
+        .expect("init firewall_state4_map failed");
+    firewall::init_firewall_state6_map(&paths.firewall_state6)
+        .expect("init firewall_state6_map failed");
+    firewall::init_firewall_ratelimit4_map(&paths.firewall_ratelimit4)
+        .expect("init firewall_ratelimit4_map failed");
+    firewall::init_firewall_ratelimit6_map(&paths.firewall_ratelimit6)
+        .expect("init firewall_ratelimit6_map failed");
 
     // flow match / dns socket map
     flow::init_flow_match_map(&paths.flow_match_map).expect("init flow_match_map failed");
@@ -600,6 +612,26 @@ pub(crate) fn init_maps_for_test(paths: &LandscapeMapPath) {
         .expect("test init firewall_block_ip6_map");
     firewall::init_firewall_conn_metric_events(&paths.firewall_conn_metric_events)
         .expect("test init firewall_conn_metric_events");
+    firewall::init_firewall_config_map(&paths.firewall_config)
+        .expect("test init firewall_config_map");
+    firewall::init_firewall_allow_ports_map(&paths.firewall_allow_ports)
+        .expect("test init firewall_allow_ports_map");
+    firewall::init_firewall_state4_map(&paths.firewall_state4)
+        .expect("test init firewall_state4_map");
+    firewall::init_firewall_state6_map(&paths.firewall_state6)
+        .expect("test init firewall_state6_map");
+    firewall::init_firewall_ratelimit4_map(&paths.firewall_ratelimit4)
+        .expect("test init firewall_ratelimit4_map");
+    firewall::init_firewall_ratelimit6_map(&paths.firewall_ratelimit6)
+        .expect("test init firewall_ratelimit6_map");
+    dns_guard::init_dns_guard_config_map(&paths.dns_guard_config)
+        .expect("test init dns_guard_config_map");
+    dns_guard::init_dns_guard_doh4_map(&paths.dns_guard_doh4).expect("test init dns_guard_doh4");
+    dns_guard::init_dns_guard_doh6_map(&paths.dns_guard_doh6).expect("test init dns_guard_doh6");
+    dns_guard::init_dns_guard_exempt_map(&paths.dns_guard_exempt)
+        .expect("test init dns_guard_exempt_map");
+    dns_guard::init_dns_guard_stats_map(&paths.dns_guard_stats)
+        .expect("test init dns_guard_stats_map");
     flow::init_flow_match_map(&paths.flow_match_map).expect("test init flow_match_map");
     dns::init_dns_flow_socks(&paths.dns_flow_socks).expect("test init dns_flow_socks");
 
@@ -1082,6 +1114,8 @@ mod tests {
                 nat::NAT6_STATIC_MAP_PIN,
                 firewall::FIREWALL_BLOCK_IP4_MAP_PIN,
                 firewall::FIREWALL_BLOCK_IP6_MAP_PIN,
+                firewall::FIREWALL_CONFIG_PIN,
+                firewall::FIREWALL_ALLOW_PORTS_PIN,
                 flow::FLOW_MATCH_MAP_PIN,
                 dns::DNS_FLOW_SOCKS_PIN,
                 nat::NAT_METRIC_EVENTS_PIN,

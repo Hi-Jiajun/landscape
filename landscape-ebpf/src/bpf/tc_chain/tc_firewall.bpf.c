@@ -9,6 +9,7 @@
 #include "firewall/firewall_share.h"
 #include "scanner/skb_scanner4.h"
 #include "scanner/skb_scanner6.h"
+#include "scanner/skb_read.h"
 #include "fragment/frag4.h"
 #include "fragment/frag6.h"
 
@@ -16,163 +17,586 @@ char LICENSE[] SEC("license") = "GPL";
 
 const volatile u32 current_l3_offset = 14;
 
-static __always_inline int fw_do_egress(struct __sk_buff *skb) {
-#define BPF_LOG_TOPIC "<<< fw_do_egress <<<"
-
-    bool is_v4;
-    if (current_pkg_type(skb, current_l3_offset, &is_v4) != TC_ACT_OK) return TC_ACT_OK;
-
-    if (is_v4) {
-        struct scan_ipv4_idx idx = {};
-        if (scan_ipv4_into_idx(skb, current_l3_offset, &idx) != LD_SCAN_OK) return TC_ACT_OK;
-
-        struct iphdr *iph;
-        if (VALIDATE_READ_DATA(skb, &iph, current_l3_offset, sizeof(*iph))) return TC_ACT_OK;
-        __be32 saddr = iph->saddr;
-        __be32 daddr = iph->daddr;
-
-        bool is_icmpx = false;
-        if (idx.fragment_type < FRAG_MIDDLE && idx.l4_protocol == IPPROTO_ICMP)
-            is_icmpx = scan_ipv4_upgrade_icmp(skb, current_l3_offset, &idx, &saddr);
-
-        if (likely(!is_icmpx)) {
-            __be16 sport = 0, dport = 0;
-            if (idx.fragment_type == FRAG_FIRST &&
-                (idx.l4_protocol == IPPROTO_TCP || idx.l4_protocol == IPPROTO_UDP)) {
-                __be16 *ports;
-                if (VALIDATE_READ_DATA(skb, &ports, idx.l4_offset, sizeof(__be16) * 2))
-                    return TC_ACT_SHOT;
-                sport = ports[0];
-                dport = ports[1];
-            }
-            if (frag4_track(&idx, saddr, daddr, &sport, &dport) != TC_ACT_OK) return TC_ACT_SHOT;
-        }
-
-        struct ipv4_lpm_key block_search_key = {
-            .prefixlen = 32,
-            .addr = daddr,
-        };
-        if (unlikely(bpf_map_lookup_elem(&firewall_block_ip4_map, &block_search_key)))
-            return TC_ACT_SHOT;
-    } else {
-        struct scan_ipv6_idx idx = {};
-        if (scan_ipv6_into_idx(skb, current_l3_offset, &idx) != LD_SCAN_OK) return TC_ACT_OK;
-
-        struct ipv6hdr *ip6h;
-        if (VALIDATE_READ_DATA(skb, &ip6h, current_l3_offset, sizeof(*ip6h))) return TC_ACT_OK;
-        struct in6_addr saddr = ip6h->saddr;
-        struct in6_addr daddr = ip6h->daddr;
-
-        bool is_icmpx = false;
-        if (idx.fragment_type < FRAG_MIDDLE && idx.l4_protocol == IPPROTO_ICMPV6)
-            is_icmpx = scan_ipv6_upgrade_icmp(skb, current_l3_offset, &idx, &saddr);
-
-        if (likely(!is_icmpx)) {
-            __be16 sport = 0, dport = 0;
-            if (idx.fragment_type == FRAG_FIRST &&
-                (idx.l4_protocol == IPPROTO_TCP || idx.l4_protocol == IPPROTO_UDP)) {
-                __be16 *ports;
-                if (VALIDATE_READ_DATA(skb, &ports, idx.l4_offset, sizeof(__be16) * 2))
-                    return TC_ACT_SHOT;
-                sport = ports[0];
-                dport = ports[1];
-            }
-            if (frag6_track(&idx, &saddr, &daddr, &sport, &dport) != TC_ACT_OK) return TC_ACT_SHOT;
-        }
-
-        struct ipv6_lpm_key block_search_key = {
-            .prefixlen = 128,
-        };
-        __builtin_memcpy(&block_search_key.addr, &daddr, sizeof(block_search_key.addr));
-        if (unlikely(bpf_map_lookup_elem(&firewall_block_ip6_map, &block_search_key)))
-            return TC_ACT_SHOT;
-    }
-
-    return TC_ACT_OK;
-#undef BPF_LOG_TOPIC
+static __always_inline bool port_allow_lookup(__be16 port, __u8 proto, __u8 family) {
+    struct port_allow_key key = {
+        .port = port,
+        .protocol = proto,
+        .family = family,
+    };
+    return bpf_map_lookup_elem(&firewall_allow_ports_map, &key) != NULL;
 }
 
-static __always_inline int fw_do_ingress(struct __sk_buff *skb) {
-#define BPF_LOG_TOPIC "<<< fw_do_ingress <<<"
+// Inbound authorizations are scoped to one address family and are written by
+// user space only (management ports plus static NAT mappings). There is no
+// hard-coded port fallback here: revoking an authorization really revokes it.
+static __always_inline bool is_port_allowed(__be16 dport, __u8 proto, __u8 family) {
+    // "every port" authorizations (any protocol, or this protocol only)
+    if (port_allow_lookup(FW_PORT_ALL, FW_PORT_ALL, family)) {
+        return true;
+    }
+    if (port_allow_lookup(FW_PORT_ALL, proto, family)) {
+        return true;
+    }
+    if (port_allow_lookup(dport, proto, family)) {
+        return true;
+    }
+    if (port_allow_lookup(dport, FW_PORT_ALL, family)) {
+        return true;
+    }
+    return false;
+}
 
-    bool is_v4;
-    if (current_pkg_type(skb, current_l3_offset, &is_v4) != TC_ACT_OK) return TC_ACT_OK;
-
-    if (is_v4) {
-        struct scan_ipv4_idx idx = {};
-        if (scan_ipv4_into_idx(skb, current_l3_offset, &idx) != LD_SCAN_OK) return TC_ACT_OK;
-
-        struct iphdr *iph;
-        if (VALIDATE_READ_DATA(skb, &iph, current_l3_offset, sizeof(*iph))) return TC_ACT_OK;
-        __be32 saddr = iph->saddr;
-        __be32 daddr = iph->daddr;
-
-        bool is_icmpx = false;
-        if (idx.fragment_type < FRAG_MIDDLE && idx.l4_protocol == IPPROTO_ICMP)
-            is_icmpx = scan_ipv4_upgrade_icmp(skb, current_l3_offset, &idx, &saddr);
-
-        if (likely(!is_icmpx)) {
-            __be16 sport = 0, dport = 0;
-            if (idx.fragment_type == FRAG_FIRST &&
-                (idx.l4_protocol == IPPROTO_TCP || idx.l4_protocol == IPPROTO_UDP)) {
-                __be16 *ports;
-                if (VALIDATE_READ_DATA(skb, &ports, idx.l4_offset, sizeof(__be16) * 2))
-                    return TC_ACT_SHOT;
-                sport = ports[0];
-                dport = ports[1];
-            }
-            if (frag4_track(&idx, saddr, daddr, &sport, &dport) != TC_ACT_OK) return TC_ACT_SHOT;
-        }
-
-        struct ipv4_lpm_key block_search_key = {
-            .prefixlen = 32,
-            .addr = saddr,
+static __always_inline bool check_rate_limit4(__be32 src_ip, __u32 class) {
+    u64 now = bpf_ktime_get_ns();
+    struct ratelimit_key4 key = {
+        .addr = src_ip,
+        .class = class,
+    };
+    struct ratelimit_entry *entry = bpf_map_lookup_elem(&firewall_ratelimit4_map, &key);
+    if (!entry) {
+        // The triggering packet is part of the burst, so it consumes one token.
+        struct ratelimit_entry new_entry = {
+            .last_time_ns = now,
+            .tokens = FW_RL_BURST_TOKENS - 1,
+            ._pad = 0,
         };
-        if (unlikely(bpf_map_lookup_elem(&firewall_block_ip4_map, &block_search_key)))
-            return TC_ACT_SHOT;
-    } else {
-        struct scan_ipv6_idx idx = {};
-        if (scan_ipv6_into_idx(skb, current_l3_offset, &idx) != LD_SCAN_OK) return TC_ACT_OK;
+        bpf_map_update_elem(&firewall_ratelimit4_map, &key, &new_entry, BPF_ANY);
+        return true;
+    }
+    u64 elapsed = (now > entry->last_time_ns) ? (now - entry->last_time_ns) : 0;
+    u32 add_tokens = (u32)(elapsed / FW_RL_TOKEN_INTERVAL_NS);
+    if (add_tokens > 0) {
+        entry->tokens += add_tokens;
+        if (entry->tokens > FW_RL_BURST_TOKENS) entry->tokens = FW_RL_BURST_TOKENS;
+        entry->last_time_ns = now;
+    }
+    if (entry->tokens > 0) {
+        entry->tokens--;
+        return true;
+    }
+    return false;
+}
 
-        struct ipv6hdr *ip6h;
-        if (VALIDATE_READ_DATA(skb, &ip6h, current_l3_offset, sizeof(*ip6h))) return TC_ACT_OK;
-        struct in6_addr saddr = ip6h->saddr;
-        struct in6_addr daddr = ip6h->daddr;
-
-        bool is_icmpx = false;
-        if (idx.fragment_type < FRAG_MIDDLE && idx.l4_protocol == IPPROTO_ICMPV6)
-            is_icmpx = scan_ipv6_upgrade_icmp(skb, current_l3_offset, &idx, &saddr);
-
-        if (likely(!is_icmpx)) {
-            __be16 sport = 0, dport = 0;
-            if (idx.fragment_type == FRAG_FIRST &&
-                (idx.l4_protocol == IPPROTO_TCP || idx.l4_protocol == IPPROTO_UDP)) {
-                __be16 *ports;
-                if (VALIDATE_READ_DATA(skb, &ports, idx.l4_offset, sizeof(__be16) * 2))
-                    return TC_ACT_SHOT;
-                sport = ports[0];
-                dport = ports[1];
-            }
-            if (frag6_track(&idx, &saddr, &daddr, &sport, &dport) != TC_ACT_OK) return TC_ACT_SHOT;
-        }
-
-        struct ipv6_lpm_key block_search_key = {
-            .prefixlen = 128,
+static __always_inline bool check_rate_limit6(const union u_inet_addr *src_ip, __u32 class) {
+    u64 now = bpf_ktime_get_ns();
+    struct ratelimit_key6 key = {
+        .class = class,
+    };
+    key.addr = *src_ip;
+    struct ratelimit_entry *entry = bpf_map_lookup_elem(&firewall_ratelimit6_map, &key);
+    if (!entry) {
+        struct ratelimit_entry new_entry = {
+            .last_time_ns = now,
+            .tokens = FW_RL_BURST_TOKENS - 1,
+            ._pad = 0,
         };
-        __builtin_memcpy(&block_search_key.addr, &saddr, sizeof(block_search_key.addr));
-        if (unlikely(bpf_map_lookup_elem(&firewall_block_ip6_map, &block_search_key)))
-            return TC_ACT_SHOT;
+        bpf_map_update_elem(&firewall_ratelimit6_map, &key, &new_entry, BPF_ANY);
+        return true;
+    }
+    u64 elapsed = (now > entry->last_time_ns) ? (now - entry->last_time_ns) : 0;
+    u32 add_tokens = (u32)(elapsed / FW_RL_TOKEN_INTERVAL_NS);
+    if (add_tokens > 0) {
+        entry->tokens += add_tokens;
+        if (entry->tokens > FW_RL_BURST_TOKENS) entry->tokens = FW_RL_BURST_TOKENS;
+        entry->last_time_ns = now;
+    }
+    if (entry->tokens > 0) {
+        entry->tokens--;
+        return true;
+    }
+    return false;
+}
+
+static __always_inline bool is_ct_expired(const struct ct_entry *ent, u64 now_ns) {
+    u64 timeout = CT_TIMEOUT_ESTAB_NS;
+    if (ent->state == FW_STATE_SYN_SENT) {
+        timeout = CT_TIMEOUT_SYN_SENT_NS;
+    } else if (ent->state == FW_STATE_FIN_WAIT) {
+        timeout = CT_TIMEOUT_FIN_WAIT_NS;
+    } else if (ent->state == FW_STATE_UDP) {
+        timeout = CT_TIMEOUT_UDP_NS;
+    } else if (ent->state == FW_STATE_ICMP) {
+        timeout = CT_TIMEOUT_ICMP_NS;
+    }
+    return (now_ns > ent->last_seen_ns && (now_ns - ent->last_seen_ns) > timeout);
+}
+
+static __always_inline bool is_wan_ping_allowed(void) {
+    __u32 key = 0;
+    struct firewall_global_cfg *cfg = bpf_map_lookup_elem(&firewall_config_map, &key);
+    if (!cfg) return true;
+    return cfg->allow_wan_ping != 0;
+}
+
+static __always_inline bool syn_flood_protect_enabled(void) {
+    __u32 key = 0;
+    struct firewall_global_cfg *cfg = bpf_map_lookup_elem(&firewall_config_map, &key);
+    if (!cfg) return true;
+    return cfg->syn_flood_protect != 0;
+}
+
+static __always_inline int fw_v4_egress(struct __sk_buff *skb) {
+    struct scan_ipv4_idx idx = {};
+    struct inet4_pair ip_pair = {0};
+
+    if (scan_ipv4_full(skb, current_l3_offset, &idx) != LD_SCAN_OK) return TC_ACT_OK;
+    int ret = skb_read_ipv4_info(skb, current_l3_offset, &idx, &ip_pair);
+    if (ret == TC_ACT_SHOT) return TC_ACT_SHOT;
+    if (ret) return TC_ACT_OK;
+
+    // Check blacklist on dest
+    struct ipv4_lpm_key block_key = {
+        .prefixlen = 32,
+        .addr = ip_pair.dst_addr.addr,
+    };
+    if (unlikely(bpf_map_lookup_elem(&firewall_block_ip4_map, &block_key))) return TC_ACT_SHOT;
+
+    ret = frag4_track(&idx, ip_pair.src_addr.addr, ip_pair.dst_addr.addr, &ip_pair.src_port,
+                      &ip_pair.dst_port);
+    if (ret != TC_ACT_OK) return TC_ACT_SHOT;
+    if (idx.fragment_type >= FRAG_MIDDLE) return TC_ACT_OK;
+
+    bool is_icmpx_error = idx.icmp_error_l3_offset > 0 && idx.icmp_error_inner_l4_offset > 0;
+    if (is_icmpx_error) return TC_ACT_OK;
+
+    u8 proto = idx.l4_protocol;
+    if (proto == IPPROTO_TCP || proto == IPPROTO_UDP || proto == IPPROTO_ICMP) {
+        struct ct_tuple4 tuple = {
+            .src_ip = ip_pair.dst_addr.addr,
+            .dst_ip = ip_pair.src_addr.addr,
+            .src_port = ip_pair.dst_port,
+            .dst_port = ip_pair.src_port,
+            .protocol = proto,
+        };
+
+        if (idx.pkt_type == PKT_TCP_SYN_V2) {
+            struct ct_entry ent = {
+                .last_seen_ns = bpf_ktime_get_ns(),
+                .packets = 1,
+                .bytes = skb->len,
+                .state = FW_STATE_SYN_SENT,
+            };
+            bpf_map_update_elem(&firewall_state4_map, &tuple, &ent, BPF_ANY);
+            tuple.src_ip = ip_pair.src_addr.addr;
+            tuple.dst_ip = ip_pair.dst_addr.addr;
+            tuple.src_port = ip_pair.src_port;
+            tuple.dst_port = ip_pair.dst_port;
+            bpf_map_update_elem(&firewall_state4_map, &tuple, &ent, BPF_ANY);
+        } else if (idx.pkt_type == PKT_TCP_FIN_V2 || idx.pkt_type == PKT_TCP_RST_V2) {
+            struct ct_entry *e = bpf_map_lookup_elem(&firewall_state4_map, &tuple);
+            if (e) {
+                e->state = FW_STATE_FIN_WAIT;
+                e->last_seen_ns = bpf_ktime_get_ns();
+            }
+            tuple.src_ip = ip_pair.src_addr.addr;
+            tuple.dst_ip = ip_pair.dst_addr.addr;
+            tuple.src_port = ip_pair.src_port;
+            tuple.dst_port = ip_pair.dst_port;
+            e = bpf_map_lookup_elem(&firewall_state4_map, &tuple);
+            if (e) {
+                e->state = FW_STATE_FIN_WAIT;
+                e->last_seen_ns = bpf_ktime_get_ns();
+            }
+        } else {
+            struct ct_entry *e = bpf_map_lookup_elem(&firewall_state4_map, &tuple);
+            if (e) {
+                e->last_seen_ns = bpf_ktime_get_ns();
+                e->packets++;
+                e->bytes += skb->len;
+                if (e->state == FW_STATE_SYN_SENT) e->state = FW_STATE_ESTABLISHED;
+            } else {
+                struct ct_entry ent = {
+                    .last_seen_ns = bpf_ktime_get_ns(),
+                    .packets = 1,
+                    .bytes = skb->len,
+                    .state = (proto == IPPROTO_UDP)    ? FW_STATE_UDP
+                             : (proto == IPPROTO_ICMP) ? FW_STATE_ICMP
+                                                       : FW_STATE_ESTABLISHED,
+                };
+                bpf_map_update_elem(&firewall_state4_map, &tuple, &ent, BPF_ANY);
+                tuple.src_ip = ip_pair.src_addr.addr;
+                tuple.dst_ip = ip_pair.dst_addr.addr;
+                tuple.src_port = ip_pair.src_port;
+                tuple.dst_port = ip_pair.dst_port;
+                bpf_map_update_elem(&firewall_state4_map, &tuple, &ent, BPF_ANY);
+            }
+        }
+    }
+    return TC_ACT_OK;
+}
+
+static __always_inline int fw_v4_ingress(struct __sk_buff *skb) {
+    struct scan_ipv4_idx idx = {};
+    struct inet4_pair ip_pair = {0};
+
+    if (scan_ipv4_full(skb, current_l3_offset, &idx) != LD_SCAN_OK) return TC_ACT_OK;
+    int ret = skb_read_ipv4_info(skb, current_l3_offset, &idx, &ip_pair);
+    if (ret == TC_ACT_SHOT) return TC_ACT_SHOT;
+    if (ret) return TC_ACT_OK;
+
+    // Check blacklist on src
+    struct ipv4_lpm_key block_key = {
+        .prefixlen = 32,
+        .addr = ip_pair.src_addr.addr,
+    };
+    if (unlikely(bpf_map_lookup_elem(&firewall_block_ip4_map, &block_key))) return TC_ACT_SHOT;
+
+    // Allow DHCPv4 client inbound (UDP 68)
+    if (idx.l4_protocol == IPPROTO_UDP && bpf_ntohs(ip_pair.dst_port) == 68) {
+        return TC_ACT_OK;
     }
 
+    ret = frag4_track(&idx, ip_pair.src_addr.addr, ip_pair.dst_addr.addr, &ip_pair.src_port,
+                      &ip_pair.dst_port);
+    if (ret != TC_ACT_OK) return TC_ACT_SHOT;
+    if (idx.fragment_type >= FRAG_MIDDLE) return TC_ACT_OK;
+
+    bool is_icmpx_error = idx.icmp_error_l3_offset > 0 && idx.icmp_error_inner_l4_offset > 0;
+    if (is_icmpx_error) {
+        // Matched related outgoing connection
+        struct ct_tuple4 match_k = {
+            .src_ip = ip_pair.src_addr.addr,
+            .dst_ip = ip_pair.dst_addr.addr,
+            .src_port = ip_pair.src_port,
+            .dst_port = ip_pair.dst_port,
+            .protocol = idx.icmp_error_l4_protocol,
+        };
+        struct ct_entry *rel = bpf_map_lookup_elem(&firewall_state4_map, &match_k);
+        if (rel && !is_ct_expired(rel, bpf_ktime_get_ns())) return TC_ACT_OK;
+        if (rel) bpf_map_delete_elem(&firewall_state4_map, &match_k);
+        return TC_ACT_SHOT;
+    }
+
+    if (idx.l4_protocol == IPPROTO_ICMP) {
+        if (idx.pkt_type == PKT_CONNLESS_V2) {
+            struct ct_tuple4 match_k = {
+                .src_ip = ip_pair.src_addr.addr,
+                .dst_ip = ip_pair.dst_addr.addr,
+                .src_port = ip_pair.src_port,
+                .dst_port = ip_pair.dst_port,
+                .protocol = IPPROTO_ICMP,
+            };
+            struct ct_entry *ent = bpf_map_lookup_elem(&firewall_state4_map, &match_k);
+            if (ent) {
+                u64 now_ns = bpf_ktime_get_ns();
+                if (is_ct_expired(ent, now_ns)) {
+                    bpf_map_delete_elem(&firewall_state4_map, &match_k);
+                } else {
+                    ent->last_seen_ns = now_ns;
+                    ent->packets++;
+                    ent->bytes += skb->len;
+                    return TC_ACT_OK;
+                }
+            }
+            // Unsolicited WAN ping check & rate limit (dedicated traffic class so
+            // ping volume can never consume the connection-creation budget)
+            if (!is_wan_ping_allowed()) {
+                return TC_ACT_SHOT;
+            }
+            if (syn_flood_protect_enabled() &&
+                !check_rate_limit4(ip_pair.src_addr.addr, FW_RL_CLASS_PING)) {
+                return TC_ACT_SHOT;
+            }
+            return TC_ACT_OK;
+        }
+    }
+
+    u8 proto = idx.l4_protocol;
+    if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
+        struct ct_tuple4 match_k = {
+            .src_ip = ip_pair.src_addr.addr,
+            .dst_ip = ip_pair.dst_addr.addr,
+            .src_port = ip_pair.src_port,
+            .dst_port = ip_pair.dst_port,
+            .protocol = proto,
+        };
+        struct ct_entry *ent = bpf_map_lookup_elem(&firewall_state4_map, &match_k);
+        if (ent) {
+            u64 now_ns = bpf_ktime_get_ns();
+            if (is_ct_expired(ent, now_ns)) {
+                bpf_map_delete_elem(&firewall_state4_map, &match_k);
+                ent = NULL;
+            } else {
+                ent->last_seen_ns = now_ns;
+                ent->packets++;
+                ent->bytes += skb->len;
+                if (idx.pkt_type == PKT_TCP_ACK_V2 && ent->state == FW_STATE_SYN_SENT) {
+                    ent->state = FW_STATE_ESTABLISHED;
+                } else if (idx.pkt_type == PKT_TCP_FIN_V2 || idx.pkt_type == PKT_TCP_RST_V2) {
+                    ent->state = FW_STATE_FIN_WAIT;
+                }
+                return TC_ACT_OK;
+            }
+        }
+
+        if (is_port_allowed(ip_pair.dst_port, proto, FW_PORT_FAMILY_V4)) {
+            // Mitigate SYN flood & rapid port knocking
+            if (syn_flood_protect_enabled() &&
+                !check_rate_limit4(ip_pair.src_addr.addr, FW_RL_CLASS_CONN)) {
+                return TC_ACT_SHOT;
+            }
+            if (idx.pkt_type == PKT_TCP_SYN_V2) {
+                struct ct_entry in_ent = {
+                    .last_seen_ns = bpf_ktime_get_ns(),
+                    .packets = 1,
+                    .bytes = skb->len,
+                    .state = FW_STATE_SYN_SENT,
+                };
+                bpf_map_update_elem(&firewall_state4_map, &match_k, &in_ent, BPF_ANY);
+                struct ct_tuple4 reply_k = {
+                    .src_ip = ip_pair.dst_addr.addr,
+                    .dst_ip = ip_pair.src_addr.addr,
+                    .src_port = ip_pair.dst_port,
+                    .dst_port = ip_pair.src_port,
+                    .protocol = IPPROTO_TCP,
+                };
+                bpf_map_update_elem(&firewall_state4_map, &reply_k, &in_ent, BPF_ANY);
+            }
+            return TC_ACT_OK;
+        }
+        return TC_ACT_SHOT;
+    }
     return TC_ACT_OK;
-#undef BPF_LOG_TOPIC
+}
+
+static __always_inline int fw_v6_egress(struct __sk_buff *skb) {
+    struct scan_ipv6_idx idx = {};
+    struct inet_pair ip_pair = {0};
+
+    int scan_ret = scan_ipv6_full(skb, current_l3_offset, &idx);
+    if (scan_ret == LD_SCAN_UNSPEC) return TC_ACT_OK;  // NDP / MLD pass
+    if (scan_ret != LD_SCAN_OK) return TC_ACT_OK;
+
+    int ret = skb_read_ipv6_info(skb, current_l3_offset, &idx, &ip_pair);
+    if (ret == TC_ACT_SHOT) return TC_ACT_SHOT;
+    if (ret) return TC_ACT_OK;
+
+    // Check blacklist on dest
+    struct ipv6_lpm_key block_key = {
+        .prefixlen = 128,
+    };
+    __builtin_memcpy(&block_key.addr, &ip_pair.dst_addr, sizeof(block_key.addr));
+    if (unlikely(bpf_map_lookup_elem(&firewall_block_ip6_map, &block_key))) return TC_ACT_SHOT;
+
+    ret = frag6_track(&idx, (struct in6_addr *)&ip_pair.src_addr,
+                      (struct in6_addr *)&ip_pair.dst_addr, &ip_pair.src_port, &ip_pair.dst_port);
+    if (ret != TC_ACT_OK) return TC_ACT_SHOT;
+    if (idx.fragment_type >= FRAG_MIDDLE) return TC_ACT_OK;
+
+    bool is_icmpx_error = idx.icmp_error_l3_offset > 0 && idx.icmp_error_inner_l4_offset > 0;
+    if (is_icmpx_error) return TC_ACT_OK;
+
+    u8 proto = idx.l4_protocol;
+    if (proto == IPPROTO_TCP || proto == IPPROTO_UDP || proto == IPPROTO_ICMPV6) {
+        struct ct_tuple6 tuple = {
+            .src_ip = ip_pair.dst_addr,
+            .dst_ip = ip_pair.src_addr,
+            .src_port = ip_pair.dst_port,
+            .dst_port = ip_pair.src_port,
+            .protocol = proto,
+        };
+
+        if (idx.pkt_type == PKT_TCP_SYN_V2) {
+            struct ct_entry ent = {
+                .last_seen_ns = bpf_ktime_get_ns(),
+                .packets = 1,
+                .bytes = skb->len,
+                .state = FW_STATE_SYN_SENT,
+            };
+            bpf_map_update_elem(&firewall_state6_map, &tuple, &ent, BPF_ANY);
+            tuple.src_ip = ip_pair.src_addr;
+            tuple.dst_ip = ip_pair.dst_addr;
+            tuple.src_port = ip_pair.src_port;
+            tuple.dst_port = ip_pair.dst_port;
+            bpf_map_update_elem(&firewall_state6_map, &tuple, &ent, BPF_ANY);
+        } else if (idx.pkt_type == PKT_TCP_FIN_V2 || idx.pkt_type == PKT_TCP_RST_V2) {
+            struct ct_entry *e = bpf_map_lookup_elem(&firewall_state6_map, &tuple);
+            if (e) {
+                e->state = FW_STATE_FIN_WAIT;
+                e->last_seen_ns = bpf_ktime_get_ns();
+            }
+            tuple.src_ip = ip_pair.src_addr;
+            tuple.dst_ip = ip_pair.dst_addr;
+            tuple.src_port = ip_pair.src_port;
+            tuple.dst_port = ip_pair.dst_port;
+            e = bpf_map_lookup_elem(&firewall_state6_map, &tuple);
+            if (e) {
+                e->state = FW_STATE_FIN_WAIT;
+                e->last_seen_ns = bpf_ktime_get_ns();
+            }
+        } else {
+            struct ct_entry *e = bpf_map_lookup_elem(&firewall_state6_map, &tuple);
+            if (e) {
+                e->last_seen_ns = bpf_ktime_get_ns();
+                e->packets++;
+                e->bytes += skb->len;
+                if (e->state == FW_STATE_SYN_SENT) e->state = FW_STATE_ESTABLISHED;
+            } else {
+                struct ct_entry ent = {
+                    .last_seen_ns = bpf_ktime_get_ns(),
+                    .packets = 1,
+                    .bytes = skb->len,
+                    .state = (proto == IPPROTO_UDP)      ? FW_STATE_UDP
+                             : (proto == IPPROTO_ICMPV6) ? FW_STATE_ICMP
+                                                         : FW_STATE_ESTABLISHED,
+                };
+                bpf_map_update_elem(&firewall_state6_map, &tuple, &ent, BPF_ANY);
+                tuple.src_ip = ip_pair.src_addr;
+                tuple.dst_ip = ip_pair.dst_addr;
+                tuple.src_port = ip_pair.src_port;
+                tuple.dst_port = ip_pair.dst_port;
+                bpf_map_update_elem(&firewall_state6_map, &tuple, &ent, BPF_ANY);
+            }
+        }
+    }
+    return TC_ACT_OK;
+}
+
+static __always_inline int fw_v6_ingress(struct __sk_buff *skb) {
+    struct scan_ipv6_idx idx = {};
+    struct inet_pair ip_pair = {0};
+
+    int scan_ret = scan_ipv6_full(skb, current_l3_offset, &idx);
+    if (scan_ret == LD_SCAN_UNSPEC) return TC_ACT_OK;  // Essential NDP / MLD always pass
+    if (scan_ret != LD_SCAN_OK) return TC_ACT_OK;
+
+    int ret = skb_read_ipv6_info(skb, current_l3_offset, &idx, &ip_pair);
+    if (ret == TC_ACT_SHOT) return TC_ACT_SHOT;
+    if (ret) return TC_ACT_OK;
+
+    // Check blacklist on src
+    struct ipv6_lpm_key block_key = {
+        .prefixlen = 128,
+    };
+    __builtin_memcpy(&block_key.addr, &ip_pair.src_addr, sizeof(block_key.addr));
+    if (unlikely(bpf_map_lookup_elem(&firewall_block_ip6_map, &block_key))) return TC_ACT_SHOT;
+
+    // Allow DHCPv6 client inbound (UDP 546)
+    if (idx.l4_protocol == IPPROTO_UDP && bpf_ntohs(ip_pair.dst_port) == 546) {
+        return TC_ACT_OK;
+    }
+
+    ret = frag6_track(&idx, (struct in6_addr *)&ip_pair.src_addr,
+                      (struct in6_addr *)&ip_pair.dst_addr, &ip_pair.src_port, &ip_pair.dst_port);
+    if (ret != TC_ACT_OK) return TC_ACT_SHOT;
+    if (idx.fragment_type >= FRAG_MIDDLE) return TC_ACT_OK;
+
+    bool is_icmpx_error = idx.icmp_error_l3_offset > 0 && idx.icmp_error_inner_l4_offset > 0;
+    if (is_icmpx_error) {
+        // Matched related outgoing connection
+        struct ct_tuple6 match_k = {
+            .src_ip = ip_pair.src_addr,
+            .dst_ip = ip_pair.dst_addr,
+            .src_port = ip_pair.src_port,
+            .dst_port = ip_pair.dst_port,
+            .protocol = idx.icmp_error_l4_protocol,
+        };
+        struct ct_entry *rel = bpf_map_lookup_elem(&firewall_state6_map, &match_k);
+        if (rel && !is_ct_expired(rel, bpf_ktime_get_ns())) return TC_ACT_OK;
+        if (rel) bpf_map_delete_elem(&firewall_state6_map, &match_k);
+        return TC_ACT_SHOT;
+    }
+
+    if (idx.l4_protocol == IPPROTO_ICMPV6) {
+        if (idx.pkt_type == PKT_CONNLESS_V2) {
+            struct ct_tuple6 match_k = {
+                .src_ip = ip_pair.src_addr,
+                .dst_ip = ip_pair.dst_addr,
+                .src_port = ip_pair.src_port,
+                .dst_port = ip_pair.dst_port,
+                .protocol = IPPROTO_ICMPV6,
+            };
+            struct ct_entry *ent = bpf_map_lookup_elem(&firewall_state6_map, &match_k);
+            if (ent) {
+                u64 now_ns = bpf_ktime_get_ns();
+                if (is_ct_expired(ent, now_ns)) {
+                    bpf_map_delete_elem(&firewall_state6_map, &match_k);
+                } else {
+                    ent->last_seen_ns = now_ns;
+                    ent->packets++;
+                    ent->bytes += skb->len;
+                    return TC_ACT_OK;
+                }
+            }
+            // Unsolicited WAN ping check & rate limit (dedicated traffic class so
+            // ping volume can never consume the connection-creation budget)
+            if (!is_wan_ping_allowed()) {
+                return TC_ACT_SHOT;
+            }
+            if (syn_flood_protect_enabled() &&
+                !check_rate_limit6(&ip_pair.src_addr, FW_RL_CLASS_PING)) {
+                return TC_ACT_SHOT;
+            }
+            return TC_ACT_OK;
+        }
+    }
+
+    u8 proto = idx.l4_protocol;
+    if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
+        struct ct_tuple6 match_k = {
+            .src_ip = ip_pair.src_addr,
+            .dst_ip = ip_pair.dst_addr,
+            .src_port = ip_pair.src_port,
+            .dst_port = ip_pair.dst_port,
+            .protocol = proto,
+        };
+        struct ct_entry *ent = bpf_map_lookup_elem(&firewall_state6_map, &match_k);
+        if (ent) {
+            u64 now_ns = bpf_ktime_get_ns();
+            if (is_ct_expired(ent, now_ns)) {
+                bpf_map_delete_elem(&firewall_state6_map, &match_k);
+                ent = NULL;
+            } else {
+                ent->last_seen_ns = now_ns;
+                ent->packets++;
+                ent->bytes += skb->len;
+                if (idx.pkt_type == PKT_TCP_ACK_V2 && ent->state == FW_STATE_SYN_SENT) {
+                    ent->state = FW_STATE_ESTABLISHED;
+                } else if (idx.pkt_type == PKT_TCP_FIN_V2 || idx.pkt_type == PKT_TCP_RST_V2) {
+                    ent->state = FW_STATE_FIN_WAIT;
+                }
+                return TC_ACT_OK;
+            }
+        }
+
+        if (is_port_allowed(ip_pair.dst_port, proto, FW_PORT_FAMILY_V6)) {
+            // Mitigate SYN flood & rapid port knocking
+            if (syn_flood_protect_enabled() &&
+                !check_rate_limit6(&ip_pair.src_addr, FW_RL_CLASS_CONN)) {
+                return TC_ACT_SHOT;
+            }
+            if (idx.pkt_type == PKT_TCP_SYN_V2) {
+                struct ct_entry in_ent = {
+                    .last_seen_ns = bpf_ktime_get_ns(),
+                    .packets = 1,
+                    .bytes = skb->len,
+                    .state = FW_STATE_SYN_SENT,
+                };
+                bpf_map_update_elem(&firewall_state6_map, &match_k, &in_ent, BPF_ANY);
+                struct ct_tuple6 reply_k = {
+                    .src_ip = ip_pair.dst_addr,
+                    .dst_ip = ip_pair.src_addr,
+                    .src_port = ip_pair.dst_port,
+                    .dst_port = ip_pair.src_port,
+                    .protocol = IPPROTO_TCP,
+                };
+                bpf_map_update_elem(&firewall_state6_map, &reply_k, &in_ent, BPF_ANY);
+            }
+            return TC_ACT_OK;
+        }
+        return TC_ACT_SHOT;
+    }
+    return TC_ACT_OK;
 }
 
 SEC("tc/egress")
 int tc_firewall_wan_egress(struct __sk_buff *skb) {
 #define BPF_LOG_TOPIC "<<< tc_firewall_wan_egress <<<"
+    bool is_v4;
+    if (current_pkg_type(skb, current_l3_offset, &is_v4) != TC_ACT_OK) return TC_ACT_OK;
 
-    if (unlikely(fw_do_egress(skb) == TC_ACT_SHOT)) return TC_ACT_SHOT;
+    int ret = is_v4 ? fw_v4_egress(skb) : fw_v6_egress(skb);
+    if (unlikely(ret == TC_ACT_SHOT)) return TC_ACT_SHOT;
 
     TC_CHAIN_WAN_EGRESS(skb);
     bpf_tail_call(skb, &tc_pipe_exits_wan_egress, TC_NEXT_SLOT);
@@ -183,8 +607,11 @@ int tc_firewall_wan_egress(struct __sk_buff *skb) {
 SEC("tc/ingress")
 int tc_firewall_wan_ingress(struct __sk_buff *skb) {
 #define BPF_LOG_TOPIC "<<< tc_firewall_wan_ingress <<<"
+    bool is_v4;
+    if (current_pkg_type(skb, current_l3_offset, &is_v4) != TC_ACT_OK) return TC_ACT_OK;
 
-    if (unlikely(fw_do_ingress(skb) == TC_ACT_SHOT)) return TC_ACT_SHOT;
+    int ret = is_v4 ? fw_v4_ingress(skb) : fw_v6_ingress(skb);
+    if (unlikely(ret == TC_ACT_SHOT)) return TC_ACT_SHOT;
 
     TC_CHAIN_WAN_INGRESS(skb);
     bpf_tail_call(skb, &tc_pipe_exits_wan_ingress, TC_NEXT_SLOT);
