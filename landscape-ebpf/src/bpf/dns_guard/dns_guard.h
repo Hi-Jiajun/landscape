@@ -218,11 +218,19 @@ static __always_inline int dns_guard_check(struct __sk_buff *skb, u32 current_l3
     if (proto != IPPROTO_TCP && proto != IPPROTO_UDP) return LD_DNS_GUARD_CONTINUE;
 
     // Destination port sits at the same offset in both TCP and UDP headers.
-    __be16 dport = 0;
-    if (VALIDATE_READ_DATA(skb, (void **)&dport, offset.l4_offset + 2, sizeof(dport))) {
+    //
+    // `VALIDATE_READ_DATA` hands back a *pointer into the packet*, it does not
+    // copy into a buffer: the out-parameter must be a pointer-sized slot for that
+    // pointer. Passing the address of a 2-byte port variable makes it write eight
+    // bytes over a two-byte stack slot, and the comparison then reads half of a
+    // packet pointer, so the port never matches and every packet falls through
+    // uncounted - which looks exactly like a guard that is never triggered.
+    __be16 *dport_ptr = NULL;
+    if (VALIDATE_READ_DATA(skb, &dport_ptr, offset.l4_offset + 2, sizeof(__be16))) {
         BPF_DNS_GUARD_STAT(LD_DNS_GUARD_STAT_PARSE_FAILED);
         return cfg->drop_unclassified ? LD_DNS_GUARD_DROP : LD_DNS_GUARD_CONTINUE;
     }
+    __be16 dport = *dport_ptr;
 
     u32 stat;
     if (dport == bpf_htons(53)) {
