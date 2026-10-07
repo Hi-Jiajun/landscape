@@ -15,7 +15,7 @@ use landscape_common::{
     flow::DnsRuntimeMarkInfo,
 };
 
-use crate::connection::{LandscapeMarkDNSResolver, pool::ResolvePool};
+use crate::connection::{FailoverResolver, pool::ResolvePool};
 use crate::domain::ParsedDomain;
 use crate::server::matcher::RuntimeRuleMatcher;
 
@@ -138,7 +138,7 @@ pub struct DNSResolveRuntime {
     /// fall through to a different resolver — but every lookup through it fails
     /// with a reason, so an unfinished configuration is loud rather than silently
     /// answered by someone else's upstream.
-    resolver: Option<Arc<LandscapeMarkDNSResolver>>,
+    resolver: Option<Arc<FailoverResolver>>,
 
     enable_ip_validation: bool,
 }
@@ -188,7 +188,7 @@ impl DNSResolveRuntime {
     }
 
     #[cfg(test)]
-    pub fn shared_resolver(&self) -> &Arc<LandscapeMarkDNSResolver> {
+    pub fn shared_resolver(&self) -> &Arc<FailoverResolver> {
         self.resolver.as_ref().expect("this rule has a configured upstream")
     }
 
