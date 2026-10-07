@@ -6,12 +6,6 @@ use std::time::Duration;
 use hickory_server::Server;
 use rustls::server::ResolvesServerCert;
 use tokio::net::UdpSocket;
-
-/// How long a TCP DNS connection may stay open without completing an exchange.
-const DNS_TCP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-/// Response buffer for one TCP DNS exchange; the TCP path exists precisely
-/// because answers can be larger than a datagram.
-const DNS_TCP_RESPONSE_BUFFER: usize = 65535;
 use tokio_util::sync::CancellationToken;
 
 use crate::server::handler::DnsRequestHandler;
@@ -177,33 +171,22 @@ pub(crate) async fn start_flow_dns_listener(
     let mut server = Server::new(handler);
     server.register_socket(udp);
 
-    // Plaintext DNS over TCP.
+    // Plaintext DNS over TCP is deliberately not served here yet.
     //
-    // UDP is the common path, but TCP is a normal resolver path rather than an
-    // optional extra: a truncated answer (or a client that simply prefers TCP)
-    // makes the client retry over TCP, and a hijack that redirects a client's TCP
-    // query to a listener that only speaks UDP breaks resolution instead of
-    // managing it. Measured before this existed: `dig +tcp @<router>` was refused
-    // while the datapath had started handing TCP queries to the local stack.
+    // TCP is a normal resolver path, not an optional extra, and a hijack that
+    // points a client's TCP query at a UDP-only listener turns a working query
+    // into a refused one - measured. So this listener has to exist before TCP 53
+    // may be hijacked, and that is why the guard's TCP switch defaults to off.
     //
-    // A bind failure must not take the flow down: UDP keeps serving the LAN, and
-    // it is reported so the guard's TCP hijack is not switched on over a listener
-    // that is not there.
-    match create_tcp_listener(addr) {
-        Ok((tcp, tcp_fd)) => {
-            attach_dns_socket(socket_registrar.as_ref(), flow_id, tcp_fd, true);
-            // The timeout is bounded so a client that opens a connection and never
-            // asks anything cannot hold a task indefinitely; 5s is far longer than
-            // a resolver exchange and far shorter than a stuck session.
-            server.register_listener(tcp, DNS_TCP_TIMEOUT, DNS_TCP_RESPONSE_BUFFER);
-        }
-        Err(e) => {
-            tracing::error!(
-                "[flow: {flow_id}]: create tcp listener error: {e:?}; DNS over TCP is not \
-                 served for this flow, so a client's TCP query must not be hijacked to it"
-            );
-        }
-    }
+    // Adding it is not just `create_tcp_listener` + `register_listener`: a
+    // listener created that way is rejected by the flow dispatcher. Measured with
+    // the TCP socket registered in the dispatch map exactly like the UDP one
+    // (keys 0/1 and 28/29 present), a client's TCP query made
+    // `bpf_sk_select_reuseport` fail with `EBADFD` - "the selected socket is not
+    // in this reuseport group" - and for TCP that is not a silent drop but an
+    // immediate RST, so the resolver answers nothing while looking, from `ss`,
+    // exactly like a working listener. Serving TCP on this fabric needs the
+    // dispatch group semantics for TCP worked out, which is its own change.
 
     if let Some(doh) = doh {
         register_doh_listener(
