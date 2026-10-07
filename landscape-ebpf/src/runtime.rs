@@ -164,6 +164,14 @@ impl EbpfRuntime {
         Arc::new(crate::runtime_impls::EbpfMssClampDataplane::new(self))
     }
 
+    /// IPv6 Packet Too Big chamber: the egress MTU stage and the chamber's
+    /// return gate.
+    pub fn mtu_chamber(
+        self: Arc<Self>,
+    ) -> Arc<dyn landscape_common::wan_service::mtu_chamber::MtuChamberDataplane> {
+        Arc::new(crate::runtime_impls::EbpfMtuChamberDataplane::new(self))
+    }
+
     /// LAN route chain capability.
     pub fn lan_route(
         self: Arc<Self>,

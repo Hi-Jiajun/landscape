@@ -20,11 +20,10 @@
 // `-M dont` packet of 1500 bytes is dropped with no fragmentation. TCP hides it,
 // because the MSS clamp keeps TCP under the limit in both directions.
 //
-// This counts the condition. It does not yet remedy it: emitting the error is the
-// next step, and it needs a path to the kernel that preserves the routing, NAT and
-// policy decisions the datapath already made. Counting first is deliberate - it is
-// how we learn whether the condition actually happens here, which decides how much
-// the remedy is worth.
+// This file is the *classification and counting* half: which packets the egress
+// cannot carry, by family. The remedy for the IPv6 case lives in
+// `mtu_chamber.h`, and runs from a stage that sits after admission, so a packet
+// this counts was one the firewall had already allowed out.
 
 enum mtu_guard_stat {
     /// IPv6 over the egress MTU. IPv6 has no in-path fragmentation, so this is
@@ -56,40 +55,76 @@ static __always_inline void mtu_guard_count(u32 index) {
     if (value) __sync_fetch_and_add(value, 1);
 }
 
-/// Count a packet that is about to leave the WAN larger than the egress MTU.
+/// What the egress is looking at, as a pure classification: the caller decides
+/// whether to count it and whether anything can be done about it.
+enum mtu_guard_verdict {
+    /// Fits, or a header shape this does not judge (never a reason to act).
+    MTU_GUARD_VERDICT_PASS = 0,
+    /// A segmentation aggregate. Its pieces fit; it is not a violation.
+    MTU_GUARD_VERDICT_GSO = 1,
+    MTU_GUARD_VERDICT_OVERSIZE_V6 = 2,
+    MTU_GUARD_VERDICT_OVERSIZE_V4_DF = 3,
+    MTU_GUARD_VERDICT_OVERSIZE_V4_FRAGMENTABLE = 4,
+};
+
+/// Classify a packet about to leave the egress whose L3 MTU is `egress_mtu`.
 ///
-/// Called from the WAN egress path, which is the one place every outbound packet
-/// passes and the one place the egress MTU is known.
-static __always_inline void mtu_guard_check(struct __sk_buff *skb, u32 current_l3_offset,
-                                            u16 egress_mtu) {
+/// Deliberately says nothing about *remedies*: it answers only "would this
+/// packet fit on that egress". The IPv6 remedy has to preserve the path the
+/// datapath chose, so it is a separate decision with its own file.
+static __always_inline enum mtu_guard_verdict
+mtu_guard_classify(struct __sk_buff *skb, u32 current_l3_offset, u16 egress_mtu) {
     // A segmentation aggregate is not a violation: `gso_size` says how big the
     // pieces will be, and those fit. Checked first, because an aggregate is
     // legitimately far larger than the MTU.
     if (skb->gso_size > 0) {
-        mtu_guard_count(MTU_GUARD_STAT_GSO_SKIPPED);
-        return;
+        return MTU_GUARD_VERDICT_GSO;
     }
 
     // Version lives in the top nibble of the first L3 byte for both families.
     u8 *first_byte = NULL;
-    if (VALIDATE_READ_DATA(skb, &first_byte, current_l3_offset, 1)) return;
+    if (VALIDATE_READ_DATA(skb, &first_byte, current_l3_offset, 1)) {
+        return MTU_GUARD_VERDICT_PASS;
+    }
     u8 version = (*first_byte) >> 4;
 
     if (version == 6) {
         struct ipv6hdr *ip6h = NULL;
-        if (VALIDATE_READ_DATA(skb, &ip6h, current_l3_offset, sizeof(*ip6h))) return;
+        if (VALIDATE_READ_DATA(skb, &ip6h, current_l3_offset, sizeof(*ip6h))) {
+            return MTU_GUARD_VERDICT_PASS;
+        }
         u32 l3_len = sizeof(*ip6h) + bpf_ntohs(ip6h->payload_len);
-        if (l3_len > egress_mtu) mtu_guard_count(MTU_GUARD_STAT_OVERSIZED_V6);
-        return;
+        if (l3_len > egress_mtu) return MTU_GUARD_VERDICT_OVERSIZE_V6;
+        return MTU_GUARD_VERDICT_PASS;
     }
 
     if (version == 4) {
         struct iphdr *iph = NULL;
-        if (VALIDATE_READ_DATA(skb, &iph, current_l3_offset, sizeof(*iph))) return;
-        if (bpf_ntohs(iph->tot_len) <= egress_mtu) return;
+        if (VALIDATE_READ_DATA(skb, &iph, current_l3_offset, sizeof(*iph))) {
+            return MTU_GUARD_VERDICT_PASS;
+        }
+        if (bpf_ntohs(iph->tot_len) <= egress_mtu) return MTU_GUARD_VERDICT_PASS;
         bool dont_fragment = (bpf_ntohs(iph->frag_off) & 0x4000) != 0;
-        mtu_guard_count(dont_fragment ? MTU_GUARD_STAT_OVERSIZED_V4_DF
-                                      : MTU_GUARD_STAT_OVERSIZED_V4_FRAGMENTABLE);
+        return dont_fragment ? MTU_GUARD_VERDICT_OVERSIZE_V4_DF
+                             : MTU_GUARD_VERDICT_OVERSIZE_V4_FRAGMENTABLE;
+    }
+
+    return MTU_GUARD_VERDICT_PASS;
+}
+
+/// The counter a verdict belongs to, or -1 for "nothing to count".
+static __always_inline int mtu_guard_stat_of(enum mtu_guard_verdict verdict) {
+    switch (verdict) {
+    case MTU_GUARD_VERDICT_GSO:
+        return MTU_GUARD_STAT_GSO_SKIPPED;
+    case MTU_GUARD_VERDICT_OVERSIZE_V6:
+        return MTU_GUARD_STAT_OVERSIZED_V6;
+    case MTU_GUARD_VERDICT_OVERSIZE_V4_DF:
+        return MTU_GUARD_STAT_OVERSIZED_V4_DF;
+    case MTU_GUARD_VERDICT_OVERSIZE_V4_FRAGMENTABLE:
+        return MTU_GUARD_STAT_OVERSIZED_V4_FRAGMENTABLE;
+    default:
+        return -1;
     }
 }
 

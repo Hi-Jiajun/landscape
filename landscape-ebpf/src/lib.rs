@@ -84,6 +84,12 @@ pub struct LandscapeMapPath {
     pub route_unclassified_stats: PathBuf,
     /// Packets the WAN egress could not carry, by family and DF.
     pub mtu_guard_stats: PathBuf,
+    /// The IPv6 Packet Too Big chamber: its wiring, its admission table, the
+    /// per-source budget, and what it did.
+    pub mtu_chamber_cfg: PathBuf,
+    pub mtu_chamber_stats: PathBuf,
+    pub mtu_chamber_state: PathBuf,
+    pub mtu_chamber_budget: PathBuf,
 
     // IP MAC
     pub ip_mac_v4: PathBuf,
@@ -104,7 +110,7 @@ impl LandscapeMapPath {
     /// paths, skeleton pin reuse and tests all share one source of truth.
     pub fn from_root(root: &Path) -> Self {
         use crate::maps::{
-            dns, dns_guard, firewall, flow, flow_dns, flow_wanip, mac, mtu_guard, nat,
+            dns, dns_guard, firewall, flow, flow_dns, flow_wanip, mac, mtu_chamber, mtu_guard, nat,
             redirect_able, route, wan,
         };
 
@@ -157,6 +163,10 @@ impl LandscapeMapPath {
             route_unclassified_cfg: root.join(route::ROUTE_UNCLASSIFIED_PIN),
             route_unclassified_stats: root.join(route::ROUTE_UNCLASSIFIED_STATS_PIN),
             mtu_guard_stats: root.join(mtu_guard::MTU_GUARD_STATS_PIN),
+            mtu_chamber_cfg: root.join(mtu_chamber::MTU_CHAMBER_CFG_PIN),
+            mtu_chamber_stats: root.join(mtu_chamber::MTU_CHAMBER_STATS_PIN),
+            mtu_chamber_state: root.join(mtu_chamber::MTU_CHAMBER_STATE_PIN),
+            mtu_chamber_budget: root.join(mtu_chamber::MTU_CHAMBER_BUDGET_PIN),
 
             // IP MAC
             ip_mac_v4: root.join(mac::IP_MAC_V4_PIN),
@@ -225,6 +235,10 @@ const PPPOE_EGRESS_PRIORITY: u32 = 2;
 // LAN ingress TC classifier priorities (smaller runs first)
 pub(crate) const TC_LAN_INGRESS_INTRO_PRIORITY: u32 = 1;
 pub(crate) const TC_LAN_INGRESS_DAO_PRIORITY: u32 = 2;
+/// The chamber's return gate is the only filter on the chamber's veth, so it
+/// takes the first slot: nothing may run before the thing that decides what this
+/// link is allowed to carry.
+pub(crate) const TC_CHAMBER_RETURN_PRIORITY: u32 = 1;
 
 // const FLOW_EGRESS_PRIORITY: u32 = 4;
 const LANDSCAPE_IPV4_TYPE: u8 = 0;

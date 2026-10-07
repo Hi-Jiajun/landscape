@@ -142,6 +142,9 @@ pub struct LandscapeProxyService {
     /// Owns the MSS stage, which is where the egress-MTU oversize counters live -
     /// that stage is the one place every outbound packet passes.
     mss_dataplane: Arc<dyn landscape_common::wan_service::mss_clamp::dataplane::MssClampDataplane>,
+    /// Owns the IPv6 Packet Too Big chamber: the stage that decides, the return
+    /// gate, and the wiring between them.
+    mtu_chamber_dataplane: Arc<dyn landscape_common::wan_service::mtu_chamber::MtuChamberDataplane>,
     http_client: reqwest::Client,
 }
 
@@ -158,6 +161,9 @@ impl LandscapeProxyService {
         flow_dataplane: Arc<dyn landscape_common::flow::dataplane::FlowRuleDataplane>,
         mss_dataplane: Arc<
             dyn landscape_common::wan_service::mss_clamp::dataplane::MssClampDataplane,
+        >,
+        mtu_chamber_dataplane: Arc<
+            dyn landscape_common::wan_service::mtu_chamber::MtuChamberDataplane,
         >,
     ) -> Self {
         let proxy_dir = home_path.join("proxy");
@@ -196,6 +202,7 @@ impl LandscapeProxyService {
             dns_guard: dns_guard::DnsLeakGuard::new(dns_guard_dataplane),
             flow_dataplane,
             mss_dataplane,
+            mtu_chamber_dataplane,
             http_client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
@@ -366,6 +373,26 @@ impl LandscapeProxyService {
         &self,
     ) -> Result<landscape_common::wan_service::mss_clamp::MtuGuardStats, String> {
         self.mss_dataplane.mtu_stats()
+    }
+
+    /// The IPv6 Packet Too Big chamber: whether it is diverting, where to, and
+    /// what it has done.
+    ///
+    /// Read from the datapath rather than from the service that set it up: the
+    /// question the report asks is what the datapath was last told, and a
+    /// configuration that says "on" while the map says otherwise is exactly the
+    /// failure this is meant to expose.
+    pub fn chamber_status(&self) -> Result<crate::proxy::leak_guard::ChamberStatus, String> {
+        let wiring = self.mtu_chamber_dataplane.wiring()?;
+        let stats = self.mtu_chamber_dataplane.stats()?;
+        let pending = self.mtu_chamber_dataplane.pending()?;
+        Ok(crate::proxy::leak_guard::ChamberStatus {
+            diverting: wiring.diverts(),
+            target_ifindex: wiring.veth_ifindex,
+            sources: wiring.source_count as usize,
+            stats,
+            pending,
+        })
     }
 
     /// The hostnames the engine must be able to resolve before it can start.

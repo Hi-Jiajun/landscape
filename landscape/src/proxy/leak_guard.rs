@@ -42,6 +42,21 @@ pub struct LeakGuardInput<'a> {
     pub bootstrap: Vec<BootstrapResolution>,
     /// Packets the WAN egress could not carry, by family and DF.
     pub mtu: landscape_common::wan_service::mss_clamp::MtuGuardStats,
+    /// The IPv6 Packet Too Big chamber, or why its state could not be read.
+    pub chamber: Result<ChamberStatus, String>,
+}
+
+/// The chamber, as the datapath currently sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChamberStatus {
+    /// Whether the datapath is actually diverting to it. False also covers "a
+    /// chamber exists but nothing was written to the datapath", which is the
+    /// state a chamber that failed to come up leaves behind.
+    pub diverting: bool,
+    pub target_ifindex: u32,
+    pub sources: usize,
+    pub stats: landscape_common::wan_service::mtu_chamber::MtuChamberStats,
+    pub pending: u64,
 }
 
 /// Where one of the engine's own hostnames resolves.
@@ -209,7 +224,7 @@ pub fn evaluate(input: LeakGuardInput<'_>) -> LeakGuardReport {
 /// what the remedy should be sized by.
 fn check_wan_mtu(report: &mut LeakGuardReport, input: &LeakGuardInput<'_>) {
     let stats = input.mtu;
-    let evidence = vec![
+    let mut evidence = vec![
         format!("ipv6 over the egress MTU: {}", stats.oversized_v6),
         format!(
             "ipv4 over the egress MTU: {} with DF, {} fragmentable",
@@ -221,7 +236,60 @@ fn check_wan_mtu(report: &mut LeakGuardReport, input: &LeakGuardInput<'_>) {
         ),
     ];
 
+    // What is being done about it, so a count of drops is not read as "nothing
+    // happens" when the remedy exists, and a working remedy is not reported as a
+    // leak just because the count is cumulative.
+    match &input.chamber {
+        Ok(chamber) => {
+            evidence.push(format!(
+                "IPv6 remedy: {} (divert target {}, {} address(es) to speak with)",
+                if chamber.diverting {
+                    "the exception chamber is enabled"
+                } else {
+                    "no chamber: nothing is diverted"
+                },
+                chamber.target_ifindex,
+                chamber.sources
+            ));
+            evidence.push(format!(
+                "chamber counters: {} diverted, {} error(s) returned, {} without an error \
+                 (unavailable, out of scope, refused or failed), {} pending admission(s)",
+                chamber.stats.diverted,
+                chamber.stats.ptb_returned,
+                chamber.stats.without_an_error(),
+                chamber.pending
+            ));
+        }
+        Err(e) => evidence.push(format!(
+            "IPv6 remedy: unknown - the chamber's state could not be read ({e}), so whether \
+             anything is being done about this cannot be answered from here"
+        )),
+    }
+    let returning_errors = match &input.chamber {
+        Ok(chamber) => chamber.diverting && chamber.stats.ptb_returned > 0,
+        Err(_) => false,
+    };
+
     if stats.has_violations() {
+        if returning_errors {
+            // Both counters are cumulative and neither is windowed, so this cannot
+            // claim the drops stopped when the chamber came up - only that the
+            // remedy exists and has run. Saying more would be reporting a counter as
+            // current state, which this file has got wrong before.
+            report.push(LeakFinding {
+                class: LeakClass::ProxyFailure,
+                severity: LeakSeverity::Ok,
+                check: "wan_oversize_is_answered".into(),
+                detail: "IPv6 packets over the egress MTU are handed to the exception chamber \
+                         and the error it produces is validated and delivered to the client, so a \
+                         sender learns the path MTU instead of being dropped in silence. The \
+                         oversize count above is cumulative and not windowed, so it cannot say \
+                         whether any of those were dropped before the chamber was enabled."
+                    .into(),
+                evidence,
+            });
+            return;
+        }
         report.push(LeakFinding {
             class: LeakClass::ProxyFailure,
             severity: LeakSeverity::Leak,
@@ -1200,6 +1268,16 @@ mod tests {
                 }
             }],
             mtu: Default::default(),
+            // No chamber in the fixture: the compliant configuration for these
+            // tests is about DNS, proxy and unclassified destinations, and the
+            // chamber's own reporting is exercised by its own cases below.
+            chamber: Ok(ChamberStatus {
+                diverting: false,
+                target_ifindex: 0,
+                sources: 0,
+                stats: Default::default(),
+                pending: 0,
+            }),
         }
     }
 
@@ -1847,6 +1925,80 @@ mod tests {
         assert_eq!(finding.severity, LeakSeverity::Ok);
         assert!(finding.detail.contains("not dropped anything yet"), "{}", finding.detail);
         assert!(finding.detail.contains("no way to return the error"), "{}", finding.detail);
+    }
+
+    /// Once the chamber is up and has actually returned errors, the same cumulative
+    /// oversize count must not be reported as a live leak - and must not be reported
+    /// as "fixed from here on" either, because neither counter is windowed.
+    #[test]
+    fn a_chamber_that_has_returned_errors_is_reported_as_the_remedy_not_as_the_leak() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.mtu = landscape_common::wan_service::mss_clamp::MtuGuardStats {
+            oversized_v6: 7,
+            ..Default::default()
+        };
+        input.chamber = Ok(ChamberStatus {
+            diverting: true,
+            target_ifindex: 42,
+            sources: 2,
+            stats: landscape_common::wan_service::mtu_chamber::MtuChamberStats {
+                diverted: 3,
+                ptb_returned: 3,
+                ..Default::default()
+            },
+            pending: 0,
+        });
+        let report = evaluate(input);
+        let answered = report
+            .findings
+            .iter()
+            .find(|f| f.check == "wan_oversize_is_answered")
+            .expect("a chamber that has returned errors must be reported");
+        assert_eq!(answered.severity, LeakSeverity::Ok);
+        assert!(
+            answered.detail.contains("cumulative"),
+            "the report must not read a cumulative counter as current state: {}",
+            answered.detail
+        );
+        assert!(
+            answered.evidence.iter().any(|line| line.contains("3 error(s) returned")),
+            "{:?}",
+            answered.evidence
+        );
+        // The same evidence must not also be presented as a live leak.
+        assert!(report.findings.iter().all(
+            |f| f.check != "wan_oversize_silently_dropped" || f.severity != LeakSeverity::Leak
+        ));
+    }
+
+    /// A chamber that is configured but has not returned anything yet is a
+    /// different statement from "there is no way to return the error".
+    #[test]
+    fn an_idle_chamber_is_not_reported_as_an_incapable_router() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.mtu = Default::default();
+        input.chamber = Ok(ChamberStatus {
+            diverting: true,
+            target_ifindex: 42,
+            sources: 2,
+            stats: Default::default(),
+            pending: 0,
+        });
+        let report = evaluate(input);
+        let finding = report.findings.iter().find(|f| f.check == "wan_oversize_is_answered");
+        // Nothing has been diverted yet, so there is no work to report; what must
+        // not happen is the report claiming the error cannot be returned.
+        assert!(finding.is_none());
+        let leak = report.findings.iter().find(|f| f.check == "wan_oversize_silently_dropped");
+        if let Some(leak) = leak {
+            assert!(
+                leak.evidence.iter().any(|line| line.contains("chamber is enabled")),
+                "the evidence has to say the remedy exists: {:?}",
+                leak.evidence
+            );
+        }
     }
 
     /// The check has to read whether the hijack is installed, not a counter: the

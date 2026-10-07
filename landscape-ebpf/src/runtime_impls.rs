@@ -299,6 +299,57 @@ pub struct EbpfMssClampDataplane {
     rt: Arc<EbpfRuntime>,
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// IPv6 Packet Too Big chamber
+// ─────────────────────────────────────────────────────────────────────────
+
+pub struct EbpfMtuChamberDataplane {
+    rt: Arc<EbpfRuntime>,
+}
+
+impl EbpfMtuChamberDataplane {
+    pub(crate) fn new(rt: Arc<EbpfRuntime>) -> Self {
+        Self { rt }
+    }
+}
+
+impl landscape_common::wan_service::mtu_chamber::MtuChamberDataplane for EbpfMtuChamberDataplane {
+    fn attach_stage(
+        &self,
+        ifindex: u32,
+        mtu: u16,
+        has_mac: bool,
+    ) -> Result<Box<dyn landscape_common::ebpf::DataplaneGuard>, String> {
+        crate::stages::mtu_chamber::attach_tc_mtu_chamber_stage(&self.rt, ifindex, mtu, has_mac)
+            .map(|handle| Box::new(handle) as Box<dyn landscape_common::ebpf::DataplaneGuard>)
+            .map_err(|e| e.to_string())
+    }
+
+    fn attach_return_gate(
+        &self,
+        veth_ifindex: u32,
+        wiring: landscape_common::wan_service::mtu_chamber::MtuChamberWiring,
+    ) -> Result<Box<dyn landscape_common::ebpf::DataplaneGuard>, String> {
+        crate::stages::mtu_chamber::attach_tc_mtu_chamber_gate(&self.rt, veth_ifindex, wiring)
+            .map(|handle| Box::new(handle) as Box<dyn landscape_common::ebpf::DataplaneGuard>)
+            .map_err(|e| e.to_string())
+    }
+
+    fn stats(&self) -> Result<landscape_common::wan_service::mtu_chamber::MtuChamberStats, String> {
+        crate::maps::mtu_chamber::read_mtu_chamber_stats(&self.rt.paths)
+    }
+
+    fn pending(&self) -> Result<u64, String> {
+        crate::maps::mtu_chamber::read_mtu_chamber_pending(&self.rt.paths)
+    }
+
+    fn wiring(
+        &self,
+    ) -> Result<landscape_common::wan_service::mtu_chamber::MtuChamberWiring, String> {
+        crate::maps::mtu_chamber::read_mtu_chamber_wiring(&self.rt.paths)
+    }
+}
+
 impl EbpfMssClampDataplane {
     pub(crate) fn new(rt: Arc<EbpfRuntime>) -> Self {
         Self { rt }

@@ -36,6 +36,12 @@ pub enum StageType {
     Firewall = 1,
     Nat = 2,
     Pppoe = 3,
+    /// The egress MTU stage: counts what the selected egress cannot carry and
+    /// hands the IPv6 case to the exception chamber. It sits between the
+    /// firewall and the egress encapsulation on purpose - after admission, so a
+    /// refusal is never learnt from or answered, and before encapsulation, so the
+    /// packet is still the plain IP packet the client sent.
+    EgressMtu = 4,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -509,9 +515,13 @@ impl TcChainManager {
 
         let stage_order: &[StageType] = match chain {
             ChainDir::WanIngress => &[StageType::Mss, StageType::Firewall, StageType::Nat],
-            ChainDir::WanEgress => {
-                &[StageType::Mss, StageType::Nat, StageType::Firewall, StageType::Pppoe]
-            }
+            ChainDir::WanEgress => &[
+                StageType::Mss,
+                StageType::Nat,
+                StageType::Firewall,
+                StageType::EgressMtu,
+                StageType::Pppoe,
+            ],
         };
 
         let sorted: Vec<&StageEntry> = stage_order

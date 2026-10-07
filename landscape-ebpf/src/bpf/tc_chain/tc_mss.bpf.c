@@ -7,7 +7,6 @@
 #include "pkg_def.h"
 #include "chain/tc_stage.h"
 #include "chain/tc_wan_exit_maps.h"
-#include "mtu_guard/mtu_guard.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -165,12 +164,10 @@ int tc_mss_wan_ingress(struct __sk_buff *skb) {
 
 SEC("tc/egress")
 int tc_mss_wan_egress(struct __sk_buff *skb) {
-    // This is the one place every packet leaving the WAN passes, and the one place
-    // the egress MTU is known - so it is where "this packet is bigger than the WAN
-    // can carry" is both knowable and worth recording. Counting, not remedying:
-    // see the header for why the remedy needs its own design.
-    mtu_guard_check(skb, current_l3_offset, mtu_size);
-
+    // The oversize check and the Packet Too Big remedy moved to
+    // `tc_mtu_chamber.bpf.c`, which runs after the firewall: a packet the
+    // operator refused must not learn anything about this egress, and must not
+    // be given an error either.
     clamp_tcp_if_present(skb, current_l3_offset, mtu_size);
 
     TC_CHAIN_WAN_EGRESS(skb);

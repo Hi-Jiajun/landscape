@@ -583,6 +583,7 @@ async fn run_system(
         ebpf_rt.clone().dns_guard(),
         ebpf_rt.clone().flow_rules(),
         ebpf_rt.clone().mss_clamp(),
+        ebpf_rt.clone().mtu_chamber(),
     )
     .await;
 
@@ -822,6 +823,7 @@ async fn run_system(
         db_store_provider.clone(),
         event_handle.subscribe_iface(),
         ebpf_rt.clone().mss_clamp(),
+        ebpf_rt.clone().mtu_chamber(),
     )
     .await?;
 

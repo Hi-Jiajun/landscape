@@ -3,7 +3,7 @@ use landscape_common::wan_service::mss_clamp::MSSClampServiceConfig;
 use sea_orm::{ActiveValue::Set, entity::prelude::*};
 use serde::{Deserialize, Serialize};
 
-use crate::DBTimestamp;
+use crate::{DBJson, DBTimestamp};
 
 pub type MSSClampServiceConfigModel = Model;
 pub type MSSClampServiceConfigEntity = Entity;
@@ -17,6 +17,9 @@ pub struct Model {
     pub iface_name: String,
     pub enable: bool,
     pub clamp_size: u16,
+    /// The IPv6 Packet Too Big chamber, or NULL for no chamber. Nullable so rows
+    /// written before the column existed stay valid; read as absent.
+    pub mtu_chamber: Option<DBJson>,
     pub update_at: DBTimestamp,
 }
 
@@ -32,6 +35,7 @@ impl From<Model> for MSSClampServiceConfig {
             iface_name: entity.iface_name,
             enable: entity.enable,
             clamp_size: entity.clamp_size,
+            mtu_chamber: entity.mtu_chamber.and_then(|value| serde_json::from_value(value).ok()),
             update_at: entity.update_at,
         }
     }
@@ -52,6 +56,8 @@ impl UpdateActiveModel<ActiveModel> for MSSClampServiceConfig {
     fn update(self, active: &mut ActiveModel) {
         active.enable = Set(self.enable);
         active.clamp_size = Set(self.clamp_size);
+        active.mtu_chamber =
+            Set(self.mtu_chamber.as_ref().and_then(|chamber| serde_json::to_value(chamber).ok()));
         active.update_at = Set(self.update_at);
     }
 }

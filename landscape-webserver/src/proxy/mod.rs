@@ -244,6 +244,7 @@ async fn get_leak_report(State(state): State<LandscapeApp>) -> LandscapeApiResul
             tracing::warn!("cannot read the WAN oversize counters: {e}");
             Default::default()
         }),
+        chamber: state.proxy_service.chamber_status(),
     });
     LandscapeApiResp::success(report)
 }

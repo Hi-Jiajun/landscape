@@ -116,6 +116,7 @@ pub mod flow;
 pub mod flow_dns;
 pub mod flow_wanip;
 pub mod mac;
+pub mod mtu_chamber;
 pub mod mtu_guard;
 pub mod nat;
 mod pin_coverage;
@@ -606,6 +607,17 @@ pub(crate) fn init_path(paths: &LandscapeMapPath) {
         .expect("init route_unclassified_stats_map failed");
     mtu_guard::init_mtu_guard_stats_map(&paths.mtu_guard_stats)
         .expect("init mtu_guard_stats_map failed");
+    // The IPv6 Packet Too Big chamber: its wiring (left zeroed here, so the
+    // divert starts off and only a fully set-up chamber turns it on), the
+    // admission table, the per-source budget, and the counters.
+    mtu_chamber::init_mtu_chamber_cfg_map(&paths.mtu_chamber_cfg)
+        .expect("init mtu_chamber_cfg_map failed");
+    mtu_chamber::init_mtu_chamber_stats_map(&paths.mtu_chamber_stats)
+        .expect("init mtu_chamber_stats_map failed");
+    mtu_chamber::init_mtu_chamber_state_map(&paths.mtu_chamber_state)
+        .expect("init mtu_chamber_state_map failed");
+    mtu_chamber::init_mtu_chamber_budget_map(&paths.mtu_chamber_budget)
+        .expect("init mtu_chamber_budget_map failed");
 
     // IP <-> MAC + DAD NS events
     mac::init_ip_mac_v4(&paths.ip_mac_v4).expect("init ip_mac_v4 failed");
@@ -677,6 +689,14 @@ pub(crate) fn init_maps_for_test(paths: &LandscapeMapPath) {
         .expect("test init route_unclassified_stats_map");
     mtu_guard::init_mtu_guard_stats_map(&paths.mtu_guard_stats)
         .expect("test init mtu_guard_stats_map");
+    mtu_chamber::init_mtu_chamber_cfg_map(&paths.mtu_chamber_cfg)
+        .expect("test init mtu_chamber_cfg_map");
+    mtu_chamber::init_mtu_chamber_stats_map(&paths.mtu_chamber_stats)
+        .expect("test init mtu_chamber_stats_map");
+    mtu_chamber::init_mtu_chamber_state_map(&paths.mtu_chamber_state)
+        .expect("test init mtu_chamber_state_map");
+    mtu_chamber::init_mtu_chamber_budget_map(&paths.mtu_chamber_budget)
+        .expect("test init mtu_chamber_budget_map");
 
     mac::init_ip_mac_v4(&paths.ip_mac_v4).expect("test init ip_mac_v4");
     mac::init_ip_mac_v6(&paths.ip_mac_v6).expect("test init ip_mac_v6");
