@@ -446,11 +446,18 @@ mod tests {
         let targets =
             build_rollback_targets(&current_state, &all_migrations, RELEASE_BOUNDARIES).unwrap();
 
-        assert_eq!(targets.first().unwrap().version, "0.24.3");
-        assert_eq!(targets.first().unwrap().display_label, "previous release 0.24.3");
-        assert_eq!(targets.get(1).unwrap().display_label, "older release 0.22.3");
-        assert_eq!(targets.get(2).unwrap().display_label, "older release 0.21.5");
-        assert_eq!(targets.first().unwrap().steps, 2);
+        // The head is one migration past the newest registered boundary (the fork
+        // adds `m20261007_000000_add_backup_ips_to_dns_upstream` on top of 0.25.1),
+        // so the newest rollback target is 0.25.1 itself and undoing the single
+        // migration that follows it is one step - not the two steps it took to
+        // reach this point when the head *was* the 0.25.1 boundary.
+        assert_eq!(targets.first().unwrap().version, "0.25.1");
+        // Labelled as the current boundary rather than "previous": the head is past
+        // it, which is exactly what `pending_since_release` describes.
+        assert_eq!(targets.first().unwrap().display_label, "current release boundary 0.25.1");
+        assert_eq!(targets.get(1).unwrap().display_label, "previous release 0.24.3");
+        assert_eq!(targets.get(2).unwrap().display_label, "older release 0.22.3");
+        assert_eq!(targets.first().unwrap().steps, 1);
     }
 
     #[test]
@@ -466,10 +473,13 @@ mod tests {
             .unwrap();
 
         let plan = build_rollback_plan(&current_state, &target, &all_migrations).unwrap();
-        assert_eq!(plan.steps, 10);
+        // 11, not 10: the same plan as before plus the fork's one migration on top
+        // of the 0.25.1 boundary.
+        assert_eq!(plan.steps, 11);
         assert_eq!(
             plan.rollback_migrations,
             vec![
+                "m20261007_000000_add_backup_ips_to_dns_upstream".to_string(),
                 "m20260927_000000_add_use_experimental_pool_to_dns_upstream".to_string(),
                 "m20260914_000000_add_names_to_config_resources".to_string(),
                 "m20260815_000000_dns_upstream_bind".to_string(),
