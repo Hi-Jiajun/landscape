@@ -86,7 +86,10 @@ pub struct MtuChamberProbe {
     pub device_mtu: u16,
     /// The configured clamp, the other input to the minimum.
     pub clamp_size: u16,
-    pub sources: Vec<Ipv6Addr>,
+    /// The addresses a chamber would have to speak with. `None` when no chamber
+    /// is configured: this is the only field that needs IPv6 to exist, and the
+    /// stage that counts does not.
+    pub sources: Option<Vec<Ipv6Addr>>,
 }
 
 impl MtuChamberEnv {
@@ -268,17 +271,26 @@ fn parse_link_local(text: &str) -> Option<Ipv6Addr> {
 /// harmless rather than something to wait out.
 pub async fn probe(
     wan_iface: &str,
-    settings: &MtuChamberSettings,
+    settings: Option<&MtuChamberSettings>,
     clamp_size: u16,
 ) -> Result<MtuChamberProbe, String> {
     let device_mtu = read_iface_mtu(wan_iface)
         .await
         .ok_or_else(|| format!("cannot read the MTU of {wan_iface}"))?;
-    let sources = collect_sources(&settings.lan_iface_names)
-        .await?
-        .into_iter()
-        .map(|(address, _)| address)
-        .collect();
+    // The sources are only needed when there is a chamber to speak as them, and
+    // reading them is what fails on a LAN with no IPv6 at all. Without a chamber
+    // that failure must not take the counters down with it: the counters are the
+    // evidence for whether the remedy is worth having, so they outlive it.
+    let sources = match settings {
+        Some(settings) => Some(
+            collect_sources(&settings.lan_iface_names)
+                .await?
+                .into_iter()
+                .map(|(address, _)| address)
+                .collect(),
+        ),
+        None => None,
+    };
     Ok(MtuChamberProbe {
         effective_mtu: device_mtu.min(clamp_size),
         device_mtu,
@@ -298,6 +310,7 @@ pub async fn bring_up(
     wan_ifindex: u32,
     settings: &MtuChamberSettings,
     probe: &MtuChamberProbe,
+    sources: &[Ipv6Addr],
 ) -> Result<MtuChamberEnv, String> {
     settings.validate()?;
 
@@ -305,11 +318,16 @@ pub async fn bring_up(
     // compares against, the number the dummy carries, and the number the error
     // advertises are one reading instead of three that can disagree.
     let wan_mtu = probe.effective_mtu;
-    let (sources_by_prefix, sources) = {
-        let collected = collect_sources(&settings.lan_iface_names).await?;
-        let addresses: Vec<Ipv6Addr> = collected.iter().map(|(a, _)| *a).collect();
-        (collected, addresses)
-    };
+    if sources.is_empty() {
+        return Err(
+            "the chamber needs at least one LAN address to speak as, and the probe found none"
+                .to_string(),
+        );
+    }
+    // Read only for the prefixes; the addresses themselves are the probe's, so
+    // that the set the read-back checks is the set that was decided on.
+    let by_prefix = collect_sources(&settings.lan_iface_names).await?;
+    let sources: Vec<Ipv6Addr> = sources.to_vec();
 
     // Names carry the WAN interface's index so two WANs cannot collide, and stay
     // inside the 15-byte limit.
@@ -407,7 +425,7 @@ pub async fn bring_up(
         // would only produce a claim nobody asked for; `noprefixroute` because
         // the route back to the client must go through the main namespace, not
         // straight out of this link.
-        for (address, prefix) in &sources_by_prefix {
+        for (address, prefix) in &by_prefix {
             ip_ns(
                 &ns,
                 &[
@@ -426,7 +444,7 @@ pub async fn bring_up(
 
         // Back to the client through the main namespace, by prefix.
         let mut routed: Vec<(Ipv6Addr, u8)> = Vec::new();
-        for (address, prefix) in &sources_by_prefix {
+        for (address, prefix) in &by_prefix {
             if routed.iter().any(|(a, p)| a == address && p == prefix) {
                 continue;
             }
@@ -543,7 +561,7 @@ pub async fn bring_up(
         problems
             .push(format!("no default route out {egress}: the egress MTU check would never run"));
     }
-    for (address, prefix) in &sources_by_prefix {
+    for (address, prefix) in &by_prefix {
         let network = network_of(*address, *prefix);
         if !route_text.contains(&format!("{network}/{prefix} via")) {
             problems

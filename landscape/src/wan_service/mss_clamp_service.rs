@@ -89,9 +89,15 @@ async fn mount_mtu_chamber(
         probe: probe.clone(),
     };
 
-    let Some(settings) = settings else { return Some(mounted) };
+    // No chamber configured, or nothing on the LAN to speak as (the `None` in the
+    // probe): the stage is up and counting, and that is the whole result. A packet
+    // the egress cannot carry keeps the old behaviour.
+    let (Some(settings), Some(sources)) = (settings, probe.sources.as_ref()) else {
+        return Some(mounted);
+    };
+    let sources = sources.clone();
 
-    match bring_up_mtu_chamber(iface_name, ifindex as u32, settings, &probe).await {
+    match bring_up_mtu_chamber(iface_name, ifindex as u32, settings, &probe, &sources).await {
         Ok(env) => {
             let wiring = env.wiring(settings.ttl_ms, settings.burst);
             match dataplane.attach_return_gate(env.veth_main_ifindex, wiring) {
@@ -233,22 +239,24 @@ pub async fn run_mss_clamp(
 
     service_status.just_change_status(ServiceStatus::Running);
     loop {
-        let desired = match &chamber_settings {
-            Some(settings) => match probe_mtu_chamber(&iface_name, settings, mtu_size).await {
+        // Always derived, never conditioned on there being a chamber: the stage
+        // that counts what the egress cannot carry is the evidence for whether the
+        // remedy is worth having, so switching the remedy off must not switch the
+        // measurement off with it.
+        let desired =
+            match probe_mtu_chamber(&iface_name, chamber_settings.as_ref(), mtu_size).await {
                 Ok(probe) => Some(probe),
                 Err(e) => {
                     if last_error.as_deref() != Some(e.as_str()) {
                         tracing::error!(
-                            "cannot derive the MTU chamber's shape for {iface_name}: {e}; the \
-                             divert is off until the interfaces can be read"
+                            "cannot derive the MTU stage's shape for {iface_name}: {e}; the \
+                             oversize counters are blind and nothing is diverted"
                         );
                         last_error = Some(e);
                     }
                     None
                 }
-            },
-            None => None,
-        };
+            };
         if desired.is_some() && last_error.take().is_some() {
             tracing::info!("the MTU chamber's shape is readable again for {iface_name}");
         }
