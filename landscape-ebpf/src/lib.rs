@@ -39,6 +39,13 @@ pub struct LandscapeMapPath {
     pub firewall_config: PathBuf,
     pub firewall_allow_ports: PathBuf,
 
+    /// Managed-DNS guard: switch, DoH address sets, trust list, counters.
+    pub dns_guard_config: PathBuf,
+    pub dns_guard_doh4: PathBuf,
+    pub dns_guard_doh6: PathBuf,
+    pub dns_guard_exempt: PathBuf,
+    pub dns_guard_stats: PathBuf,
+
     /// Flow
     pub flow_match_map: PathBuf,
 
@@ -81,7 +88,8 @@ impl LandscapeMapPath {
     /// paths, skeleton pin reuse and tests all share one source of truth.
     pub fn from_root(root: &Path) -> Self {
         use crate::maps::{
-            dns, firewall, flow, flow_dns, flow_wanip, mac, nat, redirect_able, route, wan,
+            dns, dns_guard, firewall, flow, flow_dns, flow_wanip, mac, nat, redirect_able, route,
+            wan,
         };
 
         let root = root.to_path_buf();
@@ -96,6 +104,13 @@ impl LandscapeMapPath {
             firewall_ipv6_block: root.join(firewall::FIREWALL_BLOCK_IP6_MAP_PIN),
             firewall_config: root.join(firewall::FIREWALL_CONFIG_PIN),
             firewall_allow_ports: root.join(firewall::FIREWALL_ALLOW_PORTS_PIN),
+
+            // Managed-DNS guard
+            dns_guard_config: root.join(dns_guard::DNS_GUARD_CONFIG_PIN),
+            dns_guard_doh4: root.join(dns_guard::DNS_GUARD_DOH4_PIN),
+            dns_guard_doh6: root.join(dns_guard::DNS_GUARD_DOH6_PIN),
+            dns_guard_exempt: root.join(dns_guard::DNS_GUARD_EXEMPT_PIN),
+            dns_guard_stats: root.join(dns_guard::DNS_GUARD_STATS_PIN),
 
             // Flow
             flow_match_map: root.join(flow::FLOW_MATCH_MAP_PIN),

@@ -14,6 +14,7 @@
 
 #include "chain/tc_cb.h"
 #include "tc_chain/tc_handoff.h"
+#include "dns_guard/dns_guard.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -195,6 +196,24 @@ int tc_route4_lan_ingress(struct __sk_buff *skb) {
         return TC_ACT_UNSPEC;
     }
 
+    // Managed-DNS guard. It has to run here, before route4_search_cache_in_lan:
+    // that cache is a fast path straight to bpf_redirect, so anything checked
+    // after it has already been forwarded past netfilter.
+    union u_inet_addr guard_src = {0};
+    union u_inet_addr guard_dst = {0};
+    guard_src.ip = context.saddr;
+    guard_dst.ip = context.daddr;
+    int guard =
+        dns_guard_check(skb, current_l3_offset, LANDSCAPE_IPV4_TYPE, &guard_src, &guard_dst);
+    if (guard == LD_DNS_GUARD_HANDOFF) {
+        learn_src_ip_mac_v4_tc(skb, &context, current_l3_offset);
+        dns_guard_mark_handoff(skb);
+        return TC_ACT_OK;
+    }
+    if (guard == LD_DNS_GUARD_DROP) {
+        return TC_ACT_SHOT;
+    }
+
     ret = route4_search_cache_in_lan(skb, current_l3_offset, &context, &flow_mark);
     if (ret != TC_ACT_OK) {
         skb->mark = replace_flow_source(flow_mark, FLOW_FROM_LAN);
@@ -248,6 +267,22 @@ int tc_route6_lan_ingress(struct __sk_buff *skb) {
 
     if (unlikely(is_broadcast_ip6(context.daddr.bytes))) {
         return TC_ACT_UNSPEC;
+    }
+
+    // Same placement and same reasoning as the IPv4 path above.
+    union u_inet_addr guard_src6 = {0};
+    union u_inet_addr guard_dst6 = {0};
+    __builtin_memcpy(guard_src6.bits, context.saddr.bytes, sizeof(guard_src6.bits));
+    __builtin_memcpy(guard_dst6.bits, context.daddr.bytes, sizeof(guard_dst6.bits));
+    int guard6 =
+        dns_guard_check(skb, current_l3_offset, LANDSCAPE_IPV6_TYPE, &guard_src6, &guard_dst6);
+    if (guard6 == LD_DNS_GUARD_HANDOFF) {
+        learn_src_ip_mac_v6_tc(skb, &context, current_l3_offset);
+        dns_guard_mark_handoff(skb);
+        return TC_ACT_OK;
+    }
+    if (guard6 == LD_DNS_GUARD_DROP) {
+        return TC_ACT_SHOT;
     }
 
     ret = route6_search_cache_in_lan(skb, current_l3_offset, &context, &flow_mark);

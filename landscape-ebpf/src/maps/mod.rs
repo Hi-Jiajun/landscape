@@ -110,6 +110,7 @@ macro_rules! assert_field_as {
 }
 
 pub mod dns;
+pub mod dns_guard;
 pub mod firewall;
 pub mod flow;
 pub mod flow_dns;
@@ -553,6 +554,19 @@ pub(crate) fn init_path(paths: &LandscapeMapPath) {
     firewall::init_firewall_allow_ports_map(&paths.firewall_allow_ports)
         .expect("init firewall_allow_ports_map failed");
 
+    // Managed-DNS guard. The switch and the counters survive a restart; the
+    // content maps are reconciled from configuration on every apply.
+    dns_guard::init_dns_guard_config_map(&paths.dns_guard_config)
+        .expect("init dns_guard_config_map failed");
+    dns_guard::init_dns_guard_doh4_map(&paths.dns_guard_doh4)
+        .expect("init dns_guard_doh4_map failed");
+    dns_guard::init_dns_guard_doh6_map(&paths.dns_guard_doh6)
+        .expect("init dns_guard_doh6_map failed");
+    dns_guard::init_dns_guard_exempt_map(&paths.dns_guard_exempt)
+        .expect("init dns_guard_exempt_map failed");
+    dns_guard::init_dns_guard_stats_map(&paths.dns_guard_stats)
+        .expect("init dns_guard_stats_map failed");
+
     // flow match / dns socket map
     flow::init_flow_match_map(&paths.flow_match_map).expect("init flow_match_map failed");
     dns::init_dns_flow_socks(&paths.dns_flow_socks).expect("init dns_flow_socks failed");
@@ -608,6 +622,14 @@ pub(crate) fn init_maps_for_test(paths: &LandscapeMapPath) {
         .expect("test init firewall_config_map");
     firewall::init_firewall_allow_ports_map(&paths.firewall_allow_ports)
         .expect("test init firewall_allow_ports_map");
+    dns_guard::init_dns_guard_config_map(&paths.dns_guard_config)
+        .expect("test init dns_guard_config_map");
+    dns_guard::init_dns_guard_doh4_map(&paths.dns_guard_doh4).expect("test init dns_guard_doh4");
+    dns_guard::init_dns_guard_doh6_map(&paths.dns_guard_doh6).expect("test init dns_guard_doh6");
+    dns_guard::init_dns_guard_exempt_map(&paths.dns_guard_exempt)
+        .expect("test init dns_guard_exempt_map");
+    dns_guard::init_dns_guard_stats_map(&paths.dns_guard_stats)
+        .expect("test init dns_guard_stats_map");
     flow::init_flow_match_map(&paths.flow_match_map).expect("test init flow_match_map");
     dns::init_dns_flow_socks(&paths.dns_flow_socks).expect("test init dns_flow_socks");
 
