@@ -116,6 +116,7 @@ pub mod flow;
 pub mod flow_dns;
 pub mod flow_wanip;
 pub mod mac;
+pub mod mtu_guard;
 pub mod nat;
 mod pin_coverage;
 pub mod redirect_able;
@@ -603,6 +604,8 @@ pub(crate) fn init_path(paths: &LandscapeMapPath) {
         .expect("init route_unclassified_cfg_map failed");
     route::init_route_unclassified_stats_map(&paths.route_unclassified_stats)
         .expect("init route_unclassified_stats_map failed");
+    mtu_guard::init_mtu_guard_stats_map(&paths.mtu_guard_stats)
+        .expect("init mtu_guard_stats_map failed");
 
     // IP <-> MAC + DAD NS events
     mac::init_ip_mac_v4(&paths.ip_mac_v4).expect("init ip_mac_v4 failed");
@@ -672,6 +675,8 @@ pub(crate) fn init_maps_for_test(paths: &LandscapeMapPath) {
         .expect("test init route_unclassified_cfg_map");
     route::init_route_unclassified_stats_map(&paths.route_unclassified_stats)
         .expect("test init route_unclassified_stats_map");
+    mtu_guard::init_mtu_guard_stats_map(&paths.mtu_guard_stats)
+        .expect("test init mtu_guard_stats_map");
 
     mac::init_ip_mac_v4(&paths.ip_mac_v4).expect("test init ip_mac_v4");
     mac::init_ip_mac_v6(&paths.ip_mac_v6).expect("test init ip_mac_v6");

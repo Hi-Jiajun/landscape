@@ -582,6 +582,7 @@ async fn run_system(
         home_path.clone(),
         ebpf_rt.clone().dns_guard(),
         ebpf_rt.clone().flow_rules(),
+        ebpf_rt.clone().mss_clamp(),
     )
     .await;
 

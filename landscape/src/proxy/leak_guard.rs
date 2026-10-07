@@ -40,6 +40,8 @@ pub struct LeakGuardInput<'a> {
     pub unclassified_stats: landscape_common::flow::dataplane::UnclassifiedStats,
     /// How the hostnames the engine needs for its own startup actually resolve.
     pub bootstrap: Vec<BootstrapResolution>,
+    /// Packets the WAN egress could not carry, by family and DF.
+    pub mtu: landscape_common::wan_service::mss_clamp::MtuGuardStats,
 }
 
 /// Where one of the engine's own hostnames resolves.
@@ -189,8 +191,66 @@ pub fn evaluate(input: LeakGuardInput<'_>) -> LeakGuardReport {
     check_real_ip(&mut report, &input);
     check_routing_default(&mut report, &input);
     check_bootstrap(&mut report, &input);
+    check_wan_mtu(&mut report, &input);
     report.matrix = matrix(&input);
     report
+}
+
+/// Packets the WAN could not carry, and what happens to them.
+///
+/// This is the third symptom of one structural fact: the datapath forwards by
+/// redirect, so the kernel's forwarding path never runs. The first two were the
+/// DNS hijack rules that netfilter never saw and the guard that could not refuse a
+/// direct flow. Here it is that the *remedies* never run either - no ICMPv6 Packet
+/// Too Big, no IPv4 fragmentation - so an oversize packet is dropped in silence.
+///
+/// Reported as a measurement with the exclusion stated (segmentation aggregates),
+/// because the count is what says whether this matters in practice, and that is
+/// what the remedy should be sized by.
+fn check_wan_mtu(report: &mut LeakGuardReport, input: &LeakGuardInput<'_>) {
+    let stats = input.mtu;
+    let evidence = vec![
+        format!("ipv6 over the egress MTU: {}", stats.oversized_v6),
+        format!(
+            "ipv4 over the egress MTU: {} with DF, {} fragmentable",
+            stats.oversized_v4_df, stats.oversized_v4_fragmentable
+        ),
+        format!(
+            "excluded as segmentation aggregates: {} (not violations - the device splits them)",
+            stats.gso_skipped
+        ),
+    ];
+
+    if stats.has_violations() {
+        report.push(LeakFinding {
+            class: LeakClass::ProxyFailure,
+            severity: LeakSeverity::Leak,
+            check: "wan_oversize_silently_dropped".into(),
+            detail: "Packets have left the WAN larger than it can carry and were dropped with no \
+                     error returned. The datapath forwards by redirect, so the kernel's \
+                     forwarding path - and both of its remedies, ICMPv6 Packet Too Big and IPv4 \
+                     fragmentation - never runs. TCP is unaffected in both directions because the \
+                     MSS clamp keeps it under the limit, so this shows up as an unexplained \
+                     failure of a UDP protocol or of a large diagnostic packet, not as a broken \
+                     connection."
+                .into(),
+            evidence,
+        });
+    } else {
+        // Zero is a real reading and the honest one: this is what the counters are
+        // for, and reporting "no evidence of the condition" is not the same as
+        // reporting that the condition cannot happen.
+        report.push(LeakFinding {
+            class: LeakClass::ProxyFailure,
+            severity: LeakSeverity::Ok,
+            check: "wan_oversize_silently_dropped".into(),
+            detail: "No packet has been seen leaving the WAN larger than it can carry, so this \
+                     path has not dropped anything yet. The router still has no way to return \
+                     the error when it does."
+                .into(),
+            evidence,
+        });
+    }
 }
 
 /// Whether the engine can resolve what it needs to start.
@@ -1121,6 +1181,7 @@ mod tests {
                     resolved: true,
                 }
             }],
+            mtu: Default::default(),
         }
     }
 
@@ -1708,6 +1769,57 @@ mod tests {
         let circular =
             report.findings.iter().find(|f| f.check == "engine_bootstrap_is_circular").unwrap();
         assert_eq!(circular.severity, LeakSeverity::Ok);
+    }
+
+    /// A packet the WAN cannot carry is dropped with no error returned, because the
+    /// datapath's redirect means the kernel's forwarding path never runs. That is a
+    /// leak of the failure, not of an address - and it is exactly what the counters
+    /// exist to make visible.
+    #[test]
+    fn an_oversize_packet_with_no_error_returned_is_reported() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.mtu = landscape_common::wan_service::mss_clamp::MtuGuardStats {
+            oversized_v6: 7,
+            gso_skipped: 1234,
+            ..Default::default()
+        };
+        let report = evaluate(input);
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.check == "wan_oversize_silently_dropped")
+            .expect("an oversize drop must be reported");
+        assert_eq!(finding.severity, LeakSeverity::Leak);
+        assert!(finding.evidence[0].contains("7"), "{:?}", finding.evidence);
+        // The exclusion has to be stated, or the counter looks like it is simply
+        // counting every large skb.
+        assert!(
+            finding
+                .evidence
+                .iter()
+                .any(|line| line.contains("1234") && line.contains("not violations")),
+            "{:?}",
+            finding.evidence
+        );
+    }
+
+    /// Counters at zero are a reading, not a silence: the report says the path has
+    /// not dropped anything *yet* and that the error still cannot be returned.
+    #[test]
+    fn zero_oversize_counters_still_say_the_router_cannot_return_the_error() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.mtu = landscape_common::wan_service::mss_clamp::MtuGuardStats {
+            gso_skipped: 999,
+            ..Default::default()
+        };
+        let report = evaluate(input);
+        let finding =
+            report.findings.iter().find(|f| f.check == "wan_oversize_silently_dropped").unwrap();
+        assert_eq!(finding.severity, LeakSeverity::Ok);
+        assert!(finding.detail.contains("not dropped anything yet"), "{}", finding.detail);
+        assert!(finding.detail.contains("no way to return the error"), "{}", finding.detail);
     }
 
     #[test]

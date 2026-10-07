@@ -240,6 +240,10 @@ async fn get_leak_report(State(state): State<LandscapeApp>) -> LandscapeApiResul
             Default::default()
         }),
         bootstrap,
+        mtu: state.proxy_service.mtu_stats().unwrap_or_else(|e| {
+            tracing::warn!("cannot read the WAN oversize counters: {e}");
+            Default::default()
+        }),
     });
     LandscapeApiResp::success(report)
 }

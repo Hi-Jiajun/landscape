@@ -1,6 +1,7 @@
 //! MSS clamp dataplane: attach the TC/XDP MSS-clamp stage.
 
 use crate::ebpf::DataplaneGuard;
+use crate::wan_service::mss_clamp::MtuGuardStats;
 
 /// eBPF capability for the MSS clamp service.
 pub trait MssClampDataplane: Send + Sync {
@@ -13,6 +14,12 @@ pub trait MssClampDataplane: Send + Sync {
         mtu: u16,
         has_mac: bool,
     ) -> Result<Box<dyn DataplaneGuard>, String>;
+
+    /// What the egress saw of packets it could not carry.
+    ///
+    /// The counter belongs to the MSS stage because that stage is the one place
+    /// every outbound packet passes and the one place the egress MTU is known.
+    fn mtu_stats(&self) -> Result<MtuGuardStats, String>;
 }
 
 /// No-op implementation for tests.
@@ -26,5 +33,9 @@ impl MssClampDataplane for NoopMssClampDataplane {
         _has_mac: bool,
     ) -> Result<Box<dyn DataplaneGuard>, String> {
         Ok(Box::new(()))
+    }
+
+    fn mtu_stats(&self) -> Result<MtuGuardStats, String> {
+        Ok(MtuGuardStats::default())
     }
 }

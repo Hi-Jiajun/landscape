@@ -24,6 +24,7 @@ use landscape_common::proxy::dataplane::{DnsGuardDataplane, DnsGuardSpec};
 use landscape_common::sys_service::route_service::dataplane::RouteTableDataplane;
 use landscape_common::wan_service::addr_binding::WanAddrBinding;
 use landscape_common::wan_service::firewall::dataplane::FirewallDataplane;
+use landscape_common::wan_service::mss_clamp::MtuGuardStats;
 use landscape_common::wan_service::mss_clamp::dataplane::MssClampDataplane;
 use landscape_common::wan_service::nat::config::NatConfig;
 use landscape_common::wan_service::nat::dataplane::NatDataplane;
@@ -314,6 +315,10 @@ impl MssClampDataplane for EbpfMssClampDataplane {
         crate::stages::mss::init_mss(&self.rt, ifindex, mtu, has_mac)
             .map(|handle| Box::new(handle) as Box<dyn DataplaneGuard>)
             .map_err(|e| e.to_string())
+    }
+
+    fn mtu_stats(&self) -> Result<MtuGuardStats, String> {
+        maps::mtu_guard::read_mtu_guard_stats(&self.rt.paths)
     }
 }
 

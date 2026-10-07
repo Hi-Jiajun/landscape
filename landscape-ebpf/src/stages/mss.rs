@@ -61,6 +61,10 @@ pub fn attach_tc_mss(
         &mut open_skel.maps.tc_pipe_exits_wan_egress,
         &paths.tc_pipe_exits_wan_egress_path(),
     )?;
+    // The oversize counters this program fills. Declared in a shared header, so it
+    // needs the same explicit pin as everything else, or libbpf would pin a second
+    // instance at the bpffs root and the counters would never be read.
+    pin_and_reuse_map(&mut open_skel.maps.mtu_guard_stats_map, &paths.mtu_guard_stats)?;
 
     let skel = bpf_ctx!(open_skel.load(), "load tc_mss skeleton")?;
 

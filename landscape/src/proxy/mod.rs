@@ -139,6 +139,9 @@ pub struct LandscapeProxyService {
     /// dataplane, which is what also owns invalidating the verdict cache the
     /// policy change invalidates.
     flow_dataplane: Arc<dyn landscape_common::flow::dataplane::FlowRuleDataplane>,
+    /// Owns the MSS stage, which is where the egress-MTU oversize counters live -
+    /// that stage is the one place every outbound packet passes.
+    mss_dataplane: Arc<dyn landscape_common::wan_service::mss_clamp::dataplane::MssClampDataplane>,
     http_client: reqwest::Client,
 }
 
@@ -153,6 +156,9 @@ impl LandscapeProxyService {
         home_path: PathBuf,
         dns_guard_dataplane: Arc<dyn landscape_common::proxy::dataplane::DnsGuardDataplane>,
         flow_dataplane: Arc<dyn landscape_common::flow::dataplane::FlowRuleDataplane>,
+        mss_dataplane: Arc<
+            dyn landscape_common::wan_service::mss_clamp::dataplane::MssClampDataplane,
+        >,
     ) -> Self {
         let proxy_dir = home_path.join("proxy");
         let _ = fs::create_dir_all(&proxy_dir);
@@ -189,6 +195,7 @@ impl LandscapeProxyService {
             )),
             dns_guard: dns_guard::DnsLeakGuard::new(dns_guard_dataplane),
             flow_dataplane,
+            mss_dataplane,
             http_client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
@@ -348,6 +355,17 @@ impl LandscapeProxyService {
         &self,
     ) -> Result<landscape_common::flow::dataplane::UnclassifiedStats, String> {
         self.flow_dataplane.unclassified_stats()
+    }
+
+    /// What the WAN egress saw of packets it could not carry.
+    ///
+    /// A read failure is an error rather than zeros: "nothing was dropped" and "the
+    /// counters are unavailable" look identical in a report and mean opposite
+    /// things.
+    pub fn mtu_stats(
+        &self,
+    ) -> Result<landscape_common::wan_service::mss_clamp::MtuGuardStats, String> {
+        self.mss_dataplane.mtu_stats()
     }
 
     /// The hostnames the engine must be able to resolve before it can start.

@@ -82,6 +82,8 @@ pub struct LandscapeMapPath {
     pub route_unclassified_cfg: PathBuf,
     /// What the unclassified-destination policy did, per family and reason.
     pub route_unclassified_stats: PathBuf,
+    /// Packets the WAN egress could not carry, by family and DF.
+    pub mtu_guard_stats: PathBuf,
 
     // IP MAC
     pub ip_mac_v4: PathBuf,
@@ -102,8 +104,8 @@ impl LandscapeMapPath {
     /// paths, skeleton pin reuse and tests all share one source of truth.
     pub fn from_root(root: &Path) -> Self {
         use crate::maps::{
-            dns, dns_guard, firewall, flow, flow_dns, flow_wanip, mac, nat, redirect_able, route,
-            wan,
+            dns, dns_guard, firewall, flow, flow_dns, flow_wanip, mac, mtu_guard, nat,
+            redirect_able, route, wan,
         };
 
         let root = root.to_path_buf();
@@ -154,6 +156,7 @@ impl LandscapeMapPath {
             rt6_cache_map: root.join(route::RT6_CACHE_MAP_PIN),
             route_unclassified_cfg: root.join(route::ROUTE_UNCLASSIFIED_PIN),
             route_unclassified_stats: root.join(route::ROUTE_UNCLASSIFIED_STATS_PIN),
+            mtu_guard_stats: root.join(mtu_guard::MTU_GUARD_STATS_PIN),
 
             // IP MAC
             ip_mac_v4: root.join(mac::IP_MAC_V4_PIN),
