@@ -38,6 +38,14 @@ pub struct LandscapeMapPath {
     pub firewall_ipv6_block: PathBuf,
     pub firewall_config: PathBuf,
     pub firewall_allow_ports: PathBuf,
+    /// Connection table: the stateful half of the firewall. Shared, and created
+    /// up front so a layout change replaces the map instead of making the load
+    /// fail.
+    pub firewall_state4: PathBuf,
+    pub firewall_state6: PathBuf,
+    /// Token buckets for connection-creation and ping rate limiting.
+    pub firewall_ratelimit4: PathBuf,
+    pub firewall_ratelimit6: PathBuf,
 
     /// Managed-DNS guard: switch, DoH address sets, trust list, counters.
     pub dns_guard_config: PathBuf,
@@ -104,6 +112,10 @@ impl LandscapeMapPath {
             firewall_ipv6_block: root.join(firewall::FIREWALL_BLOCK_IP6_MAP_PIN),
             firewall_config: root.join(firewall::FIREWALL_CONFIG_PIN),
             firewall_allow_ports: root.join(firewall::FIREWALL_ALLOW_PORTS_PIN),
+            firewall_state4: root.join(firewall::FIREWALL_STATE4_PIN),
+            firewall_state6: root.join(firewall::FIREWALL_STATE6_PIN),
+            firewall_ratelimit4: root.join(firewall::FIREWALL_RATELIMIT4_PIN),
+            firewall_ratelimit6: root.join(firewall::FIREWALL_RATELIMIT6_PIN),
 
             // Managed-DNS guard
             dns_guard_config: root.join(dns_guard::DNS_GUARD_CONFIG_PIN),

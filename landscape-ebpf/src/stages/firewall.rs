@@ -69,6 +69,20 @@ pub fn attach_tc_firewall(
     )?;
     pin_and_reuse_map(&mut open_skel.maps.firewall_config_map, &paths.firewall_config)?;
     pin_and_reuse_map(&mut open_skel.maps.firewall_allow_ports_map, &paths.firewall_allow_ports)?;
+    // The state and rate-limit tables.
+    //
+    // Declaring them in the C is not enough: a map that carries
+    // `LIBBPF_PIN_BY_NAME` but gets no path from its loader is pinned at the
+    // bpffs root, outside this map space. On 2026-10-07 that made the whole WAN
+    // firewall fail to load - the rate-limit key had gained a traffic class
+    // since the root pin was created, libbpf would not reuse a 4-byte-key map for
+    // an 8-byte key, and the load returned EINVAL. Nothing else noticed: the
+    // service logged one line, the program was simply never attached, and every
+    // inbound authorization the firewall is supposed to enforce was inert.
+    pin_and_reuse_map(&mut open_skel.maps.firewall_state4_map, &paths.firewall_state4)?;
+    pin_and_reuse_map(&mut open_skel.maps.firewall_state6_map, &paths.firewall_state6)?;
+    pin_and_reuse_map(&mut open_skel.maps.firewall_ratelimit4_map, &paths.firewall_ratelimit4)?;
+    pin_and_reuse_map(&mut open_skel.maps.firewall_ratelimit6_map, &paths.firewall_ratelimit6)?;
 
     let skel = bpf_ctx!(open_skel.load(), "load tc_firewall skeleton")?;
 
@@ -175,6 +189,39 @@ pub fn init_xdp_firewall(rt: &Arc<EbpfRuntime>, ifindex: u32) -> LdEbpfResult<Xd
             &paths.firewall_conn_metric_events,
         ),
         "xdp_firewall pin firewall_conn_metric_events"
+    )?;
+    // The same four tables as the TC loader, plus the two the XDP loader used to
+    // leave to name-based pinning. The global switches and the inbound
+    // authorizations are read by this program, so leaving them un-pathed meant it
+    // read a different instance than the one the daemon writes - the same
+    // two-maps-one-name problem, with the same symptom of a setting that appears
+    // to be applied and is not.
+    crate::bpf_ctx!(
+        pin_and_reuse_map(&mut open_skel.maps.firewall_config_map, &paths.firewall_config,),
+        "xdp_firewall pin firewall_config_map"
+    )?;
+    crate::bpf_ctx!(
+        pin_and_reuse_map(
+            &mut open_skel.maps.firewall_allow_ports_map,
+            &paths.firewall_allow_ports,
+        ),
+        "xdp_firewall pin firewall_allow_ports_map"
+    )?;
+    crate::bpf_ctx!(
+        pin_and_reuse_map(&mut open_skel.maps.firewall_state4_map, &paths.firewall_state4,),
+        "xdp_firewall pin firewall_state4_map"
+    )?;
+    crate::bpf_ctx!(
+        pin_and_reuse_map(&mut open_skel.maps.firewall_state6_map, &paths.firewall_state6,),
+        "xdp_firewall pin firewall_state6_map"
+    )?;
+    crate::bpf_ctx!(
+        pin_and_reuse_map(&mut open_skel.maps.firewall_ratelimit4_map, &paths.firewall_ratelimit4,),
+        "xdp_firewall pin firewall_ratelimit4_map"
+    )?;
+    crate::bpf_ctx!(
+        pin_and_reuse_map(&mut open_skel.maps.firewall_ratelimit6_map, &paths.firewall_ratelimit6,),
+        "xdp_firewall pin firewall_ratelimit6_map"
     )?;
 
     let skel = bpf_ctx!(open_skel.load(), "load xdp_firewall skeleton")?;

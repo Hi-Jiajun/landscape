@@ -117,6 +117,7 @@ pub mod flow_dns;
 pub mod flow_wanip;
 pub mod mac;
 pub mod nat;
+mod pin_coverage;
 pub mod redirect_able;
 pub mod route;
 pub mod wan;
@@ -553,6 +554,14 @@ pub(crate) fn init_path(paths: &LandscapeMapPath) {
         .expect("init firewall_config_map failed");
     firewall::init_firewall_allow_ports_map(&paths.firewall_allow_ports)
         .expect("init firewall_allow_ports_map failed");
+    firewall::init_firewall_state4_map(&paths.firewall_state4)
+        .expect("init firewall_state4_map failed");
+    firewall::init_firewall_state6_map(&paths.firewall_state6)
+        .expect("init firewall_state6_map failed");
+    firewall::init_firewall_ratelimit4_map(&paths.firewall_ratelimit4)
+        .expect("init firewall_ratelimit4_map failed");
+    firewall::init_firewall_ratelimit6_map(&paths.firewall_ratelimit6)
+        .expect("init firewall_ratelimit6_map failed");
 
     // Managed-DNS guard. The switch and the counters survive a restart; the
     // content maps are reconciled from configuration on every apply.
@@ -622,6 +631,14 @@ pub(crate) fn init_maps_for_test(paths: &LandscapeMapPath) {
         .expect("test init firewall_config_map");
     firewall::init_firewall_allow_ports_map(&paths.firewall_allow_ports)
         .expect("test init firewall_allow_ports_map");
+    firewall::init_firewall_state4_map(&paths.firewall_state4)
+        .expect("test init firewall_state4_map");
+    firewall::init_firewall_state6_map(&paths.firewall_state6)
+        .expect("test init firewall_state6_map");
+    firewall::init_firewall_ratelimit4_map(&paths.firewall_ratelimit4)
+        .expect("test init firewall_ratelimit4_map");
+    firewall::init_firewall_ratelimit6_map(&paths.firewall_ratelimit6)
+        .expect("test init firewall_ratelimit6_map");
     dns_guard::init_dns_guard_config_map(&paths.dns_guard_config)
         .expect("test init dns_guard_config_map");
     dns_guard::init_dns_guard_doh4_map(&paths.dns_guard_doh4).expect("test init dns_guard_doh4");
