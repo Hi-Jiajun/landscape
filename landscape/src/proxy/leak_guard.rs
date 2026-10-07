@@ -520,12 +520,17 @@ fn check_dns(report: &mut LeakGuardReport, input: &LeakGuardInput<'_>) {
             ],
         });
     } else if input.dns_guard.counters.handoff_dot + input.dns_guard.counters.handoff_doh > 0
-        && input.dns_guard.refused_packets == 0
+        && !refuses_encrypted_dns(&input.dns_guard.rules)
     {
-        // A handoff with nothing refusing it: the packet was taken off the normal
-        // path and then ruled on by no one. Both counters are per packet, so they
-        // are comparable - this is not the documented handoff-versus-connection
-        // mismatch, which is why only the refusal counter is used here.
+        // A handoff with nothing to refuse it: the packet is taken off the normal
+        // path and then ruled on by no one.
+        //
+        // This deliberately does **not** compare the two counters, which was wrong:
+        // the datapath counters live in a pinned map that survives a restart, while
+        // the netfilter counters belong to a chain rebuilt on every apply and start
+        // again at zero. Comparing them reported a leak on the first report after a
+        // deploy, with nothing actually wrong. The refusal rules are the durable
+        // evidence, so they are what this reads.
         let handed_off =
             input.dns_guard.counters.handoff_dot + input.dns_guard.counters.handoff_doh;
         report.push(LeakFinding {
@@ -537,10 +542,7 @@ fn check_dns(report: &mut LeakGuardReport, input: &LeakGuardInput<'_>) {
                 .into(),
             evidence: vec![
                 format!("handed to the receive side: {handed_off} packet(s)"),
-                format!(
-                    "refused by the refusal chain: {} packet(s)",
-                    input.dns_guard.refused_packets
-                ),
+                format!("refusal rules found: {}", input.dns_guard.rules.len()),
             ],
         });
     } else {
@@ -867,6 +869,17 @@ pub fn dns_hijack_is_owned(rules: &[String]) -> bool {
     rules.iter().any(|rule| rule.contains("LANDSCAPE_DNS_HIJACK"))
 }
 
+/// Whether the refusal rules for encrypted DNS are installed.
+///
+/// Read from the rule set rather than from a counter: the rule set is what the
+/// kernel enforces, while the counters have different lifetimes on the two sides
+/// (the datapath's survive a restart, the chain's restart with the chain).
+fn refuses_encrypted_dns(rules: &[String]) -> bool {
+    // The refusal chain's own target; the leak report reads the rules as text, so
+    // the literal is the one the guard writes (`BLOCK_TARGET` in `dns_guard.rs`).
+    rules.iter().any(|rule| rule.contains("853") && rule.contains("DROP"))
+}
+
 async fn run_iptables(arguments: &[&str]) -> Result<String, String> {
     let output = tokio::process::Command::new("iptables")
         .args(arguments)
@@ -1132,22 +1145,6 @@ mod tests {
     }
 
     #[test]
-    fn handing_packets_over_without_refusing_them_is_a_leak() {
-        // Both of these counters are per packet, so a handoff with no refusal is
-        // a real inconsistency and not the documented handoff-versus-connection
-        // mismatch.
-        let tproxy = healthy_tproxy();
-        let mut input = base(&tproxy, TproxyMissingListener::Drop);
-        input.dns_guard = enabled_dns_guard();
-        input.dns_guard.counters.handoff_dot = 12;
-        input.dns_guard.refused_packets = 0;
-        let report = evaluate(input);
-        let finding = report.findings.iter().find(|f| f.check == "encrypted_dns_blocked").unwrap();
-        assert_eq!(finding.severity, LeakSeverity::Leak);
-        assert!(finding.evidence[0].contains("12"));
-    }
-
-    #[test]
     fn a_handoff_that_is_being_refused_is_healthy() {
         let tproxy = healthy_tproxy();
         let mut input = base(&tproxy, TproxyMissingListener::Drop);
@@ -1161,6 +1158,42 @@ mod tests {
         let report = evaluate(input);
         let finding = report.findings.iter().find(|f| f.check == "encrypted_dns_blocked").unwrap();
         assert_eq!(finding.severity, LeakSeverity::Ok);
+    }
+
+    /// The two counter sets have different lifetimes - the datapath's live in a
+    /// pinned map that survives a restart, the refusal chain's start again at zero
+    /// when the chain is rebuilt. Comparing them reported a leak on the first
+    /// report after a deploy with nothing wrong, so the check reads the rules
+    /// instead. This is that exact state: handoffs counted, refusals not yet.
+    #[test]
+    fn a_handoff_whose_refusal_counter_was_reset_is_not_a_leak() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.dns_guard = enabled_dns_guard();
+        input.dns_guard.counters.handoff_dot = 301;
+        input.dns_guard.refused_packets = 0;
+        let report = evaluate(input);
+        let finding = report.findings.iter().find(|f| f.check == "encrypted_dns_blocked").unwrap();
+        assert_eq!(
+            finding.severity,
+            LeakSeverity::Ok,
+            "the refusal rules are installed, so this is not a leak: {}",
+            finding.detail
+        );
+    }
+
+    /// ... and the state it does catch: handoffs happening with no refusal rules.
+    #[test]
+    fn a_handoff_with_no_refusal_rules_is_a_leak() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.dns_guard = enabled_dns_guard();
+        input.dns_guard.counters.handoff_dot = 301;
+        input.dns_guard.refused_packets = 0;
+        input.dns_guard.rules.retain(|rule| !rule.contains("853"));
+        let report = evaluate(input);
+        let finding = report.findings.iter().find(|f| f.check == "encrypted_dns_blocked").unwrap();
+        assert_eq!(finding.severity, LeakSeverity::Leak);
     }
 
     #[test]
