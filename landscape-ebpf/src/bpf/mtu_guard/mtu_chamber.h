@@ -534,22 +534,37 @@ static __always_inline int mtu_chamber_return(struct __sk_buff *skb, u32 l3_offs
     // copy of the same error finds nothing to match and is dropped.
     bpf_map_delete_elem(&mtu_chamber_state_map, &key);
 
-    // Deliver the way the datapath delivers everything else: from the link
-    // addresses it learned for this client, out the interface it came in on.
+    // Deliver out the interface the admitted packet came in on, using the link
+    // address this datapath learned for the client - and falling back to the
+    // kernel's own neighbour lookup when it has not learned one yet.
+    //
+    // The fallback is not a nicety. Measured on 2026-10-07: the ISP re-delegated
+    // the LAN prefix, the client took a new address from it, and the learned-address
+    // map did not have that address yet - so the error was validated, the
+    // admission consumed, and then dropped, with the client seeing nothing. The
+    // kernel's neighbour table already knew the client (it had been sending from
+    // that address for the packets that got here), so asking the kernel is what
+    // turns that window from a failure into an ordinary delivery.
     union u_inet6_addr client = {0};
     COPY_ADDR_FROM(client.bytes, quote_saddr);
     struct mac_value_v6 *mac = bpf_map_lookup_elem(&ip_mac_v6, &client);
-    if (mac == NULL || mac->ifindex != lan_ifindex) {
-        mtu_chamber_count(MTU_CHAMBER_STAT_PTB_NO_MAC);
-        return TC_ACT_SHOT;
+    if (mac != NULL && mac->ifindex == lan_ifindex) {
+        if (store_mac_v6(skb, mac->mac, mac->dev_mac)) {
+            mtu_chamber_count(MTU_CHAMBER_STAT_PTB_REJECTED);
+            return TC_ACT_SHOT;
+        }
+        int stored = bpf_redirect(lan_ifindex, 0);
+        if (stored == TC_ACT_REDIRECT) {
+            mtu_chamber_count(MTU_CHAMBER_STAT_PTB_RETURNED);
+            return stored;
+        }
     }
 
-    if (store_mac_v6(skb, mac->mac, mac->dev_mac)) {
-        mtu_chamber_count(MTU_CHAMBER_STAT_PTB_REJECTED);
-        return TC_ACT_SHOT;
-    }
-
-    int ret = bpf_redirect(lan_ifindex, 0);
+    struct bpf_redir_neigh param = {
+        .nh_family = AF_INET6,
+    };
+    COPY_ADDR_FROM(param.ipv6_nh, quote_saddr);
+    int ret = bpf_redirect_neigh(lan_ifindex, &param, sizeof(param), 0);
     if (ret != TC_ACT_REDIRECT) {
         mtu_chamber_count(MTU_CHAMBER_STAT_PTB_REJECTED);
         return TC_ACT_SHOT;
