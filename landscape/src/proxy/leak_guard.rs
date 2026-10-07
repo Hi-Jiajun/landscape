@@ -6,6 +6,7 @@
 //! the kernel (the TProxy fabric, the firewall), the engine and the plugin
 //! configuration; nothing here changes state.
 
+use landscape_common::flow::mark::FlowMarkAction;
 use landscape_common::proxy::{
     DnsGuardStatus, LeakClass, LeakFinding, LeakGuardReport, LeakSeverity, MatrixCell,
     TproxyDeliveryStatus, TproxyMissingListener, TproxyTargetStatus,
@@ -31,6 +32,111 @@ pub struct LeakGuardInput<'a> {
     /// the same rules, so a flow listed here but absent from the fabric is one the
     /// configuration expects to be proxied and is not.
     pub proxied_flows: Vec<u8>,
+    /// What the DNS rules do with a destination nothing more specific matched.
+    pub routing_default: RoutingDefault,
+}
+
+/// The rules a destination reaches when no earlier rule claims it.
+///
+/// This is read from the rule set rather than assumed, because the interesting
+/// states are invisible in any single rule: a rule can *look* like it sends
+/// traffic to the proxy and still resolve to a direct path.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RoutingDefault {
+    /// The rule that catches everything else: the highest-indexed enabled rule
+    /// with no source. Unmatched traffic lands here.
+    pub terminal: Option<RoutingDefaultRule>,
+    /// Enabled rules that ask for a redirect naming no tier (flow 0).
+    ///
+    /// The engine resolves such a mark to `Direct` - a redirect whose target is
+    /// the default flow has no managed tier to send the traffic to - so a rule
+    /// written as "send this to the proxy" quietly means "let it out directly".
+    /// Measured on 2026-10-07: the non-China rule was in exactly this shape, and
+    /// a LAN client's real IPv6 address reached three external reflectors,
+    /// confirmed on the WAN with the reflector replying to that address.
+    pub targetless_redirects: Vec<RoutingDefaultRule>,
+}
+
+/// One rule that decides where unmatched traffic goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutingDefaultRule {
+    pub index: u32,
+    pub name: String,
+    /// A short description of what it matches, for the evidence line.
+    pub matches: String,
+}
+
+impl RoutingDefault {
+    /// Build it from the DNS rules.
+    ///
+    /// Disabled rules are ignored: they decide nothing.
+    pub fn from_rules(rules: impl IntoIterator<Item = RoutingRule>) -> Self {
+        let mut terminal: Option<RoutingDefaultRule> = None;
+        let mut targetless: Vec<RoutingDefaultRule> = Vec::new();
+        for rule in rules {
+            if !rule.enable {
+                continue;
+            }
+            if rule.matches_everything {
+                let candidate = RoutingDefaultRule {
+                    index: rule.index,
+                    name: rule.name.clone(),
+                    matches: "matches everything".to_string(),
+                };
+                // The highest index wins: evaluation stops at the first match, so
+                // the last catch-all is the one a destination actually reaches.
+                if terminal.as_ref().is_none_or(|seen| rule.index > seen.index) {
+                    terminal = Some(candidate);
+                }
+                continue;
+            }
+            if rule.redirect_to_no_tier {
+                targetless.push(RoutingDefaultRule {
+                    index: rule.index,
+                    name: rule.name.clone(),
+                    matches: rule.matches.clone(),
+                });
+            }
+        }
+        targetless.sort_by_key(|rule| rule.index);
+        Self { terminal, targetless_redirects: targetless }
+    }
+}
+
+/// One configured DNS rule, reduced to what the routing default depends on.
+#[derive(Debug, Clone)]
+pub struct RoutingRule {
+    pub index: u32,
+    pub name: String,
+    pub enable: bool,
+    /// No source: the rule matches every destination.
+    pub matches_everything: bool,
+    /// The rule's mark is a redirect that names no flow, which the datapath
+    /// resolves to `Direct`.
+    pub redirect_to_no_tier: bool,
+    /// What the rule matches, for the evidence line.
+    pub matches: String,
+}
+
+impl RoutingRule {
+    /// Reduce a configured rule.
+    pub fn new(
+        index: u32,
+        name: String,
+        enable: bool,
+        mark: landscape_common::flow::mark::FlowMark,
+        matches_everything: bool,
+        matches: String,
+    ) -> Self {
+        Self {
+            index,
+            name,
+            enable,
+            matches_everything,
+            redirect_to_no_tier: mark.action() == FlowMarkAction::Redirect && mark.flow_id() == 0,
+            matches,
+        }
+    }
 }
 
 /// Build the report.
@@ -53,8 +159,62 @@ pub fn evaluate(input: LeakGuardInput<'_>) -> LeakGuardReport {
     check_dns(&mut report, &input);
     check_ipv6(&mut report, &input);
     check_real_ip(&mut report, &input);
+    check_routing_default(&mut report, &input);
     report.matrix = matrix(&input);
     report
+}
+
+/// Where a destination goes when no earlier rule claims it.
+///
+/// A rule set can look complete and still send unmatched traffic straight out:
+/// the terminal rule's own action decides, and a redirect that names no tier
+/// resolves to `Direct` rather than to any proxy. Both are read from the rules
+/// themselves, so the finding names the rule instead of describing a hypothesis.
+fn check_routing_default(report: &mut LeakGuardReport, input: &LeakGuardInput<'_>) {
+    for rule in &input.routing_default.targetless_redirects {
+        report.push(LeakFinding {
+            class: LeakClass::RealIp,
+            severity: LeakSeverity::Leak,
+            check: "dns_rule_resolves_to_direct".into(),
+            detail: format!(
+                "DNS rule {} (\u{201c}{}\u{201d}, matching {}) is written as a redirect but names \
+                 no flow, and the datapath resolves a redirect with no target flow to `Direct`. \
+                 Every destination it matches therefore leaves from the client's own address \
+                 instead of from a proxy tier - the rule reads as protection it does not \
+                 provide. Fixing it is a routing decision: point it at a proxy tier, or make it \
+                 a drop.",
+                rule.index, rule.name, rule.matches
+            ),
+            evidence: vec![
+                format!("rule index {}: {}", rule.index, rule.name),
+                format!("matches: {}", rule.matches),
+                "mark: redirect with flow 0 -> resolved as direct".to_string(),
+            ],
+        });
+    }
+
+    if let Some(rule) = &input.routing_default.terminal {
+        // Not a leak on its own: the terminal rule keeps whatever flow the packet
+        // already carries, and that flow may well be a proxy tier. What is worth
+        // saying is that unmatched traffic is not *owned* by any rule, so its
+        // destination is decided by the client's own flow rather than by policy.
+        report.push(LeakFinding {
+            class: LeakClass::RealIp,
+            severity: LeakSeverity::Warn,
+            check: "dns_terminal_rule_is_not_a_tier".into(),
+            detail: format!(
+                "The terminal DNS rule {} (\u{201c}{}\u{201d}) matches everything and names no \
+                 proxy tier, so a destination that no earlier rule claims keeps the flow the \
+                 packet already had. Whether that is a proxy or a direct path is then decided by \
+                 the client's flow assignment rather than by a rule.",
+                rule.index, rule.name
+            ),
+            evidence: vec![
+                format!("rule index {}: {}", rule.index, rule.name),
+                rule.matches.clone(),
+            ],
+        });
+    }
 }
 
 /// The delivery fabric itself: if it is not in place, every per-flow conclusion
@@ -670,6 +830,7 @@ async fn run_iptables(arguments: &[&str]) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use landscape_common::flow::mark::FlowMark;
     use landscape_common::proxy::{TproxyFamilyStatus, TproxyTargetStatus};
 
     use super::*;
@@ -704,6 +865,7 @@ mod tests {
             ],
             dns_guard: enabled_dns_guard(),
             proxied_flows: vec![14],
+            routing_default: RoutingDefault::default(),
         }
     }
 
@@ -964,6 +1126,119 @@ mod tests {
         assert!(dns_hijack_is_owned(&input.dns_hijack_rules));
         let report = evaluate(input);
         assert_eq!(severity_of(&report, "dns_hijack_unowned"), None);
+    }
+
+    /// A rule that reads as a redirect but names no tier resolves to direct, so
+    /// the traffic it matches leaves from the client's own address. This is the
+    /// shape the non-China rule had on 2026-10-07, when a LAN client's real IPv6
+    /// reached three external reflectors (confirmed on the WAN).
+    #[test]
+    fn a_redirect_that_names_no_tier_is_reported_as_a_leak() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.routing_default = RoutingDefault::from_rules([RoutingRule::new(
+            1000,
+            "not-china".into(),
+            true,
+            FlowMark::new(FlowMarkAction::Redirect, 0, false),
+            false,
+            "geo_key=GEOLOCATION-!CN".into(),
+        )]);
+        let report = evaluate(input);
+        let finding = report.findings.iter().find(|f| f.check == "dns_rule_resolves_to_direct");
+        let finding = finding.expect("a targetless redirect must be reported");
+        assert_eq!(finding.severity, LeakSeverity::Leak);
+        assert_eq!(finding.class, LeakClass::RealIp);
+        assert!(finding.detail.contains("1000"), "{}", finding.detail);
+        assert!(finding.detail.contains("not-china"), "{}", finding.detail);
+    }
+
+    /// The same rule pointed at a real tier is not a finding: it does what it says.
+    #[test]
+    fn a_redirect_that_names_a_tier_is_not_reported() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.routing_default = RoutingDefault::from_rules([RoutingRule::new(
+            1000,
+            "not-china".into(),
+            true,
+            FlowMark::new(FlowMarkAction::Redirect, 14, false),
+            false,
+            "geo_key=GEOLOCATION-!CN".into(),
+        )]);
+        let report = evaluate(input);
+        assert_eq!(severity_of(&report, "dns_rule_resolves_to_direct"), None);
+    }
+
+    /// A disabled rule decides nothing and must not be reported.
+    #[test]
+    fn a_disabled_targetless_redirect_is_not_reported() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.routing_default = RoutingDefault::from_rules([RoutingRule::new(
+            1000,
+            "not-china".into(),
+            false,
+            FlowMark::new(FlowMarkAction::Redirect, 0, false),
+            false,
+            "geo_key=GEOLOCATION-!CN".into(),
+        )]);
+        let report = evaluate(input);
+        assert_eq!(severity_of(&report, "dns_rule_resolves_to_direct"), None);
+    }
+
+    /// The terminal default is the *last* catch-all, because evaluation stops at
+    /// the first match: a lower-indexed catch-all with no source shadows nothing.
+    #[test]
+    fn from_rules_takes_the_last_catch_all_as_the_terminal_default() {
+        let default = RoutingDefault::from_rules([
+            RoutingRule::new(
+                100,
+                "early catch-all".into(),
+                true,
+                FlowMark::new(FlowMarkAction::KeepGoing, 0, false),
+                true,
+                String::new(),
+            ),
+            RoutingRule::new(
+                10000,
+                "Landscape Router default rule".into(),
+                true,
+                FlowMark::new(FlowMarkAction::KeepGoing, 0, false),
+                true,
+                String::new(),
+            ),
+            RoutingRule::new(
+                99999,
+                "disabled catch-all".into(),
+                false,
+                FlowMark::new(FlowMarkAction::KeepGoing, 0, false),
+                true,
+                String::new(),
+            ),
+        ]);
+        let terminal = default.terminal.expect("a terminal rule");
+        assert_eq!(terminal.index, 10000);
+    }
+
+    /// A terminal catch-all is worth saying out loud, but it is not itself a leak:
+    /// the packet keeps the flow it already had, which may be a proxy tier.
+    #[test]
+    fn a_terminal_catch_all_is_a_warning_not_a_leak() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.routing_default = RoutingDefault::from_rules([RoutingRule::new(
+            10000,
+            "Landscape Router default rule".into(),
+            true,
+            FlowMark::new(FlowMarkAction::KeepGoing, 0, false),
+            true,
+            String::new(),
+        )]);
+        let report = evaluate(input);
+        let finding = report.findings.iter().find(|f| f.check == "dns_terminal_rule_is_not_a_tier");
+        let finding = finding.expect("the terminal rule must be reported");
+        assert_eq!(finding.severity, LeakSeverity::Warn);
     }
 
     #[test]

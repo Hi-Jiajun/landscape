@@ -98,7 +98,8 @@ async fn get_tproxy_status(
 )]
 async fn get_leak_report(State(state): State<LandscapeApp>) -> LandscapeApiResult<LeakGuardReport> {
     use landscape::proxy::leak_guard::{
-        LeakGuardInput, dns_hijack_rules, evaluate, wan_has_global_ipv6,
+        LeakGuardInput, RoutingDefault, RoutingRule, dns_hijack_rules, evaluate,
+        wan_has_global_ipv6,
     };
     use landscape_common::flow::config::FlowTarget;
     use landscape_common::service::controller::ConfigStoreController;
@@ -128,6 +129,45 @@ async fn get_leak_report(State(state): State<LandscapeApp>) -> LandscapeApiResul
         }
     };
 
+    // What the DNS rules do with a destination nothing more specific matched.
+    //
+    // Read from the rule set because the states that matter are invisible in any
+    // single rule: a rule can be written as a redirect and still resolve to a
+    // direct path. A read failure leaves it empty, which the report states rather
+    // than turning into "no finding".
+    let routing_default = match state.dns_rule_service.list().await {
+        Ok(rules) => RoutingDefault::from_rules(rules.into_iter().map(|rule| {
+            let matches = if rule.source.is_empty() {
+                String::new()
+            } else {
+                rule.source
+                    .iter()
+                    .map(|source| format!("{source:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let one_line: String = matches
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(160)
+                .collect();
+            RoutingRule::new(
+                rule.index,
+                rule.name.clone(),
+                rule.enable,
+                rule.mark,
+                rule.source.is_empty(),
+                one_line,
+            )
+        })),
+        Err(e) => {
+            tracing::warn!("cannot read DNS rules for the leak report: {e}");
+            RoutingDefault::default()
+        }
+    };
+
     let report = evaluate(LeakGuardInput {
         tproxy: &tproxy,
         engine_running,
@@ -136,6 +176,7 @@ async fn get_leak_report(State(state): State<LandscapeApp>) -> LandscapeApiResul
         dns_hijack_rules: dns_hijack_rules().await,
         dns_guard: state.proxy_service.dns_guard_status().await,
         proxied_flows,
+        routing_default,
     });
     LandscapeApiResp::success(report)
 }
