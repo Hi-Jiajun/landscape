@@ -1244,6 +1244,61 @@ pub fn update_flow_dns_rule(
     }
 }
 
+/// Drop the mark entries for `addresses` in one flow.
+///
+/// Used when nothing claims an address any more: the entry was the only record
+/// of a decision, and leaving it would keep enforcing a rule no answer supports.
+/// Addresses with no entry are not an error.
+pub fn forget_flow_dns_marks(
+    paths: &LandscapeMapPath,
+    flow_id: u32,
+    generation: u64,
+    addresses: &[IpAddr],
+) -> Result<(), FlowDnsWriteError> {
+    let _guard = lock_flow_dns_writes(flow_id);
+    admit_generation(flow_id, generation)?;
+
+    for address in addresses {
+        match address {
+            IpAddr::V4(v4) => {
+                let outer = libbpf_rs::MapHandle::from_pinned_path(&paths.flow4_dns_map)
+                    .map_err(|source| FlowDnsWriteError::OuterMap { family: FAMILY_V4, source })?;
+                if let Some(inner) = open_inner_map(&outer, flow_id, FAMILY_V4)? {
+                    let key = FlowDnsMatchKeyV4 { addr: v4.to_bits().to_be() };
+                    delete_entry(&inner, key.as_bytes(), flow_id, FAMILY_V4, *address)?;
+                }
+            }
+            IpAddr::V6(v6) => {
+                let outer = libbpf_rs::MapHandle::from_pinned_path(&paths.flow6_dns_map)
+                    .map_err(|source| FlowDnsWriteError::OuterMap { family: FAMILY_V6, source })?;
+                if let Some(inner) = open_inner_map(&outer, flow_id, FAMILY_V6)? {
+                    let key = FlowDnsMatchKeyV6 { addr: v6.to_bits().to_be_bytes() };
+                    delete_entry(&inner, key.as_bytes(), flow_id, FAMILY_V6, *address)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Delete one address from an inner map. "No such entry" is success.
+fn delete_entry<T: MapCore>(
+    map: &T,
+    key: &[u8],
+    flow_id: u32,
+    family: &'static str,
+    address: IpAddr,
+) -> Result<(), FlowDnsWriteError> {
+    match map.delete(key) {
+        Ok(()) => {
+            tracing::debug!(flow_id, %address, "dropped an unclaimed route mark");
+            Ok(())
+        }
+        Err(e) if e.kind() == libbpf_rs::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(FlowDnsWriteError::Write { family, flow_id, source }),
+    }
+}
+
 fn apply_family_v4(
     paths: &LandscapeMapPath,
     flow_id: u32,

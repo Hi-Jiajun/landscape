@@ -45,6 +45,15 @@ pub(crate) struct ClaimIndex {
     /// also makes the order between "an entry replaced" and "its replacement
     /// registered" irrelevant.
     claims: std::sync::Mutex<HashMap<IpAddr, HashMap<FlowMarkInfo, usize>>>,
+    /// Addresses whose claim set shrank, so the datapath may still hold a value
+    /// nothing asks for any more.
+    ///
+    /// An entry can leave for reasons nobody asked for — its TTL, or capacity
+    /// pressure — and the notification for that can arrive while moka holds its
+    /// own locks. Rewriting the datapath from there would take the flow write lock
+    /// underneath it, so the addresses are queued instead and reconciled at the
+    /// next write, which is already inside that lock.
+    stale: std::sync::Mutex<HashSet<IpAddr>>,
 }
 
 impl ClaimIndex {
@@ -62,21 +71,50 @@ impl ClaimIndex {
         if marks.is_empty() {
             return;
         }
+        let mut stale = HashSet::new();
         let mut claims = self.claims.lock().unwrap_or_else(|e| e.into_inner());
         for mark in marks {
             if let Some(owners) = claims.get_mut(&mark.ip) {
-                match owners.get_mut(mark) {
-                    Some(count) if *count > 1 => *count -= 1,
+                let emptied = match owners.get_mut(mark) {
+                    Some(count) if *count > 1 => {
+                        *count -= 1;
+                        false
+                    }
+                    // A claim that was never registered cannot be removed, but the
+                    // address still needs a look: it may hold a value whose claim
+                    // left before it was ever counted.
                     Some(_) => {
                         owners.remove(mark);
+                        true
                     }
-                    None => {}
-                }
+                    None => true,
+                };
                 if owners.is_empty() {
                     claims.remove(&mark.ip);
                 }
+                if emptied {
+                    stale.insert(mark.ip);
+                }
             }
         }
+        drop(claims);
+        if !stale.is_empty() {
+            self.stale.lock().unwrap_or_else(|e| e.into_inner()).extend(stale);
+        }
+    }
+
+    /// Take the addresses queued since the last call.
+    fn take_stale(&self) -> HashSet<IpAddr> {
+        std::mem::take(&mut *self.stale.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// Whether any claim still justifies a value for `address`.
+    fn is_claimed(&self, address: IpAddr) -> bool {
+        self.claims
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&address)
+            .is_some_and(|owners| !owners.is_empty())
     }
 
     /// Every claim on `address`, including the ones other answers registered.
@@ -382,11 +420,13 @@ impl CacheHandle {
             return Ok(());
         }
 
-        self.cache.insert((domain_key.clone(), query_type), Arc::new(cache_item)).await;
-        // Register this answer's claims now that the entry is in the cache, so
-        // later answers for the same addresses arbitrate over them too. The
-        // eviction listener removes them again when the entry leaves.
+        // Register the claims *before* the entry becomes visible. A replacement's
+        // notification arrives while `cache.insert` runs, and if the new claims
+        // were not registered yet, that notification would find nothing to remove
+        // and the old claim would then be re-added by this very call — a ghost
+        // claim no answer justifies, kept until the cache is dropped.
         self.claims.add(&update_dns_mark_list);
+        self.cache.insert((domain_key.clone(), query_type), Arc::new(cache_item)).await;
 
         // Run the marks through arbitration once more now that the answer is in
         // the cache. Installing them and caching the answer cannot be one step —
@@ -412,7 +452,37 @@ impl CacheHandle {
                 "could not re-apply the route marks after caching the answer: {e}"
             );
         }
+
+        // Addresses whose claim set shrank while this answer was being processed
+        // are reconciled here, inside the same flow write: entries no claim
+        // justifies any more are dropped so the address falls back to the flow's
+        // own policy instead of keeping a decision nothing supports.
+        self.reconcile_unclaimed().await;
         Ok(())
+    }
+
+    /// Drop the datapath entries for addresses nothing claims any more.
+    async fn reconcile_unclaimed(&self) {
+        let stale = self.claims.take_stale();
+        if stale.is_empty() {
+            return;
+        }
+        let unclaimed: Vec<IpAddr> =
+            stale.into_iter().filter(|address| !self.claims.is_claimed(*address)).collect();
+        if unclaimed.is_empty() {
+            return;
+        }
+        tracing::debug!(
+            flow_id = self.flow_id,
+            addresses = unclaimed.len(),
+            "dropping route marks no cached answer claims any more"
+        );
+        if let Err(e) = self.sink.forget_dns_marks(self.flow_id, self.generation, unclaimed) {
+            tracing::error!(
+                flow_id = self.flow_id,
+                "could not drop the route marks of unclaimed addresses: {e}"
+            );
+        }
     }
 
     pub fn resolver_cache_entry(
@@ -469,7 +539,7 @@ mod claim_index_tests {
 
         // The datapath entry is gone, but the claim is still valid, so a later
         // answer must see it and arbitrate against it.
-        let seen = index.claims_with(&[weaker.clone()]);
+        let seen = index.claims_with(std::slice::from_ref(&weaker));
         assert!(seen.contains(&blocker), "the still-valid Drop claim must be seen");
         assert!(seen.contains(&weaker));
     }
@@ -515,5 +585,54 @@ mod claim_index_tests {
         let index = ClaimIndex::default();
         index.add(&HashSet::new());
         assert!(index.claims_with(&[]).is_empty());
+    }
+
+    /// The ordering bug the index has to be careful about: a replacement's
+    /// notification can arrive before the replacement's own claims are
+    /// registered. Registering *before* the entry becomes visible means the
+    /// notification always finds something to remove, so no claim survives whose
+    /// answer is gone.
+    #[test]
+    fn an_entry_replaced_before_its_claims_were_registered_leaves_nothing() {
+        let index = ClaimIndex::default();
+        let old = HashSet::from([claim(0x0200, 9)]);
+        let new = HashSet::from([claim(0x0305, 9)]);
+
+        // Correct order: register, then let the replacement notify.
+        index.add(&new);
+        index.remove(&old);
+        let seen = index.claims_for(claim(0, 9).ip);
+        assert_eq!(seen, vec![claim(0x0305, 9)], "only the live answer's claim remains");
+    }
+
+    #[test]
+    fn an_address_whose_last_claim_left_is_queued_for_reconciliation() {
+        let index = ClaimIndex::default();
+        let claim = claim(0x0200, 9);
+        index.add(&HashSet::from([claim.clone()]));
+        assert!(index.take_stale().is_empty(), "nothing is stale while it is claimed");
+
+        index.remove(&HashSet::from([claim.clone()]));
+        assert!(!index.is_claimed(claim.ip));
+        assert_eq!(
+            index.take_stale(),
+            HashSet::from([claim.ip]),
+            "the address must be queued so its datapath value can be dropped"
+        );
+        // Taken once, not repeatedly.
+        assert!(index.take_stale().is_empty());
+    }
+
+    #[test]
+    fn an_address_still_claimed_by_another_answer_is_not_queued() {
+        let index = ClaimIndex::default();
+        let shared = claim(0x0305, 9);
+        let holder = HashSet::from([shared.clone()]);
+        index.add(&holder);
+        index.add(&holder);
+
+        index.remove(&holder);
+        assert!(index.is_claimed(shared.ip));
+        assert!(index.take_stale().is_empty(), "a surviving claim keeps the value valid");
     }
 }
