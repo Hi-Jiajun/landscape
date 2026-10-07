@@ -163,6 +163,27 @@ pub enum RescueAction {
     },
     /// Restore the most recent snapshot
     Rollback,
+
+    /// Mark a configuration change as provisional
+    ///
+    /// Snapshots the current configuration and records a deadline. Unless
+    /// `rescue commit` runs before it, the snapshot is restored — including on the
+    /// next start, so a change that took the service down is undone rather than
+    /// left in place.
+    Begin {
+        /// Free-form label, e.g. `tproxy-port-change`
+        #[arg(short, long)]
+        label: Option<String>,
+        /// Seconds to accept the change before rolling it back
+        #[arg(long, default_value_t = 120)]
+        timeout: u64,
+    },
+    /// Accept the provisional change
+    Commit,
+    /// Give up the provisional change and restore the snapshot it started from
+    Discard,
+    /// Show whether a change is currently provisional
+    Status,
 }
 
 #[derive(Subcommand, Debug, Clone)]

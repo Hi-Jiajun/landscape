@@ -30,6 +30,41 @@ pub const DEFAULT_KEEP: usize = 20;
 /// Subdirectory of the configuration directory that holds the snapshots.
 const SNAPSHOT_DIR: &str = "snapshots";
 
+/// Marks a configuration change that has been applied but not yet accepted.
+///
+/// While this exists, the change is provisional: the service rolls back to the
+/// snapshot it names unless the change is committed first, and it does so on
+/// startup too — a change that crashed the service is exactly the one that must
+/// not survive. The file is the whole state, so the rule works across a restart
+/// and can be inspected by hand.
+const PENDING_FILE: &str = "pending_transaction.json";
+
+/// A change that is applied but not yet accepted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingTransaction {
+    /// Snapshot to return to if the change is not committed.
+    pub snapshot_id: String,
+    pub label: Option<String>,
+    /// Unix milliseconds; after this the change is rolled back.
+    pub expires_at_ms: f64,
+    pub started_at_ms: f64,
+}
+
+impl PendingTransaction {
+    pub fn is_expired(&self) -> bool {
+        now_ms() > self.expires_at_ms
+    }
+
+    pub fn remaining_secs(&self) -> i64 {
+        ((self.expires_at_ms - now_ms()) / 1000.0).round() as i64
+    }
+
+    pub fn describe(&self) -> String {
+        let label = self.label.as_deref().unwrap_or("-");
+        format!("snapshot {} ({label}), {}s remaining", self.snapshot_id, self.remaining_secs())
+    }
+}
+
 /// One snapshot: the database copy plus what is known about it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotManifest {
@@ -261,6 +296,119 @@ impl SnapshotStore {
             removed += 1;
         }
         Ok(removed)
+    }
+
+    // ── transactions ────────────────────────────────────────────────────────
+
+    fn pending_path(&self) -> PathBuf {
+        self.dir.join(PENDING_FILE)
+    }
+
+    /// The change that is applied but not yet accepted, if there is one.
+    pub fn pending(&self) -> Option<PendingTransaction> {
+        let text = fs::read_to_string(self.pending_path()).ok()?;
+        match serde_json::from_str::<PendingTransaction>(&text) {
+            Ok(pending) => Some(pending),
+            Err(e) => {
+                // A corrupt marker must not silently disable the safety net; the
+                // caller is told so it can decide, and the file is left in place
+                // for inspection.
+                tracing::error!(
+                    path = %self.pending_path().display(),
+                    "pending-transaction marker is unreadable: {e}"
+                );
+                None
+            }
+        }
+    }
+
+    /// Start a transaction: snapshot the current state and mark it provisional.
+    pub async fn begin_transaction(
+        &self,
+        database_url: &str,
+        label: Option<String>,
+        timeout_secs: u64,
+        binary_version: &str,
+    ) -> Result<PendingTransaction, DbError> {
+        if let Some(existing) = self.pending() {
+            return Err(DbError::Internal(format!(
+                "a configuration transaction is already open ({}); commit or roll it back first",
+                existing.describe()
+            )));
+        }
+        let manifest = self.create(database_url, label.clone(), false, binary_version).await?;
+        let started = now_ms();
+        let pending = PendingTransaction {
+            snapshot_id: manifest.id,
+            label,
+            started_at_ms: started,
+            expires_at_ms: started + (timeout_secs as f64) * 1000.0,
+        };
+        let text = serde_json::to_string_pretty(&pending)
+            .map_err(|e| DbError::Internal(format!("cannot serialise pending transaction: {e}")))?;
+        fs::write(self.pending_path(), text)?;
+        Ok(pending)
+    }
+
+    /// Accept the change: the snapshot stays as history, the marker goes.
+    ///
+    /// Returns the transaction that was open, so the caller can report what was
+    /// accepted.
+    pub fn commit_transaction(&self) -> Result<PendingTransaction, DbError> {
+        let pending = self
+            .pending()
+            .ok_or_else(|| DbError::Internal("there is no open transaction".to_string()))?;
+        match fs::remove_file(self.pending_path()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        Ok(pending)
+    }
+
+    /// Give up the change: restore the snapshot the transaction started from.
+    ///
+    /// The marker is removed first, so a failure part-way through cannot leave a
+    /// transaction that rolls back again on the next start.
+    pub fn rollback_transaction(
+        &self,
+        database_file: &Path,
+    ) -> Result<PendingTransaction, DbError> {
+        let pending = self
+            .pending()
+            .ok_or_else(|| DbError::Internal("there is no open transaction".to_string()))?;
+        match fs::remove_file(self.pending_path()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        self.restore(&pending.snapshot_id, database_file)?;
+        Ok(pending)
+    }
+
+    /// Roll back any transaction whose deadline has passed.
+    ///
+    /// Used by the background task and, with `force`, at startup: a change that
+    /// was never committed is one nobody accepted, and an uncommitted change that
+    /// took the service down is the case this exists for.
+    pub fn rollback_expired(
+        &self,
+        database_file: &Path,
+        force: bool,
+    ) -> Result<Option<PendingTransaction>, DbError> {
+        let Some(pending) = self.pending() else {
+            return Ok(None);
+        };
+        if !force && !pending.is_expired() {
+            return Ok(None);
+        }
+        match fs::remove_file(self.pending_path()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        self.restore(&pending.snapshot_id, database_file)?;
+        Ok(Some(pending))
     }
 
     /// An id no existing snapshot uses.

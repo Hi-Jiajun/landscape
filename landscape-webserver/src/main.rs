@@ -220,6 +220,42 @@ async fn run_rescue(
             }
             println!("restart the service to load it: systemctl restart landscape.service");
         }
+        RescueAction::Begin { label, timeout } => {
+            let pending = snapshots
+                .begin_transaction(&store.database_path, label.clone(), *timeout, version)
+                .await?;
+            println!("transaction open: {}", pending.describe());
+            println!("  snapshot: {}", pending.snapshot_id);
+            println!(
+                "  it will be restored automatically in {}s unless `rescue commit` runs",
+                timeout
+            );
+        }
+        RescueAction::Commit => {
+            let pending = snapshots.commit_transaction()?;
+            println!("accepted the change that started from {}", pending.snapshot_id);
+            if let Some(label) = &pending.label {
+                println!("  label: {label}");
+            }
+        }
+        RescueAction::Discard => {
+            let pending = snapshots.rollback_transaction(&database_path)?;
+            println!("discarded the change; restored {}", pending.snapshot_id);
+            if let Some(label) = &pending.label {
+                println!("  label: {label}");
+            }
+            println!("restart the service to load it: systemctl restart landscape.service");
+        }
+        RescueAction::Status => match snapshots.pending() {
+            Some(pending) => {
+                println!("a configuration change is provisional: {}", pending.describe());
+                println!("  snapshot: {}", pending.snapshot_id);
+                if pending.is_expired() {
+                    println!("  the deadline has passed; it will be restored on the next start");
+                }
+            }
+            None => println!("no provisional change"),
+        },
     }
     Ok(())
 }
@@ -232,6 +268,50 @@ fn database_file_path(database_url: &str) -> PathBuf {
     let rest = database_url.strip_prefix("sqlite://").unwrap_or(database_url);
     let without_query = rest.split('?').next().unwrap_or(rest);
     PathBuf::from(without_query)
+}
+
+/// Undo a configuration change that was applied but never accepted.
+///
+/// Startup is the right place for the forced case: if the service did not come
+/// up, or came up and then died, the operator never got to accept the change, so
+/// the configuration it replaced is the last one known to work. Only a change with
+/// an open transaction is affected; everything else starts normally.
+async fn rollback_uncommitted_change(
+    home_path: &Path,
+    store: &StoreRuntimeConfig,
+) -> Result<(), DbError> {
+    use landscape_database::rescue::SnapshotStore;
+
+    let snapshots = SnapshotStore::for_config_dir(home_path);
+    if snapshots.pending().is_none() {
+        return Ok(());
+    }
+    let database_path = database_file_path(&store.database_path);
+    match snapshots.rollback_expired(&database_path, true) {
+        Ok(Some(pending)) => {
+            tracing::error!(
+                snapshot = %pending.snapshot_id,
+                label = pending.label.as_deref().unwrap_or("-"),
+                "a configuration change was never accepted; restored the previous configuration. \
+                 If that change was intended, apply it again and run `rescue commit`"
+            );
+            println!(
+                "restored the previous configuration: the change started from snapshot {} was \
+                 never committed",
+                pending.snapshot_id
+            );
+        }
+        Ok(None) => {}
+        Err(e) => {
+            // Keep going rather than refusing to start: the operator may need the
+            // service up to fix things, and the marker is still on disk.
+            tracing::error!(
+                "could not roll back the uncommitted configuration change: {e}; it is still \
+                 marked provisional"
+            );
+        }
+    }
+    Ok(())
 }
 
 async fn prepare_startup_init(
@@ -896,6 +976,11 @@ async fn async_main() -> Result<(), StartupError> {
             .map_err(|e| StartupError::Config(e.to_string()))?;
         return Ok(());
     }
+
+    // A configuration change that was never accepted must not survive a restart:
+    // an uncommitted change that took the service down is exactly the case the
+    // transaction exists for. Done before anything reads the configuration.
+    rollback_uncommitted_change(&home_path, &config.store).await?;
 
     let time_service = SyncTimeService::start(config.time.clone());
 
