@@ -11,7 +11,7 @@ pub(crate) const MTU_CHAMBER_STATE_PIN: &str = "mtu_chamber_state_map";
 pub(crate) const MTU_CHAMBER_BUDGET_PIN: &str = "mtu_chamber_budget_map";
 
 /// `struct mtu_chamber_key`: two 16-byte addresses, a `u32` identity, a protocol
-/// byte and padding.
+/// byte, the family, and padding.
 pub(crate) const MTU_CHAMBER_KEY_SIZE: u32 = 40;
 /// `struct mtu_chamber_value`: `u32` interface, `u16` MTU, padding, `u64` time.
 pub(crate) const MTU_CHAMBER_VALUE_SIZE: u32 = 16;
@@ -29,7 +29,11 @@ pub(crate) const MTU_CHAMBER_STATE_MAP_SPEC: MapCreateSpec = MapCreateSpec {
 pub(crate) const MTU_CHAMBER_BUDGET_MAP_SPEC: MapCreateSpec = MapCreateSpec {
     map_type: MapType::LruHash,
     name: MTU_CHAMBER_BUDGET_PIN,
-    key_size: size_of::<[u8; 16]>() as u32,
+    // `struct mtu_chamber_budget_key`: the source address, the family, and
+    // padding. The family is in the key because the address field is wide enough
+    // for both, so a v4 source and the v6 address that spells the same bytes must
+    // not share a budget.
+    key_size: 20,
     value_size: size_of::<[u64; 2]>() as u32,
     max_entries: 1024,
     map_flags: 0,

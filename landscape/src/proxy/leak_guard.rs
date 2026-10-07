@@ -269,8 +269,14 @@ fn check_wan_mtu(report: &mut LeakGuardReport, input: &LeakGuardInput<'_>) {
         Ok(chamber) => chamber.diverting && chamber.stats.ptb_returned > 0,
         Err(_) => false,
     };
+    let v4_oversize = stats.oversized_v4_df + stats.oversized_v4_fragmentable;
 
-    if stats.has_violations() {
+    // The families are reported apart because they are in different states, and a
+    // single combined number would hide that. IPv6 has a remedy that has been
+    // observed working; IPv4 does not, for a reason that was measured rather than
+    // assumed, and reporting "IPv4 over MTU" without that reason reads either as a
+    // defect nobody has looked at or as one that has been fixed.
+    if stats.oversized_v6 > 0 {
         if returning_errors {
             // Both counters are cumulative and neither is windowed, so this cannot
             // claim the drops stopped when the chamber came up - only that the
@@ -286,25 +292,54 @@ fn check_wan_mtu(report: &mut LeakGuardReport, input: &LeakGuardInput<'_>) {
                          oversize count above is cumulative and not windowed, so it cannot say \
                          whether any of those were dropped before the chamber was enabled."
                     .into(),
-                evidence,
+                evidence: evidence.clone(),
             });
-            return;
+        } else {
+            report.push(LeakFinding {
+                class: LeakClass::ProxyFailure,
+                severity: LeakSeverity::Leak,
+                check: "wan_oversize_silently_dropped".into(),
+                detail: "IPv6 packets have left the WAN larger than it can carry and were dropped \
+                         with no error returned. The datapath forwards by redirect, so the \
+                         kernel's forwarding path - where a Packet Too Big is generated - never \
+                         runs. TCP is unaffected in both directions because the MSS clamp keeps \
+                         it under the limit, so this shows up as an unexplained failure of a UDP \
+                         protocol or of a large diagnostic packet, not as a broken connection."
+                    .into(),
+                evidence: evidence.clone(),
+            });
         }
+    }
+
+    if v4_oversize > 0 {
+        // A known gap with a measured cause, not a leak and not an open question.
+        // The wording has to say which half is missing: for a DF-set packet the
+        // correct answer is an ICMP fragmentation-needed back to the client, and
+        // for a DF-cleared one it is to fragment and send. The fast path does
+        // neither, and the egress point cannot fix the first: by the time this
+        // stage runs, the NAT stage has already rewritten the source address, so
+        // the error would be addressed to this router rather than the client, and
+        // the packet it quotes would not match the client's own connection.
+        // Measured on 2026-10-08: the diverted packets carried the WAN address as
+        // their source and the errors went to the router itself.
         report.push(LeakFinding {
             class: LeakClass::ProxyFailure,
-            severity: LeakSeverity::Leak,
-            check: "wan_oversize_silently_dropped".into(),
-            detail: "Packets have left the WAN larger than it can carry and were dropped with no \
-                     error returned. The datapath forwards by redirect, so the kernel's \
-                     forwarding path - and both of its remedies, ICMPv6 Packet Too Big and IPv4 \
-                     fragmentation - never runs. TCP is unaffected in both directions because the \
-                     MSS clamp keeps it under the limit, so this shows up as an unexplained \
-                     failure of a UDP protocol or of a large diagnostic packet, not as a broken \
-                     connection."
+            severity: LeakSeverity::Warn,
+            check: "ipv4_oversize_has_no_error_return".into(),
+            detail: "IPv4 packets have left the WAN larger than it can carry and were dropped in \
+                     silence. This is a known gap rather than an open question: returning the \
+                     fragmentation-needed error from the egress point is not supported, because \
+                     the source address has already been translated there, so the error would go \
+                     to this router instead of the client. A packet with DF cleared should be \
+                     fragmented and sent, which the fast path does not do either. TCP is \
+                     unaffected because the MSS clamp keeps it under the limit. IPv4 path MTU \
+                     discovery through this router is not claimed to work."
                 .into(),
-            evidence,
+            evidence: evidence.clone(),
         });
-    } else {
+    }
+
+    if stats.oversized_v6 == 0 && v4_oversize == 0 {
         // Zero is a real reading and the honest one: this is what the counters are
         // for, and reporting "no evidence of the condition" is not the same as
         // reporting that the condition cannot happen.
@@ -313,10 +348,11 @@ fn check_wan_mtu(report: &mut LeakGuardReport, input: &LeakGuardInput<'_>) {
             severity: LeakSeverity::Ok,
             check: "wan_oversize_silently_dropped".into(),
             detail: "No packet has been seen leaving the WAN larger than it can carry, so this \
-                     path has not dropped anything yet. The router still has no way to return \
-                     the error when it does."
+                     path has not dropped anything yet. IPv6 has a remedy in place for when it \
+                     does; IPv4 does not, for the reason recorded against \
+                     `ipv4_oversize_has_no_error_return`."
                 .into(),
-            evidence,
+            evidence: evidence.clone(),
         });
     }
 }
@@ -1924,7 +1960,54 @@ mod tests {
             report.findings.iter().find(|f| f.check == "wan_oversize_silently_dropped").unwrap();
         assert_eq!(finding.severity, LeakSeverity::Ok);
         assert!(finding.detail.contains("not dropped anything yet"), "{}", finding.detail);
-        assert!(finding.detail.contains("no way to return the error"), "{}", finding.detail);
+        // Zero is a reading about the counters, so the finding says which family
+        // has a remedy and which does not - it must not imply either that nothing
+        // can happen or that both are covered.
+        assert!(finding.detail.contains("IPv6 has a remedy"), "{}", finding.detail);
+        assert!(finding.detail.contains("IPv4 does not"), "{}", finding.detail);
+    }
+
+    /// The IPv4 gap gets its own finding, and its own words: "the router cannot
+    /// return the error" would now be wrong for IPv6, and "IPv4 over the MTU" alone
+    /// would hide the measured reason it cannot be answered from here.
+    #[test]
+    fn ipv4_oversize_is_reported_as_a_known_gap_with_its_reason() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.mtu = landscape_common::wan_service::mss_clamp::MtuGuardStats {
+            oversized_v4_df: 3,
+            oversized_v4_fragmentable: 1,
+            ..Default::default()
+        };
+        let report = evaluate(input);
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.check == "ipv4_oversize_has_no_error_return")
+            .expect("the IPv4 gap must be reported");
+        assert_eq!(finding.severity, LeakSeverity::Warn);
+        assert!(
+            finding.detail.contains("source address has already been translated"),
+            "the reason is the measurement, and it has to be in the report: {}",
+            finding.detail
+        );
+        assert!(
+            finding.detail.contains("not claimed to work"),
+            "the report must not imply IPv4 path MTU discovery works: {}",
+            finding.detail
+        );
+        // An IPv6-only count must not produce the IPv4 finding.
+        let mut v6_only = base(&tproxy, TproxyMissingListener::Drop);
+        v6_only.mtu = landscape_common::wan_service::mss_clamp::MtuGuardStats {
+            oversized_v6: 1,
+            ..Default::default()
+        };
+        assert!(
+            evaluate(v6_only)
+                .findings
+                .iter()
+                .all(|f| f.check != "ipv4_oversize_has_no_error_return")
+        );
     }
 
     /// Once the chamber is up and has actually returned errors, the same cumulative

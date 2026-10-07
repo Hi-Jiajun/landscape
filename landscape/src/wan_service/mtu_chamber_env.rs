@@ -30,7 +30,7 @@
 //! was intended, the read-back is what is trusted, and a namespace that does not
 //! read back as intended is torn down rather than enabled.
 
-use std::net::{IpAddr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use landscape_common::wan_service::mtu_chamber::{MtuChamberSettings, MtuChamberWiring};
 
@@ -46,6 +46,29 @@ fn is_copyable_source(addr: &IpAddr) -> bool {
         IpAddr::V4(_) => false,
     }
 }
+
+/// The IPv4 counterpart: the LAN interface's own addresses, which are the ones a
+/// client already treats as its gateway.
+///
+/// Loopback and the link-local range are excluded for the same reason as IPv6:
+/// neither can be the source of an ICMP error a client would accept, and
+/// 169.254.0.0/16 in particular means "this link has no configuration".
+fn is_copyable_source4(addr: &IpAddr) -> bool {
+    match addr {
+        IpAddr::V4(v4) => !v4.is_loopback() && !v4.is_link_local() && !v4.is_unspecified(),
+        IpAddr::V6(_) => false,
+    }
+}
+
+/// The IPv4 addresses the exception link uses for its own two ends.
+///
+/// Deliberately out of the link-local range: this is a point-to-point pair inside
+/// one host, neither end is ever routed to, and the range exists for exactly
+/// "this link, no configuration of its own". The client's traffic never sees
+/// either one - what it sees as the error's source is a copy of the LAN's own
+/// gateway address, never these.
+const CHAMBER_LINK_MAIN4: Ipv4Addr = Ipv4Addr::new(169, 254, 255, 1);
+const CHAMBER_LINK_SIDE4: Ipv4Addr = Ipv4Addr::new(169, 254, 255, 2);
 
 /// Interface names have 15 bytes including the terminator.
 fn name_within_limit(name: &str) -> String {
@@ -68,6 +91,11 @@ pub struct MtuChamberEnv {
     pub chamber_link_local: Ipv6Addr,
     /// The LAN addresses the chamber may speak with.
     pub sources: Vec<Ipv6Addr>,
+    /// The chamber's IPv4 address on the veth, for the neighbour rewrite.
+    pub nexthop4: Ipv4Addr,
+    /// The LAN IPv4 addresses the chamber may speak with - the addresses a client
+    /// already has as its default gateway.
+    pub sources4: Vec<Ipv4Addr>,
 }
 
 /// The chamber's shape, derived from the live interfaces.
@@ -105,6 +133,16 @@ impl MtuChamberEnv {
             sources[count] = source.octets();
             count += 1;
         }
+        let mut sources4 =
+            [[0u8; 4]; landscape_common::wan_service::mtu_chamber::MTU_CHAMBER_MAX_SOURCES];
+        let mut count4 = 0usize;
+        for source in &self.sources4 {
+            if count4 >= sources4.len() {
+                break;
+            }
+            sources4[count4] = source.octets();
+            count4 += 1;
+        }
         MtuChamberWiring {
             veth_ifindex: self.veth_main_ifindex,
             source_count: count as u32,
@@ -112,17 +150,22 @@ impl MtuChamberEnv {
             burst,
             nexthop: self.chamber_link_local.octets(),
             sources,
+            nexthop4: self.nexthop4.octets(),
+            sources4,
+            source_count4: count4 as u32,
         }
     }
 
     /// How the chamber is described in the log and in the leak report.
     pub fn describe(&self) -> String {
         format!(
-            "netns {} on {} (advertising mtu {}), speaking as {}, divert target {}",
+            "netns {} on {} (advertising mtu {}), speaking as {}{}{}, divert target {}",
             self.ns,
             self.wan_iface,
             self.wan_mtu,
             self.sources.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", "),
+            if self.sources.is_empty() || self.sources4.is_empty() { "" } else { " / " },
+            self.sources4.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", "),
             self.veth_main_ifindex
         )
     }
@@ -242,6 +285,27 @@ async fn collect_sources(iface_names: &[String]) -> Result<Vec<(Ipv6Addr, u8)>, 
     Ok(out)
 }
 
+/// The IPv4 addresses the chamber has to be able to speak as.
+///
+/// Missing IPv4 is not an error the way missing IPv6 is: a LAN can legitimately
+/// be IPv6-only, and the chamber simply does not answer IPv4 errors there. The
+/// datapath agrees - it will not divert a family the chamber has no address for.
+async fn collect_sources4(iface_names: &[String]) -> Vec<(Ipv4Addr, u8)> {
+    let mut out = Vec::new();
+    for name in iface_names {
+        for info in addresses_by_iface_name(name.clone()).await {
+            if let IpAddr::V4(v4) = info.address
+                && is_copyable_source4(&info.address)
+            {
+                out.push((v4, info.prefix_len));
+            }
+        }
+    }
+    out.sort_by_key(|(address, prefix)| (address.octets(), *prefix));
+    out.dedup();
+    out
+}
+
 /// Parse `inet6 fe80::.../64` out of `ip -n <ns> -6 addr show dev <iface> scope link`.
 fn parse_link_local(text: &str) -> Option<Ipv6Addr> {
     for line in text.lines() {
@@ -328,6 +392,8 @@ pub async fn bring_up(
     // that the set the read-back checks is the set that was decided on.
     let by_prefix = collect_sources(&settings.lan_iface_names).await?;
     let sources: Vec<Ipv6Addr> = sources.to_vec();
+    let by_prefix4 = collect_sources4(&settings.lan_iface_names).await;
+    let sources4: Vec<Ipv4Addr> = by_prefix4.iter().map(|(a, _)| *a).collect();
 
     // Names carry the WAN interface's index so two WANs cannot collide, and stay
     // inside the 15-byte limit.
@@ -348,7 +414,51 @@ pub async fn bring_up(
         ip(&["link", "set", &veth_main, "up"]).await?;
 
         ip_ns(&ns, &["link", "set", "lo", "up"]).await?;
+
+        // The addresses the chamber speaks as go on **before** the link is up.
+        //
+        // Adding an address to an interface that is already up makes the kernel
+        // announce it, and an announcement of the LAN's own gateway address on this
+        // link is exactly the claim the design must never make. Adding them while
+        // the link is down, then bringing it up with `arp_notify` off, is what
+        // keeps the copies silent. The two ends also learn each other statically,
+        // so nothing needs to be discovered either.
+        for (address, prefix) in &by_prefix {
+            ip_ns(
+                &ns,
+                &[
+                    "-6",
+                    "addr",
+                    "add",
+                    &format!("{address}/{prefix}"),
+                    "dev",
+                    &veth_chamber,
+                    "nodad",
+                    "noprefixroute",
+                ],
+            )
+            .await?;
+        }
+        for (address, prefix) in &by_prefix4 {
+            ip_ns(
+                &ns,
+                &[
+                    "-4",
+                    "addr",
+                    "add",
+                    &format!("{address}/{prefix}"),
+                    "dev",
+                    &veth_chamber,
+                    "noprefixroute",
+                ],
+            )
+            .await?;
+        }
+
         ip_ns(&ns, &["link", "set", &veth_chamber, "up"]).await?;
+        sysctl_in(&ns, &format!("net.ipv4.conf.{veth_chamber}.arp_notify"), "0").await?;
+        sysctl_in(&ns, &format!("net.ipv4.conf.{veth_chamber}.arp_ignore"), "1").await?;
+        sysctl_in(&ns, &format!("net.ipv4.conf.{veth_chamber}.arp_announce"), "2").await?;
 
         let chamber_ll = {
             let mut found = None;
@@ -420,27 +530,86 @@ pub async fn bring_up(
         )
         .await?;
 
-        // The addresses the chamber speaks as. `nodad` because the address is
-        // already in use in the main namespace on the LAN link, and DAD here
-        // would only produce a claim nobody asked for; `noprefixroute` because
-        // the route back to the client must go through the main namespace, not
-        // straight out of this link.
-        for (address, prefix) in &by_prefix {
-            ip_ns(
-                &ns,
-                &[
-                    "-6",
-                    "addr",
-                    "add",
-                    &format!("{address}/{prefix}"),
-                    "dev",
-                    &veth_chamber,
-                    "nodad",
-                    "noprefixroute",
-                ],
-            )
-            .await?;
-        }
+        // The IPv4 neighbours, statically for the same reason: the main
+        // namespace's INPUT policy would drop an ARP reply arriving on this veth
+        // exactly as it drops a neighbour advertisement, and an unresolved
+        // neighbour is a divert that goes nowhere.
+        let nexthop4 = *by_prefix4.first().map(|(address, _)| address).ok_or_else(|| {
+            "the chamber has no IPv4 address to speak as, so it cannot answer an IPv4 error"
+                .to_string()
+        })?;
+        // This link's own two ends, and the static ARP that lets each find the
+        // other without a single frame of address resolution crossing it.
+        ip(&["-4", "addr", "add", &format!("{CHAMBER_LINK_MAIN4}/32"), "dev", &veth_main]).await?;
+        ip_ns(
+            &ns,
+            &["-4", "addr", "add", &format!("{CHAMBER_LINK_SIDE4}/32"), "dev", &veth_chamber],
+        )
+        .await?;
+        // A /32 is not a subnet, so IPv4 has to be told explicitly that the peer
+        // really is on this link before it will accept it as a gateway - unlike
+        // IPv6, whose link-local addresses are on-link by construction. Measured
+        // on 2026-10-07: without this, the client's prefix route is refused with
+        // "Nexthop has invalid gateway" and the whole chamber stays down, which is
+        // the read-back doing its job rather than a silent half-built chamber.
+        ip_ns(
+            &ns,
+            &[
+                "-4",
+                "route",
+                "add",
+                &format!("{CHAMBER_LINK_MAIN4}/32"),
+                "dev",
+                &veth_chamber,
+                "scope",
+                "link",
+            ],
+        )
+        .await?;
+        ip_ns(
+            &ns,
+            &[
+                "-4",
+                "neigh",
+                "replace",
+                &CHAMBER_LINK_MAIN4.to_string(),
+                "lladdr",
+                &main_mac,
+                "dev",
+                &veth_chamber,
+                "nud",
+                "permanent",
+            ],
+        )
+        .await?;
+        ip(&[
+            "-4",
+            "neigh",
+            "replace",
+            &CHAMBER_LINK_SIDE4.to_string(),
+            "lladdr",
+            &chamber_mac,
+            "dev",
+            &veth_main,
+            "nud",
+            "permanent",
+        ])
+        .await?;
+        // What the datapath's divert resolves: the next hop is the chamber's copy
+        // of the LAN address, so the main namespace needs its link address for it.
+        ip(&[
+            "-4",
+            "neigh",
+            "replace",
+            &nexthop4.to_string(),
+            "lladdr",
+            &chamber_mac,
+            "dev",
+            &veth_main,
+            "nud",
+            "permanent",
+        ])
+        .await?;
 
         // Back to the client through the main namespace, by prefix.
         let mut routed: Vec<(Ipv6Addr, u8)> = Vec::new();
@@ -468,6 +637,34 @@ pub async fn bring_up(
             routed.push((network, *prefix));
         }
 
+        // The IPv4 route back to the client, through the main namespace, by
+        // prefix. Same shape as the IPv6 one: the error must leave by the link the
+        // admitted packet arrived on, not straight out of this one.
+        let mut routed4: Vec<(Ipv4Addr, u8)> = Vec::new();
+        for (address, prefix) in &by_prefix4 {
+            if routed4.iter().any(|(a, p)| a == address && p == prefix) {
+                continue;
+            }
+            let network = network_of4(*address, *prefix);
+            ip_ns(
+                &ns,
+                &[
+                    "-4",
+                    "route",
+                    "add",
+                    &format!("{network}/{prefix}"),
+                    "via",
+                    &CHAMBER_LINK_MAIN4.to_string(),
+                    "dev",
+                    &veth_chamber,
+                    "metric",
+                    "1",
+                ],
+            )
+            .await?;
+            routed4.push((network, *prefix));
+        }
+
         // The stand-in for the real egress: it carries that egress's MTU, so the
         // kernel's forwarding check compares against the number this path was
         // authorised for. A dummy, not a blackhole: a blackhole never runs the
@@ -479,9 +676,18 @@ pub async fn bring_up(
         // which goes nowhere - so the check runs and then the packet is gone. The
         // LAN prefixes above are more specific and keep their route.
         ip_ns(&ns, &["-6", "route", "add", "default", "dev", &egress, "metric", "1024"]).await?;
+        // The IPv4 default, and a documentation-range address on the dummy so the
+        // route is unambiguously usable. That address is inside this namespace
+        // only: nothing routes to it, and the OUTPUT policy below would refuse
+        // anything but the error even if something tried.
+        ip_ns(&ns, &["-4", "addr", "add", "192.0.2.1/32", "dev", &egress]).await?;
+        ip_ns(&ns, &["-4", "route", "add", "default", "dev", &egress, "metric", "1024"]).await?;
 
-        // The three things that make it an error generator and not a router.
+        // The things that make it an error generator and not a router, for both
+        // families. Forwarding has to be on: the error comes from the forwarding
+        // path, and with it off the kernel emits nothing at all.
         sysctl_in(&ns, "net.ipv6.conf.all.forwarding", "1").await?;
+        sysctl_in(&ns, "net.ipv4.ip_forward", "1").await?;
         in_ns(&ns, "ip6tables", &["-F", "FORWARD"]).await?;
         in_ns(&ns, "ip6tables", &["-P", "FORWARD", "DROP"]).await?;
 
@@ -519,20 +725,40 @@ pub async fn bring_up(
         in_ns(&ns, "ip6tables", &["-A", "OUTPUT", "-j", "DROP"]).await?;
         in_ns(&ns, "ip6tables", &["-P", "OUTPUT", "DROP"]).await?;
 
-        // IPv4 has no purpose in here; close it the same way so that a stray
-        // v4 packet cannot be forwarded either.
+        // The IPv4 half of the same three rules: the fragmentation-needed error
+        // may leave, and nothing else may. The peer rule the IPv6 side needs has
+        // no IPv4 counterpart because the neighbours are static - ARP is not a
+        // packet iptables decides on, and nothing here needs to resolve anything.
         in_ns(&ns, "iptables", &["-F", "FORWARD"]).await?;
         in_ns(&ns, "iptables", &["-P", "FORWARD", "DROP"]).await?;
+        in_ns(&ns, "iptables", &["-F", "OUTPUT"]).await?;
+        in_ns(
+            &ns,
+            "iptables",
+            &[
+                "-A",
+                "OUTPUT",
+                "-o",
+                &veth_chamber,
+                "-p",
+                "icmp",
+                "--icmp-type",
+                "3",
+                "-j",
+                "ACCEPT",
+            ],
+        )
+        .await?;
+        in_ns(&ns, "iptables", &["-A", "OUTPUT", "-j", "DROP"]).await?;
         in_ns(&ns, "iptables", &["-P", "OUTPUT", "DROP"]).await?;
 
-        // Both link-locals travel out of the build so the read-back can assert
-        // the static neighbours that were installed from them.
-        Ok::<(Ipv6Addr, Ipv6Addr), String>((chamber_ll, main_ll))
+        // The addresses the read-back asserts the static neighbours against.
+        Ok::<(Ipv6Addr, Ipv6Addr, Ipv4Addr), String>((chamber_ll, main_ll, nexthop4))
     }
     .await;
 
     // Any failure so far leaves a namespace behind; drop it before returning.
-    let (chamber_link_local, main_link_local) = match build {
+    let (chamber_link_local, main_link_local, nexthop4) = match build {
         Ok(lls) => lls,
         Err(e) => {
             let _ = ip(&["netns", "del", &ns]).await;
@@ -623,6 +849,72 @@ pub async fn bring_up(
         ));
     }
 
+    // The IPv4 half of every one of those assertions, made again rather than
+    // inferred from the IPv6 result: the same link carries both families but they
+    // fail differently, and "the v6 side works" says nothing about whether the v4
+    // neighbours resolved.
+    let main_neigh4 = ip(&["-4", "neigh", "show", "dev", &veth_main]).await.unwrap_or_default();
+    if !main_neigh4.contains(&nexthop4.to_string()) || !main_neigh4.contains("PERMANENT") {
+        problems.push(format!(
+            "the chamber's IPv4 address is not a permanent neighbour on {veth_main}, so an IPv4 \
+             divert would have nowhere to send a packet: {main_neigh4:?}"
+        ));
+    }
+    let chamber_neigh4 =
+        in_ns_lenient(&ns, "ip", &["-4", "neigh", "show", "dev", &veth_chamber]).await;
+    if !chamber_neigh4.contains(&CHAMBER_LINK_MAIN4.to_string())
+        || !chamber_neigh4.contains("PERMANENT")
+    {
+        problems.push(format!(
+            "{CHAMBER_LINK_MAIN4} is not a permanent neighbour in {ns}, so an IPv4 error could \
+             not be sent back: {chamber_neigh4:?}"
+        ));
+    }
+
+    let addr4_text = in_ns_lenient(&ns, "ip", &["-4", "addr", "show", "dev", &veth_chamber]).await;
+    let present4 =
+        by_prefix4.iter().filter(|(address, _)| addr4_text.contains(&address.to_string())).count();
+    if present4 != by_prefix4.len() {
+        problems.push(format!(
+            "only {present4} of {} LAN IPv4 addresses are on {veth_chamber}",
+            by_prefix4.len()
+        ));
+    }
+
+    let forwarding4 = in_ns_lenient(&ns, "sysctl", &["-n", "net.ipv4.ip_forward"]).await;
+    if forwarding4.trim() != "1" {
+        problems.push(format!(
+            "net.ipv4.ip_forward is {:?} in {ns}; without it nothing is emitted for IPv4 at all",
+            forwarding4.trim()
+        ));
+    }
+
+    let route4_text = in_ns_lenient(&ns, "ip", &["-4", "route", "show"]).await;
+    if !route4_text.contains(&format!("default dev {egress}")) {
+        problems.push(format!(
+            "no IPv4 default route out {egress}: the IPv4 egress MTU check would never run"
+        ));
+    }
+    for (address, prefix) in &by_prefix4 {
+        let network = network_of4(*address, *prefix);
+        if !route4_text.contains(&format!("{network}/{prefix} via")) {
+            problems.push(format!(
+                "no IPv4 route for {network}/{prefix} back through the main namespace"
+            ));
+        }
+    }
+
+    let rules4 = in_ns_lenient(&ns, "iptables", &["-S"]).await;
+    for (what, needle) in [
+        ("IPv4 FORWARD policy DROP", "-P FORWARD DROP"),
+        ("IPv4 OUTPUT policy DROP", "-P OUTPUT DROP"),
+        ("the fragmentation-needed error may leave", "--icmp-type 3"),
+    ] {
+        if !rules4.contains(needle) {
+            problems.push(format!("{what} is not in place ({needle})"));
+        }
+    }
+
     if !problems.is_empty() {
         let _ = ip(&["netns", "del", &ns]).await;
         return Err(format!("the chamber did not come up as intended: {}", problems.join("; ")));
@@ -638,6 +930,8 @@ pub async fn bring_up(
         veth_main_ifindex: iface.index,
         chamber_link_local,
         sources,
+        nexthop4,
+        sources4,
     })
 }
 
@@ -649,6 +943,16 @@ fn network_of(address: Ipv6Addr, prefix: u8) -> Ipv6Addr {
     let bits = u128::from(address);
     let mask = if prefix >= 128 { u128::MAX } else { !(u128::MAX >> prefix) };
     Ipv6Addr::from(bits & mask)
+}
+
+/// The network address of `address/prefix`, for IPv4.
+fn network_of4(address: Ipv4Addr, prefix: u8) -> Ipv4Addr {
+    if prefix == 0 {
+        return Ipv4Addr::UNSPECIFIED;
+    }
+    let bits = u32::from(address);
+    let mask = if prefix >= 32 { u32::MAX } else { !(u32::MAX >> prefix) };
+    Ipv4Addr::from(bits & mask)
 }
 
 /// The interface names a chamber for `wan_ifindex` uses, for teardown-time checks.
@@ -674,6 +978,43 @@ mod tests {
         assert!(!is_copyable_source(&IpAddr::V6("fe80::280:ff:fe00:16".parse().unwrap())));
         assert!(!is_copyable_source(&IpAddr::V6("::1".parse().unwrap())));
         assert!(!is_copyable_source(&IpAddr::V4("192.168.1.1".parse().unwrap())));
+    }
+
+    #[test]
+    fn only_addresses_that_can_source_an_ipv4_error_are_copied() {
+        // The LAN's gateway address is the one a client expects its error from.
+        assert!(is_copyable_source4(&IpAddr::V4("192.168.1.1".parse().unwrap())));
+        assert!(is_copyable_source4(&IpAddr::V4("10.0.0.1".parse().unwrap())));
+        // Neither of these can be the source of an error about a global
+        // destination, and 169.254 in particular means "this link has no
+        // configuration" - which is this chamber's own link.
+        assert!(!is_copyable_source4(&IpAddr::V4("127.0.0.1".parse().unwrap())));
+        assert!(!is_copyable_source4(&IpAddr::V4("169.254.1.1".parse().unwrap())));
+        assert!(!is_copyable_source4(&IpAddr::V4("0.0.0.0".parse().unwrap())));
+        assert!(!is_copyable_source4(&IpAddr::V6("fd10::1".parse().unwrap())));
+    }
+
+    #[test]
+    fn an_ipv4_prefix_route_is_computed_from_the_address_not_guessed() {
+        let address: Ipv4Addr = "192.168.1.1".parse().unwrap();
+        assert_eq!(network_of4(address, 24), "192.168.1.0".parse::<Ipv4Addr>().unwrap());
+        // A /32 host route is its own network, and /0 is everything.
+        assert_eq!(network_of4(address, 32), address);
+        assert_eq!(network_of4(address, 0), Ipv4Addr::UNSPECIFIED);
+        let wide: Ipv4Addr = "10.1.2.3".parse().unwrap();
+        assert_eq!(network_of4(wide, 8), "10.0.0.0".parse::<Ipv4Addr>().unwrap());
+    }
+
+    #[test]
+    fn the_exception_link_keeps_its_own_addresses_out_of_the_clients_subnet() {
+        // The two ends of the exception link must not sit in a client's subnet:
+        // if they did, the copied gateway address and the link's own would be
+        // ambiguous, and a client could have a route to a router address that is
+        // not the router.
+        for address in [CHAMBER_LINK_MAIN4, CHAMBER_LINK_SIDE4] {
+            assert!(address.is_link_local(), "{address} should stay in 169.254.0.0/16");
+        }
+        assert_ne!(CHAMBER_LINK_MAIN4, CHAMBER_LINK_SIDE4);
     }
 
     #[test]

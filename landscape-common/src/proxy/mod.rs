@@ -146,7 +146,19 @@ pub struct DnsGuardConfig {
     pub lan_iface: String,
     /// Known DoH endpoints to refuse. Ordinary HTTPS, so only an address works;
     /// an endpoint nobody listed is a documented boundary.
-    #[serde(default)]
+    ///
+    /// The seeded list is a **starting point, not a catalogue**: it covers the
+    /// published addresses of the well-known public resolvers, and it is
+    /// deliberately not expanded into whole provider ranges, because an address
+    /// that nobody verified is worse than a stated gap. What is not covered is
+    /// said out loud in the leak report rather than implied away.
+    ///
+    /// The refusal is scoped to TCP and UDP port 443 - the guard only consults
+    /// this list for that port - so a listed resolver's plain port 53 and its
+    /// DoT port 853 are untouched. That matters for the domestic pair, which is
+    /// also a configured upstream: this list must not stop the resolver from
+    /// reaching its own DoT endpoint on 853.
+    #[serde(default = "seed_doh_block_ips")]
     #[cfg_attr(feature = "openapi", schema(value_type = Vec<String>))]
     pub doh_block_ips: Vec<std::net::IpAddr>,
     /// Trusted hosts allowed to keep speaking an encrypted resolver to one named
@@ -193,13 +205,65 @@ impl Default for DnsGuardConfig {
         Self {
             enable: false,
             lan_iface: default_guard_iface(),
-            doh_block_ips: Vec::new(),
+            doh_block_ips: seed_doh_block_ips(),
             exempt: Vec::new(),
             drop_fragments: true,
             plaintext_tcp: false,
             drop_unclassified: false,
         }
     }
+}
+
+/// The published addresses of the well-known public DoH resolvers.
+///
+/// Every one of these is an address an operator can look up and check, and the
+/// list stops there: no provider ranges are inferred from them, no port other
+/// than 443 is affected, and a resolver's filtering variants are included only
+/// because the provider publishes them as separate addresses (Cloudflare's
+/// `1.1.1.2`/`1.1.1.3` families).
+///
+/// Tencent's public addresses are IPv4-only here because that is what the
+/// provider publishes for them, and the same is true of the other vendors'
+/// secondary services. An incomplete list that says it is incomplete is the
+/// point; filling the gaps by guessing would make the boundary invisible.
+pub fn seed_doh_block_ips() -> Vec<std::net::IpAddr> {
+    const SEED: &[&str] = &[
+        // Cloudflare, standard.
+        "1.1.1.1",
+        "1.0.0.1",
+        "2606:4700:4700::1111",
+        "2606:4700:4700::1001",
+        // Cloudflare, malware filtering.
+        "1.1.1.2",
+        "1.0.0.2",
+        "2606:4700:4700::1112",
+        "2606:4700:4700::1002",
+        // Cloudflare, family filtering.
+        "1.1.1.3",
+        "1.0.0.3",
+        "2606:4700:4700::1113",
+        "2606:4700:4700::1003",
+        // Google Public DNS.
+        "8.8.8.8",
+        "8.8.4.4",
+        "2001:4860:4860::8888",
+        "2001:4860:4860::8844",
+        // Quad9.
+        "9.9.9.9",
+        "149.112.112.112",
+        "2620:fe::fe",
+        "2620:fe::9",
+        // Alibaba Public DNS.
+        "223.5.5.5",
+        "223.6.6.6",
+        "2400:3200::1",
+        "2400:3200:baba::1",
+        // Tencent Public DNS (and the doh.pub addresses it publishes).
+        "119.29.29.29",
+        "1.12.12.12",
+        "120.53.53.53",
+    ];
+    SEED.iter().filter_map(|text| text.parse().ok()).collect()
 }
 
 /// Which transport a [`DnsGuardExempt`] covers.
@@ -843,4 +907,62 @@ pub struct ToggleProxyReq {
 pub struct CreateSubscriptionReq {
     pub name: String,
     pub url: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::IpAddr;
+
+    /// The seed has to be exactly the addresses an operator can verify: no
+    /// duplicates, no ranges, nothing inferred. A duplicate would be harmless to
+    /// the map but would make the list look longer than it is, and this list is
+    /// read as a statement of coverage.
+    #[test]
+    fn the_doh_seed_is_a_set_of_distinct_published_addresses() {
+        let seed = seed_doh_block_ips();
+        assert!(seed.len() > 20, "the seed should cover the major public resolvers");
+
+        let mut seen = std::collections::BTreeSet::new();
+        for address in &seed {
+            assert!(seen.insert(*address), "{address} appears twice in the seed");
+        }
+
+        // Both families, because a client can reach a DoH endpoint over either.
+        assert!(seed.iter().any(IpAddr::is_ipv4), "no IPv4 endpoint in the seed");
+        assert!(seed.iter().any(IpAddr::is_ipv6), "no IPv6 endpoint in the seed");
+    }
+
+    /// The domestic pair is both a DoH endpoint *and* this router's configured
+    /// DoT upstream. It belongs in the list - a client asking it for DoH over 443
+    /// is exactly what the list is for - but the guard only consults the list for
+    /// port 443, so the resolver's own port 853 is not touched by it. This test
+    /// states the pairing so that a later change to the guard's port scope has to
+    /// face it.
+    #[test]
+    fn the_domestic_resolvers_are_listed_without_exempting_their_whole_address() {
+        let seed = seed_doh_block_ips();
+        for text in ["223.5.5.5", "119.29.29.29"] {
+            let address: IpAddr = text.parse().expect("a literal");
+            assert!(
+                seed.contains(&address),
+                "{text} is a published DoH endpoint and belongs in the list; its DoT use is \
+                 authorised per service and per peer, not by omitting the address"
+            );
+        }
+    }
+
+    /// A stored configuration that carries the field keeps its own value: the seed
+    /// is for a fresh install or one that never had the field, so an operator's
+    /// edits are not overwritten by an upgrade.
+    #[test]
+    fn a_stored_list_wins_over_the_seed() {
+        let stored = r#"{"doh_block_ips":["192.0.2.1"]}"#;
+        let config: DnsGuardConfig = serde_json::from_str(stored).expect("parse");
+        assert_eq!(config.doh_block_ips, vec!["192.0.2.1".parse::<IpAddr>().unwrap()]);
+
+        let absent = r#"{}"#;
+        let config: DnsGuardConfig = serde_json::from_str(absent).expect("parse");
+        assert_eq!(config.doh_block_ips, seed_doh_block_ips());
+    }
 }

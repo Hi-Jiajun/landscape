@@ -15,7 +15,7 @@ pub use landscape_common::wan_service::mtu_chamber::{MTU_CHAMBER_CFG_SIZE, MtuCh
 pub(crate) const MTU_CHAMBER_CFG_PIN: &str = "mtu_chamber_cfg_map";
 pub(crate) const MTU_CHAMBER_STATS_PIN: &str = "mtu_chamber_stats_map";
 /// `mtu_chamber_stat` slots; keep in step with the C enum.
-pub(crate) const MTU_CHAMBER_STAT_COUNT: u32 = 13;
+pub(crate) const MTU_CHAMBER_STAT_COUNT: u32 = 16;
 
 pub(crate) const MTU_CHAMBER_CFG_MAP_SPEC: MapCreateSpec = MapCreateSpec {
     map_type: MapType::Array,
@@ -111,5 +111,8 @@ pub fn read_mtu_chamber_stats(paths: &crate::LandscapeMapPath) -> Result<MtuCham
         ptb_rejected: at(10),
         ptb_no_mac: at(11),
         ptb_expired: at(12),
+        diverted_v4: at(13),
+        frag_needed_returned: at(14),
+        frag_needed_rejected: at(15),
     })
 }
