@@ -1,8 +1,9 @@
 use axum::extract::{Path, State};
 use landscape_common::api_response::LandscapeApiResp as CommonApiResp;
 use landscape_common::proxy::{
-    CreateSubscriptionReq, ProxyGroupItem, ProxyNodeItem, ProxyPluginConfig, ProxyRuntimeInfo,
-    ProxySubscription, SelectGroupProxyReq, TestDelayReq, ToggleProxyReq, TproxyDeliveryStatus,
+    CreateSubscriptionReq, LeakGuardReport, ProxyGroupItem, ProxyNodeItem, ProxyPluginConfig,
+    ProxyRuntimeInfo, ProxySubscription, SelectGroupProxyReq, TestDelayReq, ToggleProxyReq,
+    TproxyDeliveryStatus,
 };
 use landscape_common::service::ServiceStatus;
 use utoipa_axum::router::OpenApiRouter;
@@ -17,6 +18,7 @@ pub fn build_proxy_openapi_router() -> OpenApiRouter<LandscapeApp> {
     OpenApiRouter::new()
         .routes(routes!(get_proxy_status))
         .routes(routes!(get_tproxy_status))
+        .routes(routes!(get_leak_report))
         .routes(routes!(get_proxy_config, update_proxy_config))
         .routes(routes!(toggle_proxy))
         .routes(routes!(restart_proxy))
@@ -52,6 +54,61 @@ async fn get_tproxy_status(
 ) -> LandscapeApiResult<TproxyDeliveryStatus> {
     let status = state.proxy_service.tproxy_status().await;
     LandscapeApiResp::success(status)
+}
+
+#[utoipa::path(
+    get,
+    path = "/leak_report",
+    tag = "Proxy Plugin",
+    operation_id = "get_proxy_leak_report",
+    responses((
+        status = 200,
+        description = "Whether each of the four leak classes is covered, and what each cell of \
+                       the delivery matrix does",
+        body = CommonApiResp<LeakGuardReport>
+    ))
+)]
+async fn get_leak_report(State(state): State<LandscapeApp>) -> LandscapeApiResult<LeakGuardReport> {
+    use landscape::proxy::leak_guard::{
+        LeakGuardInput, dns_hijack_rules, evaluate, wan_has_global_ipv6,
+    };
+    use landscape_common::flow::config::FlowTarget;
+    use landscape_common::service::controller::ConfigStoreController;
+
+    let tproxy = state.proxy_service.tproxy_status().await;
+    let config = state.proxy_service.get_config().await;
+    let engine_running = state.proxy_service.is_running().await;
+
+    // The flows the configuration classifies as proxied. A read failure leaves
+    // this empty, which the report treats as "classification unavailable" — the
+    // delivery check is skipped rather than claiming coverage it did not verify.
+    let flow_rules = state.flow_rule_service.list().await;
+    let proxied_flows = match &flow_rules {
+        Ok(rules) => rules
+            .iter()
+            .filter(|rule| rule.enable)
+            .filter(|rule| {
+                rule.flow_targets
+                    .iter()
+                    .any(|target| matches!(target.target, FlowTarget::LocalTproxy { .. }))
+            })
+            .map(|rule| rule.flow_id as u8)
+            .collect::<Vec<u8>>(),
+        Err(e) => {
+            tracing::warn!("cannot read flow rules for the leak report: {e}");
+            Vec::new()
+        }
+    };
+
+    let report = evaluate(LeakGuardInput {
+        tproxy: &tproxy,
+        engine_running,
+        missing_listener_policy: config.tproxy_missing_listener,
+        wan_has_ipv6: wan_has_global_ipv6(),
+        dns_hijack_rules: dns_hijack_rules().await,
+        proxied_flows,
+    });
+    LandscapeApiResp::success(report)
 }
 
 #[utoipa::path(

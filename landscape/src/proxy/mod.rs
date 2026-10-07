@@ -11,6 +11,7 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 use uuid::Uuid;
 
+pub mod leak_guard;
 pub mod tproxy;
 
 pub use landscape_common::proxy::{TproxyDeliveryStatus, TproxyTargetStatus};

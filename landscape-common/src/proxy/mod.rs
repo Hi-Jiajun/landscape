@@ -135,6 +135,130 @@ pub enum TproxyMissingListener {
     Direct,
 }
 
+/// Which of the four leak classes a finding belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub enum LeakClass {
+    /// A client query can reach an unintended resolver instead of the managed one.
+    Dns,
+    /// IPv6 can take a different path than IPv4 for the same scope, so a v4-only
+    /// guard would let v6 out directly.
+    Ipv6,
+    /// A proxied flow can leave through the WAN when the proxy is unavailable.
+    ProxyFailure,
+    /// Traffic the operator expects to be proxied can expose the home address.
+    RealIp,
+}
+
+impl LeakClass {
+    pub fn label(self) -> &'static str {
+        match self {
+            LeakClass::Dns => "dns",
+            LeakClass::Ipv6 => "ipv6",
+            LeakClass::ProxyFailure => "proxy_failure",
+            LeakClass::RealIp => "real_ip",
+        }
+    }
+
+    pub const ALL: [LeakClass; 4] =
+        [LeakClass::Dns, LeakClass::Ipv6, LeakClass::ProxyFailure, LeakClass::RealIp];
+}
+
+/// How much a finding matters.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub enum LeakSeverity {
+    /// The class is covered, and this is the evidence for it.
+    #[default]
+    Ok,
+    /// Something is off but the guard still holds (for example the proxy is down
+    /// and the flow is being refused, which is the intended behaviour).
+    Notice,
+    /// The guard for this class is not in place as configured.
+    Warn,
+    /// Traffic can leave in a way the configuration says it must not.
+    Leak,
+}
+
+impl LeakSeverity {
+    pub fn label(self) -> &'static str {
+        match self {
+            LeakSeverity::Ok => "ok",
+            LeakSeverity::Notice => "notice",
+            LeakSeverity::Warn => "warn",
+            LeakSeverity::Leak => "leak",
+        }
+    }
+}
+
+/// One observation about one leak class, with the evidence behind it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct LeakFinding {
+    pub class: LeakClass,
+    pub severity: LeakSeverity,
+    /// Short machine-readable name of what was checked.
+    pub check: String,
+    /// What was found, in the operator's terms.
+    pub detail: String,
+    /// The raw values the verdict came from, so it can be verified rather than
+    /// taken on trust.
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+
+/// One cell of the {confirmed proxy, confirmed direct, unknown} x {engine ok,
+/// engine failed} matrix: what the configuration does in that state, and whether
+/// that is the required behaviour.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct MatrixCell {
+    /// `proxy` / `direct` / `unknown`
+    pub classification: String,
+    /// `engine_ok` / `engine_failed`
+    pub engine: String,
+    /// What actually happens in this state now.
+    pub behaviour: String,
+    /// Whether that matches the required matrix.
+    pub required: bool,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// The whole picture: whether each leak class is covered, and whether the flow
+/// matrix behaves as required.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct LeakGuardReport {
+    /// Highest severity across every finding, so a caller can alert on one value.
+    pub worst: LeakSeverity,
+    pub findings: Vec<LeakFinding>,
+    pub matrix: Vec<MatrixCell>,
+    /// Proxied flows whose listener is not bound, i.e. the engine is not
+    /// delivering for them right now.
+    #[serde(default)]
+    pub flows_without_listener: Vec<u8>,
+    pub engine_running: bool,
+    /// The configured policy for a proxied flow whose listener is missing.
+    pub missing_listener_policy: TproxyMissingListener,
+}
+
+impl LeakGuardReport {
+    pub fn push(&mut self, finding: LeakFinding) {
+        if finding.severity > self.worst {
+            self.worst = finding.severity;
+        }
+        self.findings.push(finding);
+    }
+
+    /// Whether anything needs the operator's attention.
+    pub fn is_healthy(&self) -> bool {
+        self.worst < LeakSeverity::Warn
+    }
+}
+
 /// One `LocalTproxy` flow and whether the kernel side is ready to deliver it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
