@@ -75,4 +75,17 @@ impl Default for DnsUpstreamConfig {
     }
 }
 
+impl DnsUpstreamConfig {
+    /// Whether this upstream has no address to query, i.e. it is the placeholder
+    /// a fresh install is seeded with rather than a usable resolver.
+    ///
+    /// Every mode builds its nameservers from `ips`, so an empty list cannot
+    /// resolve anything. Treating it as "not configured" keeps a config omission
+    /// from silently becoming a public-resolver fallback: the rule builder refuses
+    /// such a rule and says which one it is.
+    pub fn is_placeholder(&self) -> bool {
+        self.ips.is_empty()
+    }
+}
+
 crate::impl_trivial_validatable!(DnsUpstreamConfig);

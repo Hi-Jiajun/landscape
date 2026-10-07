@@ -110,6 +110,23 @@ impl MatcherBuilder {
                 tracing::warn!(rule_id = %rule.id, upstream_id = %rule.upstream_id, "skip DNS rule with missing upstream");
                 continue;
             };
+            if upstream.is_placeholder() {
+                // Never resolve through the seed placeholder: doing so would send
+                // this rule's queries to whatever address it happens to carry,
+                // which nobody chose. Fail loudly and leave the rule without a
+                // resolver so the operator sees it in the logs and in the DNS
+                // status instead of getting an implicit public upstream.
+                tracing::error!(
+                    rule_id = %rule.id,
+                    rule = %rule.name,
+                    index = rule.index,
+                    "DNS rule has no real upstream (it still points at the unconfigured \
+                     placeholder); this rule will not resolve anything until an upstream is \
+                     chosen for it"
+                );
+                dependencies.placeholder_rules.push(rule.name.clone());
+                continue;
+            }
             let Some(matcher) = self.build_rule_matcher(rule.source, true, &mut dependencies).await
             else {
                 continue;
@@ -360,6 +377,56 @@ mod tests {
         assert!(!Arc::ptr_eq(&first, &rebuilt));
         assert!(!Arc::ptr_eq(&tagged, &rebuilt_tagged));
         assert_eq!(source.reads.load(Ordering::Relaxed), 4);
+    }
+
+    #[tokio::test]
+    async fn a_rule_on_the_unconfigured_placeholder_is_refused() {
+        // A rule that still points at the unconfigured placeholder must not be
+        // built at all: resolving through it would send the query to whatever
+        // public address the placeholder carries, which is the implicit fallback
+        // this refuses. The rule is reported so the operator knows which one.
+        let (seed_rule, seed_upstream) = landscape_common::dns::gen_default_dns_rule_and_upstream();
+        assert!(seed_upstream.is_placeholder(), "the seed carries no resolver");
+        assert!(seed_upstream.ips.is_empty());
+
+        let (builder, _) = builder();
+        let (_, resolve_engine, dependencies) = builder
+            .build_flow(0, vec![seed_rule.clone()], vec![], vec![], vec![seed_upstream])
+            .await;
+
+        assert_eq!(resolve_engine.iter().count(), 0, "the placeholder rule resolves nothing");
+        assert_eq!(dependencies.placeholder_rules, vec![seed_rule.name.clone()]);
+    }
+
+    #[tokio::test]
+    async fn a_rule_with_a_real_upstream_is_built() {
+        // The guard must not catch a configured upstream: one address is enough.
+        let (builder, _) = builder();
+        let mut upstream = DnsUpstreamConfig::default();
+        upstream.ips = vec![IpAddr::V4(std::net::Ipv4Addr::new(9, 9, 9, 9))];
+        assert!(!upstream.is_placeholder());
+
+        let rule = DNSRuleConfig {
+            id: uuid::Uuid::new_v4(),
+            name: "configured".to_string(),
+            index: 10,
+            enable: true,
+            filter: Default::default(),
+            upstream_id: upstream.id,
+            mark: Default::default(),
+            source: vec![RuleSource::Config(DomainConfig {
+                match_type: DomainMatchType::Full,
+                value: "all.example".to_string(),
+            })],
+            flow_id: 7,
+            update_at: 0.0,
+        };
+
+        let (_, resolve_engine, dependencies) =
+            builder.build_flow(7, vec![rule], vec![], vec![], vec![upstream]).await;
+
+        assert_eq!(resolve_engine.iter().count(), 1);
+        assert!(dependencies.placeholder_rules.is_empty());
     }
 
     #[tokio::test]

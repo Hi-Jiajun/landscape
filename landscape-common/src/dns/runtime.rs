@@ -44,6 +44,10 @@ pub struct FlowDnsDependencies {
     pub geo_keys: HashSet<GeoFileCacheKey>,
     pub upstream_ids: HashSet<Uuid>,
     pub dynamic_redirect_sources: HashSet<String>,
+    /// Rules that were skipped because they still point at the unconfigured
+    /// placeholder upstream. Reported so "why does this rule not resolve" has an
+    /// answer in the status instead of only in the logs.
+    pub placeholder_rules: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

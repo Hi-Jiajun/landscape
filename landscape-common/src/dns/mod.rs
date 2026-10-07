@@ -19,7 +19,14 @@ pub mod upstream;
 pub use runtime::{CacheRuntimeConfig, DohRuntimeConfig, FlowDnsDependencies};
 
 pub fn gen_default_dns_rule_and_upstream() -> (DNSRuleConfig, DnsUpstreamConfig) {
-    let upstream = DnsUpstreamConfig::default();
+    // The seed exists so a fresh install has a rule to edit, not so that DNS
+    // works before anything is configured. It is marked as a placeholder and
+    // carries no upstream addresses, so the rule builder refuses it and the
+    // operator is told to pick a resolver instead of having every query
+    // silently forwarded to a public one.
+    let mut upstream = DnsUpstreamConfig::default();
+    upstream.ips.clear();
+    upstream.remark = "Unconfigured placeholder: set a real DNS upstream for this rule".to_string();
     let rule = DNSRuleConfig {
         id: gen_database_uuid(),
         name: "Landscape Router default rule".into(),
