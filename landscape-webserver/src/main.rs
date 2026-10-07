@@ -56,7 +56,7 @@ use landscape::{
 use landscape_common::lan_service::lan_route::RouteLanServiceConfig;
 use landscape_common::{
     VERSION,
-    args::{DbAction, LAND_ARGS, LAND_HOME_PATH, LandscapeAction},
+    args::{DbAction, LAND_ARGS, LAND_HOME_PATH, LandscapeAction, RescueAction},
     concurrency::{runtime_thread_name_fn, spawn_task, task_label, thread_name},
     config::RuntimeConfig,
     database::error::DbError,
@@ -64,7 +64,10 @@ use landscape_common::{
     event::hub::EventHub,
     wan_service::ipv6_pd::IAPrefixMap,
 };
-use landscape_common::{config::InitConfig, lan_service::lan_dhcpv4::config::DHCPv4ServiceConfig};
+use landscape_common::{
+    config::{InitConfig, StoreRuntimeConfig},
+    lan_service::lan_dhcpv4::config::DHCPv4ServiceConfig,
+};
 use landscape_core::cert::build_tls_server_config_with_shared_resolver;
 use landscape_core::{lan_device::LanDeviceDirectory, time::SyncTimeService};
 use landscape_database::provider::LandscapeDBServiceProvider;
@@ -135,6 +138,100 @@ pub enum StartupError {
     Metric(String),
     #[error("config: {0}")]
     Config(String),
+}
+
+/// `rescue` subcommand: versioned configuration snapshots and rollback.
+///
+/// Everything here is a file operation, so it works with the service stopped —
+/// which is the state a broken configuration leaves the router in.
+async fn run_rescue(
+    action: &RescueAction,
+    home_path: &Path,
+    store: &StoreRuntimeConfig,
+) -> Result<(), DbError> {
+    use landscape_database::rescue::SnapshotStore;
+
+    let snapshots = SnapshotStore::for_config_dir(home_path);
+    let database_path = database_file_path(&store.database_path);
+    // `create` needs the URL (it connects through SQLite); `restore` needs the
+    // file path (it replaces the file). Keeping both here is the only place the
+    // two are easy to confuse.
+    let version = env!("CARGO_PKG_VERSION");
+
+    match action {
+        RescueAction::Snapshot { label, keep } => {
+            let manifest =
+                snapshots.create(&store.database_path, label.clone(), false, version).await?;
+            println!("snapshot {}  {} bytes", manifest.id, manifest.size);
+            if let Some(label) = &manifest.label {
+                println!("  label: {label}");
+            }
+            println!("  path : {}", database_path.display());
+            let removed = snapshots.prune(*keep)?;
+            if removed > 0 {
+                println!("  pruned {removed} older snapshot(s), keeping {keep}");
+            }
+        }
+        RescueAction::List => {
+            let all = snapshots.list()?;
+            if all.is_empty() {
+                println!("no snapshots in {}", snapshots.dir().display());
+                println!("take one with: landscape-webserver rescue snapshot");
+                return Ok(());
+            }
+            println!("{:>17}  {:<6} {:>9}  label", "id", "kind", "size");
+            for manifest in &all {
+                println!("{}", manifest.describe());
+            }
+            println!("\n{} snapshot(s) in {}", all.len(), snapshots.dir().display());
+        }
+        RescueAction::Restore { id } => {
+            let manifest = snapshots.find(id)?;
+            // Take a snapshot of what is being replaced first, so this action is
+            // itself undoable with the same command.
+            let safety = snapshots
+                .create(
+                    &store.database_path,
+                    Some(format!("before restoring {}", manifest.id)),
+                    true,
+                    version,
+                )
+                .await?;
+            println!("pre-restore snapshot: {}", safety.id);
+            snapshots.restore(&manifest.id, &database_path)?;
+            println!("restored {} onto {}", manifest.id, database_path.display());
+            println!("restart the service to load it: systemctl restart landscape.service");
+        }
+        RescueAction::Rollback => {
+            let newest = snapshots.newest()?;
+            let safety = snapshots
+                .create(
+                    &store.database_path,
+                    Some(format!("before rolling back to {}", newest.id)),
+                    true,
+                    version,
+                )
+                .await?;
+            println!("pre-restore snapshot: {}", safety.id);
+            snapshots.restore(&newest.id, &database_path)?;
+            println!("rolled back to {} ({})", newest.id, database_path.display());
+            if let Some(label) = &newest.label {
+                println!("  label: {label}");
+            }
+            println!("restart the service to load it: systemctl restart landscape.service");
+        }
+    }
+    Ok(())
+}
+
+/// The file behind a `sqlite://…?mode=rwc` URL.
+///
+/// The snapshot code needs the path, and the URL is the only place the store
+/// keeps it, so the same parsing has to happen here.
+fn database_file_path(database_url: &str) -> PathBuf {
+    let rest = database_url.strip_prefix("sqlite://").unwrap_or(database_url);
+    let without_query = rest.split('?').next().unwrap_or(rest);
+    PathBuf::from(without_query)
 }
 
 async fn prepare_startup_init(
@@ -789,6 +886,17 @@ async fn async_main() -> Result<(), StartupError> {
         panic!("init log error: {e:?}");
     }
 
+    // The rescue subcommand works on the configuration files directly so it is
+    // usable when a configuration change is what broke the network. It runs
+    // before the time service and before anything binds a port, so it does not
+    // need DNS, the proxy or the web UI to be working.
+    if let Some(LandscapeAction::Rescue(action)) = &args.action {
+        run_rescue(action, &home_path, &config.store)
+            .await
+            .map_err(|e| StartupError::Config(e.to_string()))?;
+        return Ok(());
+    }
+
     let time_service = SyncTimeService::start(config.time.clone());
 
     let mut init_config_to_import = init_config_to_import;
@@ -846,6 +954,7 @@ async fn async_main() -> Result<(), StartupError> {
             },
             // Handled (and returned early) before this point.
             LandscapeAction::Config(_) => Ok(()),
+            LandscapeAction::Rescue(_) => Ok(()),
         }
     } else {
         let db_store_provider =

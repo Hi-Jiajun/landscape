@@ -378,33 +378,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_rule_on_the_unconfigured_placeholder_is_refused() {
-        // A rule that still points at the unconfigured placeholder must not be
-        // built at all: resolving through it would send the query to whatever
-        // public address the placeholder carries, which is the implicit fallback
-        // this refuses. The rule is reported so the operator knows which one.
+    async fn the_seeded_rule_is_disabled_so_it_never_answers() {
+        // The seed exists to give a fresh install something to edit. It ships with
+        // no upstream address (so it cannot become a public resolver) and
+        // disabled: an enabled rule with an empty source matches every domain, so
+        // shipping one would answer — or refuse — the whole internet for an
+        // install nobody has configured yet.
         let (seed_rule, seed_upstream) = landscape_common::dns::gen_default_dns_rule_and_upstream();
         assert!(seed_upstream.is_placeholder(), "the seed carries no resolver");
         assert!(seed_upstream.ips.is_empty());
+        assert!(!seed_rule.enable, "the seeded rule must ship disabled");
 
         let (builder, _) = builder();
         let (_, resolve_engine, dependencies) = builder
             .build_flow(0, vec![seed_rule.clone()], vec![], vec![], vec![seed_upstream])
             .await;
 
-        // The rule is still built, so it keeps its place in the order and its
-        // domains cannot be answered by a different rule's upstream.
-        assert_eq!(
-            resolve_engine.iter().count(),
-            1,
-            "the placeholder rule keeps matching; it refuses at lookup time"
-        );
-        assert_eq!(dependencies.placeholder_rules, vec![seed_rule.name.clone()]);
+        assert_eq!(resolve_engine.iter().count(), 0, "a disabled rule resolves nothing");
+        assert!(dependencies.placeholder_rules.is_empty());
+    }
 
-        // And a lookup through it fails with the reason, rather than resolving.
+    #[tokio::test]
+    async fn an_enabled_rule_with_an_unconfigured_upstream_refuses_its_domains() {
+        // The case that must not resolve: the rule is enabled and its upstream was
+        // cleared. Refusing keeps the failure attributable to that rule; dropping
+        // the rule would let the same domains be answered by a different rule's
+        // resolver, which is a silent fallback rather than a refusal.
+        let (builder, _) = builder();
+        let upstream = DnsUpstreamConfig { ips: Vec::new(), ..Default::default() };
+        let rule = DNSRuleConfig {
+            id: uuid::Uuid::new_v4(),
+            name: "misconfigured".to_string(),
+            index: 10,
+            enable: true,
+            filter: Default::default(),
+            upstream_id: upstream.id,
+            mark: Default::default(),
+            source: vec![RuleSource::Config(DomainConfig {
+                match_type: DomainMatchType::Full,
+                value: "owned.example".to_string(),
+            })],
+            flow_id: 7,
+            update_at: 0.0,
+        };
+
+        let (_, resolve_engine, dependencies) =
+            builder.build_flow(7, vec![rule.clone()], vec![], vec![], vec![upstream]).await;
+
         let (_, runtime) = resolve_engine.iter().next().expect("the rule was built");
+        assert!(runtime.is_match(&pd("owned.example")));
+        assert!(!runtime.is_match(&pd("other.example")));
+        assert_eq!(dependencies.placeholder_rules, vec![rule.name.clone()]);
+
         let err = runtime
-            .lookup("any.example", RecordType::A)
+            .lookup("owned.example", RecordType::A)
             .await
             .expect_err("an unconfigured upstream must not resolve");
         assert!(
@@ -414,25 +441,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_placeholder_rule_still_matches_its_domains() {
-        // Matching is what keeps the refusal attributable to this rule instead of
-        // letting the query reach a later one.
-        let (seed_rule, seed_upstream) = landscape_common::dns::gen_default_dns_rule_and_upstream();
-        let (builder, _) = builder();
-        let (_, resolve_engine, _) =
-            builder.build_flow(0, vec![seed_rule], vec![], vec![], vec![seed_upstream]).await;
-
-        let (_, runtime) = resolve_engine.iter().next().expect("the rule was built");
-        // The seed rule matches everything (empty source = match all).
-        assert!(runtime.is_match(&pd("some-other.example")));
-    }
-
-    #[tokio::test]
     async fn a_rule_with_a_real_upstream_is_built() {
         // The guard must not catch a configured upstream: one address is enough.
         let (builder, _) = builder();
-        let mut upstream = DnsUpstreamConfig::default();
-        upstream.ips = vec![IpAddr::V4(std::net::Ipv4Addr::new(9, 9, 9, 9))];
+        let upstream = DnsUpstreamConfig {
+            ips: vec![IpAddr::V4(std::net::Ipv4Addr::new(9, 9, 9, 9))],
+            ..Default::default()
+        };
         assert!(!upstream.is_placeholder());
 
         let rule = DNSRuleConfig {

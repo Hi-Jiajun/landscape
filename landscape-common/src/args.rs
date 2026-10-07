@@ -131,6 +131,38 @@ pub enum LandscapeAction {
 
     /// Generate a landscape_init.toml from high-level deployment options
     Config(Box<crate::config::cli::ConfigCliArgs>),
+
+    /// Versioned configuration snapshots and rollback to one
+    ///
+    /// Works without the service running, so it is usable when a configuration
+    /// change has made the network unusable.
+    #[command(subcommand)]
+    Rescue(RescueAction),
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum RescueAction {
+    /// Copy the current configuration into a new snapshot
+    Snapshot {
+        /// Free-form label, e.g. `before-tproxy-change`
+        #[arg(short, long)]
+        label: Option<String>,
+        /// How many snapshots to keep, oldest removed first
+        #[arg(long, default_value_t = 20)]
+        keep: usize,
+    },
+    /// List the snapshots that can be restored
+    List,
+    /// Replace the live configuration with a snapshot's
+    ///
+    /// Stop the service first: the database file is replaced, which is only safe
+    /// with nothing holding it open.
+    Restore {
+        /// Snapshot id, as shown by `rescue list`
+        id: String,
+    },
+    /// Restore the most recent snapshot
+    Rollback,
 }
 
 #[derive(Subcommand, Debug, Clone)]
