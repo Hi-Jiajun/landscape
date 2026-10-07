@@ -33,8 +33,10 @@ static __always_inline int route6_read_context_from_scan(struct __sk_buff *skb,
 
     COPY_ADDR_FROM(context->saddr.all, ip6h->saddr.in6_u.u6_addr32);
     COPY_ADDR_FROM(context->daddr.all, ip6h->daddr.in6_u.u6_addr32);
-    context->l4_protocol = 0;
-    context->tos = 0;
+    context->l4_protocol = offset->l4_protocol;
+    // IPv6 Traffic Class (DSCP + ECN): top 32 bits contain version(4), traffic_class(8),
+    // flow_label(20)
+    context->tos = (bpf_ntohl(*(__be32 *)ip6h) >> 20) & 0xFF;
     return TC_ACT_OK;
 #undef BPF_LOG_TOPIC
 }

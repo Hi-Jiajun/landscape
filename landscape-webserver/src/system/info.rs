@@ -73,6 +73,7 @@ fn enabled_capabilities() -> Vec<Capability> {
     if cfg!(feature = "mem-track") {
         capabilities.push(Capability::MemTrack);
     }
+    capabilities.push(Capability::Proxy);
     capabilities
 }
 

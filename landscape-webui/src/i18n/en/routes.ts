@@ -36,5 +36,6 @@ export default {
   "cert-accounts": "ACME Accounts",
   certs: "Certificates",
   gateway: "Service Gateway",
+  proxy: "Outbound Proxy",
   about: "About",
 };

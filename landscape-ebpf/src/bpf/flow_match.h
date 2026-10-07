@@ -21,19 +21,14 @@ struct imac_addr {
 
 struct flow_match_key {
     u32 prefixlen;
-    // vlan id
-    // u32 vlan_tci;
-    // tos value
-    // u8 tos;
     // IP 协议: IPv4 Ipv6
     u8 l3_protocol;
-    // IP 层协议: TCP / UDP
-    // u8 l4_protocol;
-
     // FLOW_ENTRY_MODE_MAC | FLOW_ENTRY_MODE_IP
     u8 is_match_ip;
-
-    u8 _pad[2];
+    // tos / DSCP value: reserved for future QoS flow steering; currently initialized to 0
+    // so LPM trie prefix matches ignore it uniformly on both BPF and user-space sides.
+    u8 tos;
+    u8 _pad;
     union {
         // 源 IP 地址
         union u_inet_addr src_addr;

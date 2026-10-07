@@ -24,6 +24,20 @@ pub struct DnsUpstreamConfig {
     #[cfg_attr(feature = "openapi", schema(value_type = Vec<String>))]
     pub ips: Vec<IpAddr>,
 
+    /// Addresses of a second resolver to use when this one cannot be reached.
+    ///
+    /// The architecture pairs a domestic ISP resolver (in `ips`) with a public
+    /// one here, so a rule that binds this upstream inherits the pairing rather
+    /// than each rule having to name two upstreams. Empty means no failover, which
+    /// is the previous behaviour.
+    ///
+    /// The backup is used **only** when the primary produced no answer at all: a
+    /// NODATA or a legitimate NXDOMAIN is the primary's answer, not a reason to
+    /// ask someone else.
+    #[serde(default)]
+    #[cfg_attr(feature = "openapi", schema(value_type = Vec<String>))]
+    pub backup_ips: Vec<IpAddr>,
+
     #[cfg_attr(feature = "openapi", schema(required = true, nullable = true))]
     pub port: Option<u16>,
 
@@ -66,12 +80,26 @@ impl Default for DnsUpstreamConfig {
             remark: "Landscape Router Default DNS Upstream".to_string(),
             mode: DnsUpstreamMode::Plaintext,
             ips: vec![IpAddr::V4(Ipv4Addr::new(1, 0, 0, 1))],
+            backup_ips: Vec::new(),
             enable_ip_validation: None,
             use_experimental_pool: None,
             port: Some(53),
             bind_config: DnsBindConfig::default(),
             update_at: get_f64_timestamp(),
         }
+    }
+}
+
+impl DnsUpstreamConfig {
+    /// Whether this upstream has no address to query, i.e. it is the placeholder
+    /// a fresh install is seeded with rather than a usable resolver.
+    ///
+    /// Every mode builds its nameservers from `ips`, so an empty list cannot
+    /// resolve anything. Treating it as "not configured" keeps a config omission
+    /// from silently becoming a public-resolver fallback: the rule builder refuses
+    /// such a rule and says which one it is.
+    pub fn is_placeholder(&self) -> bool {
+        self.ips.is_empty()
     }
 }
 

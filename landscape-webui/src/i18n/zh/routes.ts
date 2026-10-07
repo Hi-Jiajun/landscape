@@ -36,5 +36,6 @@ export default {
   "cert-accounts": "ACME 账户",
   certs: "证书管理",
   gateway: "服务网关",
+  proxy: "出站代理",
   about: "关于",
 };

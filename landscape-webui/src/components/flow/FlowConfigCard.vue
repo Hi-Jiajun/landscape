@@ -168,7 +168,9 @@ const show_remark = computed(
         {{
           each.target.t === "netns"
             ? frontEndStore.MASK_INFO(each.target.container_name)
-            : frontEndStore.MASK_INFO(each.target.name)
+            : each.target.t === "local_tproxy"
+              ? `TProxy :${each.target.port}`
+              : frontEndStore.MASK_INFO(each.target.name)
         }}
         <span v-if="(each.weight ?? 1) !== 1"> ×{{ each.weight ?? 1 }}</span>
         <template #icon>

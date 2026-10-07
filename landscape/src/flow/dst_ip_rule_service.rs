@@ -106,16 +106,22 @@ impl ConfigStoreController for DstIpRuleService {
     }
 
     async fn notify_changed(&self, changes: Vec<Change<Self::Config>>) {
-        if changes.len() == 1 {
-            let flow_id = changes[0].new.flow_id;
-            self.refresh_flow(flow_id).await;
-        } else {
-            self.apply_configs(changes.into_iter().map(|c| c.new).collect()).await;
+        let mut flow_ids = HashSet::new();
+        for change in &changes {
+            flow_ids.insert(change.new.flow_id);
+            if let Some(ref old) = change.old {
+                flow_ids.insert(old.flow_id);
+            }
         }
+        for flow_id in flow_ids {
+            self.refresh_flow(flow_id).await;
+        }
+        self.dataplane.invalidate_lan_cache();
     }
 
     async fn notify_deleted(&self, old: Self::Config) {
         self.refresh_flow(old.flow_id).await;
+        self.dataplane.invalidate_lan_cache();
     }
 }
 

@@ -56,7 +56,7 @@ use landscape::{
 use landscape_common::lan_service::lan_route::RouteLanServiceConfig;
 use landscape_common::{
     VERSION,
-    args::{DbAction, LAND_ARGS, LAND_HOME_PATH, LandscapeAction},
+    args::{DbAction, LAND_ARGS, LAND_HOME_PATH, LandscapeAction, RescueAction},
     concurrency::{runtime_thread_name_fn, spawn_task, task_label, thread_name},
     config::RuntimeConfig,
     database::error::DbError,
@@ -64,7 +64,10 @@ use landscape_common::{
     event::hub::EventHub,
     wan_service::ipv6_pd::IAPrefixMap,
 };
-use landscape_common::{config::InitConfig, lan_service::lan_dhcpv4::config::DHCPv4ServiceConfig};
+use landscape_common::{
+    config::{InitConfig, StoreRuntimeConfig},
+    lan_service::lan_dhcpv4::config::DHCPv4ServiceConfig,
+};
 use landscape_core::cert::build_tls_server_config_with_shared_resolver;
 use landscape_core::{lan_device::LanDeviceDirectory, time::SyncTimeService};
 use landscape_database::provider::LandscapeDBServiceProvider;
@@ -91,6 +94,7 @@ mod interfaces;
 mod metrics;
 mod nat;
 mod openapi;
+mod proxy;
 mod redirect_https;
 mod self_monitor;
 mod services;
@@ -134,6 +138,325 @@ pub enum StartupError {
     Metric(String),
     #[error("config: {0}")]
     Config(String),
+}
+
+/// `rescue` subcommand: versioned configuration snapshots and rollback.
+///
+/// Everything here is a file operation, so it works with the service stopped —
+/// which is the state a broken configuration leaves the router in.
+async fn run_rescue(
+    action: &RescueAction,
+    home_path: &Path,
+    store: &StoreRuntimeConfig,
+) -> Result<(), DbError> {
+    use landscape_database::rescue::{GrantStore as Grants, SnapshotStore};
+
+    let snapshots = SnapshotStore::for_config_dir(home_path);
+    let database_path = database_file_path(&store.database_path);
+    // `create` needs the URL (it connects through SQLite); `restore` needs the
+    // file path (it replaces the file). Keeping both here is the only place the
+    // two are easy to confuse.
+    let version = env!("CARGO_PKG_VERSION");
+
+    match action {
+        RescueAction::Snapshot { label, keep } => {
+            let manifest =
+                snapshots.create(&store.database_path, label.clone(), false, version).await?;
+            println!("snapshot {}  {} bytes", manifest.id, manifest.size);
+            if let Some(label) = &manifest.label {
+                println!("  label: {label}");
+            }
+            println!("  path : {}", database_path.display());
+            let removed = snapshots.prune(*keep)?;
+            if removed > 0 {
+                println!("  pruned {removed} older snapshot(s), keeping {keep}");
+            }
+        }
+        RescueAction::List => {
+            let all = snapshots.list()?;
+            if all.is_empty() {
+                println!("no snapshots in {}", snapshots.dir().display());
+                println!("take one with: landscape-webserver rescue snapshot");
+                return Ok(());
+            }
+            println!("{:>17}  {:<6} {:>9}  label", "id", "kind", "size");
+            for manifest in &all {
+                println!("{}", manifest.describe());
+            }
+            println!("\n{} snapshot(s) in {}", all.len(), snapshots.dir().display());
+        }
+        RescueAction::Restore { id } => {
+            let manifest = snapshots.find(id)?;
+            // Take a snapshot of what is being replaced first, so this action is
+            // itself undoable with the same command.
+            let safety = snapshots
+                .create(
+                    &store.database_path,
+                    Some(format!("before restoring {}", manifest.id)),
+                    true,
+                    version,
+                )
+                .await?;
+            println!("pre-restore snapshot: {}", safety.id);
+            snapshots.restore(&manifest.id, &database_path)?;
+            println!("restored {} onto {}", manifest.id, database_path.display());
+            println!("restart the service to load it: systemctl restart landscape.service");
+        }
+        RescueAction::Rollback => {
+            let newest = snapshots.newest()?;
+            let safety = snapshots
+                .create(
+                    &store.database_path,
+                    Some(format!("before rolling back to {}", newest.id)),
+                    true,
+                    version,
+                )
+                .await?;
+            println!("pre-restore snapshot: {}", safety.id);
+            snapshots.restore(&newest.id, &database_path)?;
+            println!("rolled back to {} ({})", newest.id, database_path.display());
+            if let Some(label) = &newest.label {
+                println!("  label: {label}");
+            }
+            println!("restart the service to load it: systemctl restart landscape.service");
+        }
+        RescueAction::Begin { label, timeout } => {
+            let pending = snapshots
+                .begin_transaction(&store.database_path, label.clone(), *timeout, version)
+                .await?;
+            println!("transaction open: {}", pending.describe());
+            println!("  snapshot: {}", pending.snapshot_id);
+            println!(
+                "  it will be restored automatically in {}s unless `rescue commit` runs",
+                timeout
+            );
+        }
+        RescueAction::Commit => {
+            let pending = snapshots.commit_transaction()?;
+            println!("accepted the change that started from {}", pending.snapshot_id);
+            if let Some(label) = &pending.label {
+                println!("  label: {label}");
+            }
+        }
+        RescueAction::Discard => {
+            let pending = snapshots.rollback_transaction(&database_path)?;
+            println!("discarded the change; restored {}", pending.snapshot_id);
+            if let Some(label) = &pending.label {
+                println!("  label: {label}");
+            }
+            println!("restart the service to load it: systemctl restart landscape.service");
+        }
+        RescueAction::Status => match snapshots.pending() {
+            Some(pending) => {
+                println!("a configuration change is provisional: {}", pending.describe());
+                println!("  snapshot: {}", pending.snapshot_id);
+                if pending.is_expired() {
+                    println!("  the deadline has passed; it will be restored on the next start");
+                }
+            }
+            None => println!("no provisional change"),
+        },
+        RescueAction::Authorize { mac, flow_id, minutes, reason } => {
+            // Only the grant is recorded here. The flow rule is applied by the
+            // service when it starts and by the sweep that removes expired grants,
+            // so this works while the service is down and cannot leave a rule
+            // behind that nothing tracks.
+            let mut grants = Grants::load(snapshots.dir())?;
+            let grant = grants.add(
+                snapshots.dir(),
+                mac.clone(),
+                *flow_id,
+                reason.clone(),
+                minutes.saturating_mul(60),
+            )?;
+            println!("granted {} for {minutes} minute(s)", grant.describe());
+            println!("  it is removed automatically when the time is up");
+            println!("  the service applies it at startup and on its sweep");
+        }
+        RescueAction::Grants { all } => {
+            let grants = Grants::load(snapshots.dir())?;
+            let listed: Vec<_> = if *all { grants.all().to_vec() } else { grants.active() };
+            if listed.is_empty() {
+                println!("no device grants in {}", snapshots.dir().display());
+                return Ok(());
+            }
+            for grant in &listed {
+                println!("{}", grant.describe());
+            }
+        }
+        RescueAction::Revoke { id } => {
+            let mut grants = Grants::load(snapshots.dir())?;
+            let revoked = grants.revoke(snapshots.dir(), id)?;
+            println!("revoked {}", revoked.describe());
+            println!("the service removes its flow rule on the next sweep, or at once if stopped");
+        }
+    }
+    Ok(())
+}
+
+/// The file behind a `sqlite://…?mode=rwc` URL.
+///
+/// The snapshot code needs the path, and the URL is the only place the store
+/// keeps it, so the same parsing has to happen here.
+fn database_file_path(database_url: &str) -> PathBuf {
+    let rest = database_url.strip_prefix("sqlite://").unwrap_or(database_url);
+    let without_query = rest.split('?').next().unwrap_or(rest);
+    PathBuf::from(without_query)
+}
+
+/// Undo a configuration change that was applied but never accepted.
+///
+/// Startup is the right place for the forced case: if the service did not come
+/// up, or came up and then died, the operator never got to accept the change, so
+/// the configuration it replaced is the last one known to work. Only a change with
+/// an open transaction is affected; everything else starts normally.
+async fn rollback_uncommitted_change(
+    home_path: &Path,
+    store: &StoreRuntimeConfig,
+) -> Result<(), DbError> {
+    use landscape_database::rescue::SnapshotStore;
+
+    let snapshots = SnapshotStore::for_config_dir(home_path);
+    if snapshots.pending().is_none() {
+        return Ok(());
+    }
+    let database_path = database_file_path(&store.database_path);
+    match snapshots.rollback_expired(&database_path, true) {
+        Ok(Some(pending)) => {
+            tracing::error!(
+                snapshot = %pending.snapshot_id,
+                label = pending.label.as_deref().unwrap_or("-"),
+                "a configuration change was never accepted; restored the previous configuration. \
+                 If that change was intended, apply it again and run `rescue commit`"
+            );
+            println!(
+                "restored the previous configuration: the change started from snapshot {} was \
+                 never committed",
+                pending.snapshot_id
+            );
+        }
+        Ok(None) => {}
+        Err(e) => {
+            // Keep going rather than refusing to start: the operator may need the
+            // service up to fix things, and the marker is still on disk.
+            tracing::error!(
+                "could not roll back the uncommitted configuration change: {e}; it is still \
+                 marked provisional"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Put one device into a flow, or take it out.
+///
+/// Used by the time-limited device grants. The flow is one the operator already
+/// trusts; this only adds or removes that device's match rule, so nothing else
+/// about the flow changes and removing the grant restores it exactly.
+///
+/// Lives here rather than on the flow service because it needs nothing private:
+/// reading the rule and writing it back through the controller is the same path
+/// an edit from the UI takes, so the flow matches, route targets and TProxy
+/// mapping are all updated.
+async fn set_device_membership(
+    flow_rule_service: &FlowRuleService,
+    flow_id: u32,
+    mac_addr: landscape_common::net::MacAddr,
+    present: bool,
+) -> Result<bool, DbError> {
+    use landscape_common::flow::{FlowEntryMatchMode, FlowEntryRule};
+    use landscape_common::service::controller::ConfigStoreController;
+
+    let Some(mut config) =
+        flow_rule_service.list().await?.into_iter().find(|rule| rule.flow_id == flow_id)
+    else {
+        return Err(DbError::Internal(format!(
+            "no flow with id {flow_id}; a grant must name a flow that exists"
+        )));
+    };
+
+    let before = config.flow_match_rules.len();
+    config.flow_match_rules.retain(|rule| {
+        !matches!(&rule.mode, FlowEntryMatchMode::Mac { mac_addr: existing } if *existing == mac_addr)
+    });
+    let matched_before = config.flow_match_rules.len() != before;
+
+    if present && !matched_before {
+        config.flow_match_rules.push(FlowEntryRule {
+            qos: None,
+            mode: FlowEntryMatchMode::Mac { mac_addr },
+        });
+    }
+
+    let changed = matched_before != present;
+    if changed {
+        flow_rule_service.checked_set(config).await?;
+    }
+    Ok(changed)
+}
+
+/// Bring the flow rules in line with the device grants.
+///
+/// Runs at startup and on a timer. Each pass:
+///   * drops the grants whose time is up, and takes those devices out of their
+///     flows;
+///   * puts the devices of the grants still in force into their flows.
+///
+/// It is declarative — the grants file is the source of truth and this makes the
+/// dataplane match it — so a grant removed while the service was down, or a rule
+/// lost to a failed write, is corrected by the next pass rather than persisting.
+/// The traffic effect is audited at the moment it changes.
+async fn reconcile_device_grants(
+    home_path: &Path,
+    flow_rule_service: &FlowRuleService,
+) -> Result<(), DbError> {
+    use landscape_database::rescue::{GrantStore, SnapshotStore};
+
+    let dir = SnapshotStore::for_config_dir(home_path);
+    let grants_dir = dir.dir().to_path_buf();
+    let mut store = GrantStore::load(&grants_dir)?;
+
+    for expired in store.take_expired(&grants_dir)? {
+        tracing::error!(
+            grant = %expired.id,
+            mac = %expired.mac,
+            flow_id = expired.flow_id,
+            reason = %expired.reason,
+            "a temporary device authorization expired; the device is leaving the flow"
+        );
+        match expired.mac_addr() {
+            Some(mac) => {
+                if let Err(e) =
+                    set_device_membership(flow_rule_service, expired.flow_id, mac, false).await
+                {
+                    // The grant is gone from the file, so the next pass will try
+                    // again rather than leaving the device authorized.
+                    tracing::error!("cannot remove the expired grant's flow rule: {e}");
+                }
+            }
+            None => tracing::error!(mac = %expired.mac, "grant has an unreadable MAC"),
+        }
+    }
+
+    for grant in store.active() {
+        let Some(mac) = grant.mac_addr() else {
+            tracing::error!(mac = %grant.mac, "grant has an unreadable MAC");
+            continue;
+        };
+        match set_device_membership(flow_rule_service, grant.flow_id, mac, true).await {
+            Ok(true) => tracing::warn!(
+                grant = %grant.id,
+                mac = %grant.mac,
+                flow_id = grant.flow_id,
+                remaining_secs = grant.remaining_secs(),
+                reason = %grant.reason,
+                "a device was authorized into a flow until the grant expires"
+            ),
+            Ok(false) => {}
+            Err(e) => tracing::error!(grant = %grant.id, "cannot apply the grant: {e}"),
+        }
+    }
+    Ok(())
 }
 
 async fn prepare_startup_init(
@@ -252,6 +575,18 @@ async fn run_system(
     let route_service =
         startup_phase!("route_service.new", IpRouteService::new(ebpf_rt.clone().route_table()));
 
+    // Created before the flow service so the latter can publish the
+    // `flow_id -> local TProxy listener` mapping the plugin has to deliver.
+    let docker_service = LandscapeDockerService::new(home_path.clone(), route_service.clone());
+    let proxy_service = landscape::proxy::LandscapeProxyService::new(
+        home_path.clone(),
+        ebpf_rt.clone().dns_guard(),
+        ebpf_rt.clone().flow_rules(),
+        ebpf_rt.clone().mss_clamp(),
+        ebpf_rt.clone().mtu_chamber(),
+    )
+    .await;
+
     let flow_rule_service = startup_phase!(
         "flow_rule_service.new",
         FlowRuleService::new(
@@ -260,6 +595,7 @@ async fn run_system(
             route_service.clone(),
             event_handle.subscribe_device(),
             ebpf_rt.clone().flow_rules(),
+            proxy_service.tproxy_delivery(),
         )
         .await
     );
@@ -268,6 +604,31 @@ async fn run_system(
         "dns_redirect_service.new",
         DNSRedirectService::new(db_store_provider.clone(), dns_service_tx.clone()).await
     );
+
+    // Temporary device authorizations: apply what is in force and drop what has
+    // expired, now and then on a timer. This runs after the flow service exists so
+    // the grants take effect through the normal flow path, and again at startup so
+    // a grant that expired while the service was down does not survive it.
+    // A failure here is logged and the service starts anyway: the operator may
+    // need it up to fix things, and the grants file still describes the intent.
+    if let Err(e) = reconcile_device_grants(&home_path, &flow_rule_service).await {
+        tracing::error!("cannot reconcile the device grants at startup: {e}");
+    }
+    {
+        let home = home_path.clone();
+        let service = flow_rule_service.clone();
+        spawn_task("device_grants.sweep", async move {
+            // A minute is far below any grant's duration and cheap: the reconcile
+            // is a file read plus one comparison per grant when nothing changed.
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                ticker.tick().await;
+                if let Err(e) = reconcile_device_grants(&home, &service).await {
+                    tracing::error!("cannot reconcile the device grants: {e}");
+                }
+            }
+        });
+    }
 
     let metric_service = startup_phase!(
         "metric_service.new",
@@ -462,6 +823,7 @@ async fn run_system(
         db_store_provider.clone(),
         event_handle.subscribe_iface(),
         ebpf_rt.clone().mss_clamp(),
+        ebpf_rt.clone().mtu_chamber(),
     )
     .await?;
 
@@ -506,8 +868,6 @@ async fn run_system(
         event_handle.subscribe_iface(),
     )
     .await;
-
-    let docker_service = LandscapeDockerService::new(home_path.clone(), route_service.clone());
 
     let pppd_service = PPPDServiceConfigManagerService::new(
         db_store_provider.clone(),
@@ -585,6 +945,7 @@ async fn run_system(
         cert_service: cert_service.clone(),
         // gateway
         gateway_service: gateway_service.clone(),
+        proxy_service,
     };
 
     gateway::sync_gateway_dynamic_dns_redirects(&landscape_app_status).await;
@@ -620,6 +981,7 @@ async fn run_system(
     let (metrics_router, _) = openapi::build_metrics_openapi_router().split_for_parts();
     let (self_monitor_router, _) = openapi::build_self_monitor_openapi_router().split_for_parts();
     let (gateway_router, _) = openapi::build_gateway_openapi_router().split_for_parts();
+    let (proxy_router, _) = openapi::build_proxy_openapi_router().split_for_parts();
     let openapi = openapi::build_full_openapi_spec();
 
     // /system combines two routers with different state types:
@@ -644,6 +1006,7 @@ async fn run_system(
         .nest("/metrics", metrics_router)
         .nest("/self-monitor", self_monitor_router)
         .nest("/gateway", gateway_router)
+        .nest("/proxy", proxy_router)
         .with_state(landscape_app_status.clone())
         .nest("/system", system_combined)
         .route_layer(axum::middleware::from_fn_with_state(auth_share.clone(), auth::auth_handler));
@@ -781,6 +1144,22 @@ async fn async_main() -> Result<(), StartupError> {
         panic!("init log error: {e:?}");
     }
 
+    // The rescue subcommand works on the configuration files directly so it is
+    // usable when a configuration change is what broke the network. It runs
+    // before the time service and before anything binds a port, so it does not
+    // need DNS, the proxy or the web UI to be working.
+    if let Some(LandscapeAction::Rescue(action)) = &args.action {
+        run_rescue(action, &home_path, &config.store)
+            .await
+            .map_err(|e| StartupError::Config(e.to_string()))?;
+        return Ok(());
+    }
+
+    // A configuration change that was never accepted must not survive a restart:
+    // an uncommitted change that took the service down is exactly the case the
+    // transaction exists for. Done before anything reads the configuration.
+    rollback_uncommitted_change(&home_path, &config.store).await?;
+
     let time_service = SyncTimeService::start(config.time.clone());
 
     let mut init_config_to_import = init_config_to_import;
@@ -838,6 +1217,7 @@ async fn async_main() -> Result<(), StartupError> {
             },
             // Handled (and returned early) before this point.
             LandscapeAction::Config(_) => Ok(()),
+            LandscapeAction::Rescue(_) => Ok(()),
         }
     } else {
         let db_store_provider =

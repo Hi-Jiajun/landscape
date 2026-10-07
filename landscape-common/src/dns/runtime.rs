@@ -19,7 +19,20 @@ use super::redirect::{
 pub struct CacheRuntimeConfig {
     pub cache_capacity: u32,
     pub cache_ttl: u32,
+    /// Ceiling for a negative answer's lifetime. The lifetime itself comes from
+    /// the answer: RFC 2308 §5 takes `min(SOA TTL, SOA.MINIMUM)`, and hickory
+    /// hands that over as the error's `negative_ttl`. This value only caps it, so
+    /// a short upstream lifetime is never extended.
     pub negative_cache_ttl: u32,
+    /// Used only when a negative answer arrived without an SOA, in which case the
+    /// upstream justified no lifetime at all. Zero means "do not cache it", which
+    /// is what RFC 2308 §5 asks for.
+    #[serde(default = "default_negative_cache_ttl_without_soa")]
+    pub negative_cache_ttl_without_soa: u32,
+}
+
+fn default_negative_cache_ttl_without_soa() -> u32 {
+    crate::DEFAULT_DNS_NEGATIVE_CACHE_TTL_WITHOUT_SOA
 }
 
 impl Default for CacheRuntimeConfig {
@@ -28,6 +41,7 @@ impl Default for CacheRuntimeConfig {
             cache_capacity: crate::DEFAULT_DNS_CACHE_CAPACITY,
             cache_ttl: crate::DEFAULT_DNS_CACHE_TTL,
             negative_cache_ttl: crate::DEFAULT_DNS_NEGATIVE_CACHE_TTL,
+            negative_cache_ttl_without_soa: crate::DEFAULT_DNS_NEGATIVE_CACHE_TTL_WITHOUT_SOA,
         }
     }
 }
@@ -44,6 +58,10 @@ pub struct FlowDnsDependencies {
     pub geo_keys: HashSet<GeoFileCacheKey>,
     pub upstream_ids: HashSet<Uuid>,
     pub dynamic_redirect_sources: HashSet<String>,
+    /// Rules that were skipped because they still point at the unconfigured
+    /// placeholder upstream. Reported so "why does this rule not resolve" has an
+    /// answer in the status instead of only in the logs.
+    pub placeholder_rules: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

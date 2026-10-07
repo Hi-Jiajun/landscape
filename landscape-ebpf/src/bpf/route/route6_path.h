@@ -13,6 +13,7 @@
 #include "route6_lan.h"
 #include "route6_slot.h"
 #include "route_common.h"
+#include "route_unclassified.h"
 
 #include "../chain/redirect_able.h"
 #include "../flow_match.h"
@@ -382,7 +383,10 @@ keep_going:
     //     ld_bpf_log("get_flow_id value is : %u", get_flow_id(flow_mark_action));
     //     ld_bpf_log("dst ip: %pI4", context->daddr.in6_u.u6_addr32);
     // }
-    *init_flow_id_ = flow_mark_action;
+    // Same policy and same reasoning as the IPv4 verdict.
+    u32 verdict = flow_mark_action;
+    if (route_unclassified_apply(&verdict, LANDSCAPE_IPV6_TYPE)) return TC_ACT_SHOT;
+    *init_flow_id_ = verdict;
     return TC_ACT_OK;
 #undef BPF_LOG_TOPIC
 }
@@ -427,6 +431,9 @@ static __always_inline int route6_pick_wan_and_send_by_flow_id(struct __sk_buff 
     }
 
     if (target_info->is_docker) {
+        if (target_info->is_docker == 2) {
+            return TC_ACT_OK;
+        }
         ret = bpf_skb_vlan_push(skb, ETH_P_8021Q, get_flow_vlan_id(resolved_flow_id));
         if (ret) {
             ld_bpf_log("bpf_skb_vlan_push error");
@@ -506,6 +513,9 @@ static __always_inline int route6_redirect_by_cached_target(struct __sk_buff *sk
     }
 
     if (target->is_docker) {
+        if (target->is_docker == 2) {
+            return TC_ACT_OK;
+        }
         int ret = bpf_skb_vlan_push(skb, ETH_P_8021Q, route_flow_mark_vlan_id(target->mark_value));
         if (ret) {
             return ret;

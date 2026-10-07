@@ -1,6 +1,7 @@
 #ifndef LD_NAT6_V3_H
 #define LD_NAT6_V3_H
 #include <vmlinux.h>
+#include "../chain/tc_cb.h"
 #include "../landscape_log.h"
 #include "../scanner/scan_types.h"
 #include "nat_common.h"
@@ -222,6 +223,9 @@ do_nptv6:
         bpf_skb_store_bytes(skb, error_sender_offset, &new_sender_ip_prefix, 8, 0);
         L4_CSUM_REPLACE_U64_OR_SHOT(skb, l4_checksum_offset, old_sender_ip_prefix,
                                     new_sender_ip_prefix, BPF_F_PSEUDO_HDR);
+        if (old_sender_ip_prefix != new_sender_ip_prefix) {
+            skb->cb[TC_CHAIN_CB_NPT_OFFSET] = 1;
+        }
 
     } else {
         u32 l4_checksum_offset = 0;
@@ -239,6 +243,9 @@ do_nptv6:
         bpf_skb_store_bytes(skb, ip_src_offset, &new_ip_prefix, 8, 0);
         L4_CSUM_REPLACE_U64_OR_SHOT(skb, l4_checksum_offset, old_ip_prefix, new_ip_prefix,
                                     BPF_F_PSEUDO_HDR);
+        if (old_ip_prefix != new_ip_prefix) {
+            skb->cb[TC_CHAIN_CB_NPT_OFFSET] = 1;
+        }
     }
 
     return TC_ACT_UNSPEC;

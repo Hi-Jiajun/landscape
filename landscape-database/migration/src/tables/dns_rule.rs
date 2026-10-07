@@ -41,6 +41,9 @@ pub enum DNSUpstreamConfigs {
     Remark,
     Mode,
     Ips,
+    /// Append at 0.8.x: addresses of the resolver to use when `Ips` cannot be
+    /// reached. Empty means no failover.
+    BackupIps,
     Port,
     /// Append at 0.8.0
     EnableIpValidation,

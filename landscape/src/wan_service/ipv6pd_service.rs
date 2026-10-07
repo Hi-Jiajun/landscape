@@ -83,6 +83,8 @@ impl ServiceStarterTrait for IPV6PDService {
                     weight: 1,
                     mac: iface.mac,
                     is_docker: false,
+                    is_tproxy: false,
+                    tproxy_port: 0,
                     iface_name: iface.name.clone(),
                     iface_ip: IpAddr::V6(Ipv6Addr::UNSPECIFIED),
                     default_route: true,

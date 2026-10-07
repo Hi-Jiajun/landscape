@@ -13,13 +13,18 @@ use crate::maps;
 use crate::runtime::EbpfRuntime;
 use landscape_common::ebpf::DataplaneGuard;
 use landscape_common::flow::dataplane::FlowRuleDataplane;
+use landscape_common::flow::dataplane::UnclassifiedPolicy;
+use landscape_common::flow::dataplane::UnclassifiedStats;
 use landscape_common::lan_service::lan_ipv6::dataplane::Ip6DaoFilterDataplane;
 use landscape_common::lan_service::lan_route::dataplane::LanRouteDataplane;
 use landscape_common::lan_service::mac_binding::MacBindingDataplane;
 use landscape_common::net::MacAddr;
+use landscape_common::proxy::DnsGuardCounters;
+use landscape_common::proxy::dataplane::{DnsGuardDataplane, DnsGuardSpec};
 use landscape_common::sys_service::route_service::dataplane::RouteTableDataplane;
 use landscape_common::wan_service::addr_binding::WanAddrBinding;
 use landscape_common::wan_service::firewall::dataplane::FirewallDataplane;
+use landscape_common::wan_service::mss_clamp::MtuGuardStats;
 use landscape_common::wan_service::mss_clamp::dataplane::MssClampDataplane;
 use landscape_common::wan_service::nat::config::NatConfig;
 use landscape_common::wan_service::nat::dataplane::NatDataplane;
@@ -239,6 +244,57 @@ pub struct EbpfMssClampDataplane {
     rt: Arc<EbpfRuntime>,
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// IPv6 Packet Too Big chamber
+// ─────────────────────────────────────────────────────────────────────────
+
+pub struct EbpfMtuChamberDataplane {
+    rt: Arc<EbpfRuntime>,
+}
+
+impl EbpfMtuChamberDataplane {
+    pub(crate) fn new(rt: Arc<EbpfRuntime>) -> Self {
+        Self { rt }
+    }
+}
+
+impl landscape_common::wan_service::mtu_chamber::MtuChamberDataplane for EbpfMtuChamberDataplane {
+    fn attach_stage(
+        &self,
+        ifindex: u32,
+        mtu: u16,
+        has_mac: bool,
+    ) -> Result<Box<dyn landscape_common::ebpf::DataplaneGuard>, String> {
+        crate::stages::mtu_chamber::attach_tc_mtu_chamber_stage(&self.rt, ifindex, mtu, has_mac)
+            .map(|handle| Box::new(handle) as Box<dyn landscape_common::ebpf::DataplaneGuard>)
+            .map_err(|e| e.to_string())
+    }
+
+    fn attach_return_gate(
+        &self,
+        veth_ifindex: u32,
+        wiring: landscape_common::wan_service::mtu_chamber::MtuChamberWiring,
+    ) -> Result<Box<dyn landscape_common::ebpf::DataplaneGuard>, String> {
+        crate::stages::mtu_chamber::attach_tc_mtu_chamber_gate(&self.rt, veth_ifindex, wiring)
+            .map(|handle| Box::new(handle) as Box<dyn landscape_common::ebpf::DataplaneGuard>)
+            .map_err(|e| e.to_string())
+    }
+
+    fn stats(&self) -> Result<landscape_common::wan_service::mtu_chamber::MtuChamberStats, String> {
+        crate::maps::mtu_chamber::read_mtu_chamber_stats(&self.rt.paths)
+    }
+
+    fn pending(&self) -> Result<u64, String> {
+        crate::maps::mtu_chamber::read_mtu_chamber_pending(&self.rt.paths)
+    }
+
+    fn wiring(
+        &self,
+    ) -> Result<landscape_common::wan_service::mtu_chamber::MtuChamberWiring, String> {
+        crate::maps::mtu_chamber::read_mtu_chamber_wiring(&self.rt.paths)
+    }
+}
+
 impl EbpfMssClampDataplane {
     pub(crate) fn new(rt: Arc<EbpfRuntime>) -> Self {
         Self { rt }
@@ -255,6 +311,10 @@ impl MssClampDataplane for EbpfMssClampDataplane {
         crate::stages::mss::init_mss(&self.rt, ifindex, mtu, has_mac)
             .map(|handle| Box::new(handle) as Box<dyn DataplaneGuard>)
             .map_err(|e| e.to_string())
+    }
+
+    fn mtu_stats(&self) -> Result<MtuGuardStats, String> {
+        maps::mtu_guard::read_mtu_guard_stats(&self.rt.paths)
     }
 }
 
@@ -469,6 +529,31 @@ impl FlowRuleDataplane for EbpfFlowRuleDataplane {
         maps::flow_wanip::add_wan_ip_mark(&self.rt.paths, flow_id, ips);
     }
 
+    fn delete_flow(&self, flow_id: u32) {
+        // Release the outer map-in-map slots (capacity 256) when a flow is
+        // removed. Failures are reported instead of silently swallowed.
+        if let Err(e) = maps::flow_wanip::delete_flow_wan_ip(&self.rt.paths, flow_id) {
+            tracing::error!("failed to delete flow_wanip outer slot for flow {flow_id}: {e:?}");
+        }
+        if let Err(e) = maps::flow_dns::delete_flow_dns(&self.rt.paths, flow_id) {
+            tracing::error!("failed to delete flow_dns outer slot for flow {flow_id}: {e:?}");
+        }
+    }
+
+    fn set_unclassified_policy(&self, policy: UnclassifiedPolicy) {
+        // `apply` invalidates the LAN verdict cache itself, which is not optional:
+        // every cached verdict is the outcome of the policy in force when it was
+        // written, so without it the previous decision keeps being served for each
+        // destination already resolved.
+        if let Err(e) = maps::route::apply_unclassified_policy(&self.rt.paths, policy) {
+            tracing::error!("failed to apply the unclassified-destination policy: {e}");
+        }
+    }
+
+    fn unclassified_stats(&self) -> Result<UnclassifiedStats, String> {
+        maps::route::read_route_unclassified_stats(&self.rt.paths)
+    }
+
     fn invalidate_lan_cache(&self) {
         maps::route::cache::recreate_route_lan_cache_inner_map(&self.rt.paths);
     }
@@ -499,5 +584,29 @@ impl MacBindingDataplane for EbpfMacBindingDataplane {
         if let Err(e) = maps::mac::upsert_ipv6_ip_mac(&self.rt.paths, ifindex, ip, mac, dev_mac) {
             tracing::error!("upsert ipv6 ip_mac binding error: {e:?}");
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Managed-DNS guard
+// ─────────────────────────────────────────────────────────────────────────
+
+pub struct EbpfDnsGuardDataplane {
+    rt: Arc<EbpfRuntime>,
+}
+
+impl EbpfDnsGuardDataplane {
+    pub(crate) fn new(rt: Arc<EbpfRuntime>) -> Self {
+        Self { rt }
+    }
+}
+
+impl DnsGuardDataplane for EbpfDnsGuardDataplane {
+    fn apply(&self, spec: &DnsGuardSpec) -> Result<(), String> {
+        maps::dns_guard::apply_dns_guard(&self.rt.paths, spec)
+    }
+
+    fn counters(&self) -> Result<DnsGuardCounters, String> {
+        maps::dns_guard::dns_guard_counters(&self.rt.paths)
     }
 }

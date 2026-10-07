@@ -46,6 +46,7 @@ const docker_options = computed(() =>
 enum FlowTargetEnum {
   Interface = "interface",
   NetNS = "netns",
+  LocalTproxy = "local_tproxy",
 }
 
 function onCreate(): WeightedFlowTarget {
@@ -65,6 +66,10 @@ function target_type_option(): any[] {
       label: t("flow.target_rule.type_docker"),
       value: "netns",
     },
+    {
+      label: "出站代理插件 (TProxy)",
+      value: "local_tproxy",
+    },
   ];
 }
 
@@ -78,11 +83,19 @@ function handleUpdateValue(value: FlowTarget["t"], index: number) {
       },
       weight,
     };
-  } else {
+  } else if (value == FlowTargetEnum.NetNS) {
     target_rules.value[index] = {
       target: {
         t: FlowTargetEnum.NetNS,
         container_name: "",
+      },
+      weight,
+    };
+  } else {
+    target_rules.value[index] = {
+      target: {
+        t: FlowTargetEnum.LocalTproxy,
+        port: 17890,
       },
       weight,
     };
@@ -124,6 +137,15 @@ function handleUpdateValue(value: FlowTarget["t"], index: number) {
           :style="{ width: '56%' }"
           :options="docker_options"
           :placeholder="t('flow.target_rule.container_placeholder')"
+        />
+        <n-input-number
+          v-else-if="value.target.t == 'local_tproxy'"
+          v-model:value="value.target.port"
+          :style="{ width: '56%' }"
+          :min="1"
+          :max="65535"
+          :show-button="false"
+          placeholder="TProxy 端口 (例如 7896)"
         />
 
         <n-input-number

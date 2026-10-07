@@ -143,6 +143,13 @@ impl EbpfRuntime {
         Arc::new(crate::runtime_impls::EbpfFirewallDataplane::new(self))
     }
 
+    /// Managed-DNS guard capability.
+    pub fn dns_guard(
+        self: Arc<Self>,
+    ) -> Arc<dyn landscape_common::proxy::dataplane::DnsGuardDataplane> {
+        Arc::new(crate::runtime_impls::EbpfDnsGuardDataplane::new(self))
+    }
+
     /// NAT capability (stage attach + static mapping sync).
     pub fn nat(
         self: Arc<Self>,
@@ -155,6 +162,14 @@ impl EbpfRuntime {
         self: Arc<Self>,
     ) -> Arc<dyn landscape_common::wan_service::mss_clamp::dataplane::MssClampDataplane> {
         Arc::new(crate::runtime_impls::EbpfMssClampDataplane::new(self))
+    }
+
+    /// IPv6 Packet Too Big chamber: the egress MTU stage and the chamber's
+    /// return gate.
+    pub fn mtu_chamber(
+        self: Arc<Self>,
+    ) -> Arc<dyn landscape_common::wan_service::mtu_chamber::MtuChamberDataplane> {
+        Arc::new(crate::runtime_impls::EbpfMtuChamberDataplane::new(self))
     }
 
     /// LAN route chain capability.

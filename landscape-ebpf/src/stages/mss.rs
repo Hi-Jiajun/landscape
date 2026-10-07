@@ -61,7 +61,6 @@ pub fn attach_tc_mss(
         &mut open_skel.maps.tc_pipe_exits_wan_egress,
         &paths.tc_pipe_exits_wan_egress_path(),
     )?;
-
     let skel = bpf_ctx!(open_skel.load(), "load tc_mss skeleton")?;
 
     let entry = StageEntry {

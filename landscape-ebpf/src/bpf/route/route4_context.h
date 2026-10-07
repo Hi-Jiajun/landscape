@@ -33,7 +33,7 @@ static __always_inline int route4_read_context_from_scan(struct __sk_buff *skb,
 
     context->saddr = iph->saddr;
     context->daddr = iph->daddr;
-    context->l4_protocol = 0;
+    context->l4_protocol = offset->l4_protocol;
     context->tos = iph->tos;
     return TC_ACT_OK;
 #undef BPF_LOG_TOPIC
