@@ -774,3 +774,169 @@ mod claim_index_tests {
         );
     }
 }
+
+/// The contract between an answer and the datapath: the marks go in first, and an
+/// answer whose association could not be installed is refused rather than served.
+///
+/// This is the requirement stated as "a zero-TTL answer registers its route
+/// association before anything else, and a failure to register is a refusal". It
+/// had no test: the harness's sink accepts every mark, so the refusal branch was
+/// unreachable from the existing cases - the one place the design is load-bearing
+/// and nothing could fail if it were removed.
+#[cfg(test)]
+mod datapath_ordering_tests {
+    use super::*;
+    use landscape_common::flow::mark::{FlowMark, FlowMarkAction};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn record(ttl: u32) -> Record {
+        use hickory_proto::rr::{Name, RData, rdata::A};
+        use std::str::FromStr;
+        Record::from_rdata(
+            Name::from_str("example.com.").unwrap(),
+            ttl,
+            RData::A(A::new(203, 0, 113, 7)),
+        )
+    }
+
+    fn runtime_config() -> Arc<ArcSwap<CacheRuntimeConfig>> {
+        Arc::new(ArcSwap::from_pointee(CacheRuntimeConfig {
+            negative_cache_ttl: 120,
+            negative_cache_ttl_without_soa: 10,
+            ..Default::default()
+        }))
+    }
+
+    fn mark(action: FlowMarkAction) -> DnsRuntimeMarkInfo {
+        DnsRuntimeMarkInfo {
+            mark: FlowMark::new(action, 14, false),
+            priority: 100,
+        }
+    }
+
+    fn entry(domain: &str, ttl: u32, action: FlowMarkAction) -> CacheEntry {
+        CacheEntry {
+            domain_key: Arc::<str>::from(domain),
+            query_type: RecordType::A,
+            rdatas: vec![record(ttl)],
+            response_code: ResponseCode::NoError,
+            negative_ttl: None,
+            mark: mark(action),
+            filter: FilterResult::Unfilter,
+            matched_rule_id: None,
+            matched_rule_order: None,
+        }
+    }
+
+    /// Counts the writes and can be told to refuse them, which is what makes the
+    /// two behaviours below observable.
+    struct CountingSink {
+        writes: AtomicUsize,
+        refuse: bool,
+    }
+
+    impl CountingSink {
+        fn new(refuse: bool) -> Arc<Self> {
+            Arc::new(Self { writes: AtomicUsize::new(0), refuse })
+        }
+    }
+
+    impl DnsResultSink for CountingSink {
+        fn record_dns_answer(
+            &self,
+            flow_id: u32,
+            _generation: u64,
+            _marks: Vec<FlowMarkInfo>,
+        ) -> Result<(), DnsMarkInstallError> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            if self.refuse {
+                return Err(DnsMarkInstallError {
+                    flow_id,
+                    detail: "test sink refuses every write".into(),
+                    superseded: false,
+                });
+            }
+            Ok(())
+        }
+
+        fn refresh_dns_marks<'a>(
+            &self,
+            _flow_id: u32,
+            _generation: u64,
+            collect: Box<dyn FnOnce() -> Vec<FlowMarkInfo> + Send + 'a>,
+        ) -> Result<(), DnsMarkInstallError> {
+            let _ = collect();
+            Ok(())
+        }
+
+        fn rebuild_route_cache(&self) {}
+    }
+
+    fn handle(sink: Arc<CountingSink>) -> CacheHandle {
+        CacheHandle::new(runtime_config(), 14, sink, 1)
+    }
+
+    /// A zero-TTL answer is not cached, and its mark still reaches the datapath.
+    /// Serving it while skipping the registration would leave the address
+    /// unprotected for as long as the client keeps using it - which is the whole
+    /// reason the registration happens before the cache decision.
+    #[tokio::test]
+    async fn a_zero_ttl_answer_registers_its_mark_and_is_not_cached() {
+        let sink = CountingSink::new(false);
+        let cache = handle(sink.clone());
+        let domain = ParsedDomain::new("zero-ttl.example.").expect("a literal name");
+
+        cache
+            .insert(entry("zero-ttl.example.", 0, FlowMarkAction::Redirect))
+            .await
+            .expect("the sink accepts it");
+
+        assert_eq!(
+            sink.writes.load(Ordering::SeqCst),
+            1,
+            "the mark must be written even though the answer will not be cached"
+        );
+        assert!(
+            cache.lookup(&domain, RecordType::A).await.is_none(),
+            "a zero lifetime means it is not kept"
+        );
+    }
+
+    /// The refusal: an answer that needs a route association and cannot get one is
+    /// not served and not cached.
+    #[tokio::test]
+    async fn an_answer_needing_an_association_is_refused_when_the_write_fails() {
+        let sink = CountingSink::new(true);
+        let cache = handle(sink.clone());
+        let domain = ParsedDomain::new("needs-association.example.").expect("a literal name");
+
+        let result =
+            cache.insert(entry("needs-association.example.", 300, FlowMarkAction::Redirect)).await;
+
+        assert!(result.is_err(), "a redirect mark that cannot be installed must refuse the answer");
+        assert!(
+            cache.lookup(&domain, RecordType::A).await.is_none(),
+            "and nothing may be cached under that name, or a later query would serve it unprotected"
+        );
+    }
+
+    /// The other side of the same rule: an answer that asks for no association is
+    /// served even when the datapath write fails, because a missing entry is
+    /// exactly what it asked for.
+    #[tokio::test]
+    async fn a_direct_answer_is_served_even_when_the_write_fails() {
+        let sink = CountingSink::new(true);
+        let cache = handle(sink.clone());
+        let domain = ParsedDomain::new("direct.example.").expect("a literal name");
+
+        cache
+            .insert(entry("direct.example.", 300, FlowMarkAction::Direct))
+            .await
+            .expect("a direct answer needs no association, so the failure is not fatal");
+
+        assert!(
+            cache.lookup(&domain, RecordType::A).await.is_some(),
+            "it must still be served and cached"
+        );
+    }
+}
