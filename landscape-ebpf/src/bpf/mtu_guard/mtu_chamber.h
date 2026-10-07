@@ -243,11 +243,9 @@ static __always_inline bool mtu_chamber_l4_identity(struct __sk_buff *skb, u32 l
     u32 offset = l4_offset;
 
     if (nexthdr == NEXTHDR_ICMP) {
-        struct icmp6hdr *icmp6 = NULL;
-        if (VALIDATE_READ_DATA(skb, &icmp6, l4_offset, sizeof(*icmp6))) return false;
-        if (icmp6->icmp6_type != ICMPV6_ECHO_REQUEST && icmp6->icmp6_type != ICMPV6_ECHO_REPLY) {
-            return false;
-        }
+        u8 icmp_type = 0;
+        if (bpf_skb_load_bytes(skb, l4_offset, &icmp_type, sizeof(icmp_type))) return false;
+        if (icmp_type != ICMPV6_ECHO_REQUEST && icmp_type != ICMPV6_ECHO_REPLY) return false;
         // The identifier and sequence, not the type/code/checksum.
         offset = l4_offset + 4;
     } else if (nexthdr != NEXTHDR_TCP && nexthdr != NEXTHDR_UDP) {
@@ -336,8 +334,28 @@ static __always_inline int mtu_chamber_egress(struct __sk_buff *skb, u32 l3_offs
         return TC_ACT_UNSPEC;
     }
 
+    // Copied out before anything writes to a map: a map value pointer does not
+    // survive a helper that may modify maps, and the budget below is one.
+    u32 veth_ifindex = cfg->veth_ifindex;
+    struct bpf_redir_neigh param = {
+        .nh_family = AF_INET6,
+    };
+    COPY_ADDR_FROM(param.ipv6_nh, cfg->nexthop.bytes);
+
+    // Read the addresses with the helper rather than by copying through a packet
+    // pointer. The direct form gave the verifier a base register it had already
+    // spilled as a scalar, and the program would not load at all - measured on
+    // the target kernel, where it failed with `R2 invalid mem access 'scalar'`.
     union u_inet6_addr src = {0};
-    COPY_ADDR_FROM(src.bytes, ip6h->saddr.in6_u.u6_addr8);
+    if (bpf_skb_load_bytes(skb, l3_offset + offsetof(struct ipv6hdr, saddr), src.bytes,
+                           sizeof(src.bytes))) {
+        return TC_ACT_UNSPEC;
+    }
+    union u_inet6_addr dst = {0};
+    if (bpf_skb_load_bytes(skb, l3_offset + offsetof(struct ipv6hdr, daddr), dst.bytes,
+                           sizeof(dst.bytes))) {
+        return TC_ACT_UNSPEC;
+    }
 
     if (!mtu_chamber_budget_allow(cfg, &src)) {
         mtu_chamber_count(MTU_CHAMBER_STAT_SKIPPED_BUDGET);
@@ -348,8 +366,8 @@ static __always_inline int mtu_chamber_egress(struct __sk_buff *skb, u32 l3_offs
     }
 
     struct mtu_chamber_key key = {0};
-    COPY_ADDR_FROM(key.saddr.bytes, ip6h->saddr.in6_u.u6_addr8);
-    COPY_ADDR_FROM(key.daddr.bytes, ip6h->daddr.in6_u.u6_addr8);
+    COPY_ADDR_FROM(key.saddr.bytes, src.bytes);
+    COPY_ADDR_FROM(key.daddr.bytes, dst.bytes);
     key.l4_ident = ident;
     key.nexthdr = l4_proto;
 
@@ -363,12 +381,7 @@ static __always_inline int mtu_chamber_egress(struct __sk_buff *skb, u32 l3_offs
         return TC_ACT_SHOT;
     }
 
-    struct bpf_redir_neigh param = {
-        .nh_family = AF_INET6,
-    };
-    COPY_ADDR_FROM(param.ipv6_nh, cfg->nexthop.bytes);
-
-    int ret = bpf_redirect_neigh(cfg->veth_ifindex, &param, sizeof(param), 0);
+    int ret = bpf_redirect_neigh(veth_ifindex, &param, sizeof(param), 0);
     if (ret != TC_ACT_REDIRECT) {
         mtu_chamber_count(MTU_CHAMBER_STAT_DIVERT_FAILED);
         return TC_ACT_SHOT;
@@ -391,23 +404,31 @@ static __always_inline int mtu_chamber_return(struct __sk_buff *skb, u32 l3_offs
         return TC_ACT_SHOT;
     }
 
-    struct ipv6hdr *ip6h = NULL;
-    if (VALIDATE_READ_DATA(skb, &ip6h, l3_offset, sizeof(*ip6h))) {
-        mtu_chamber_count(MTU_CHAMBER_STAT_PTB_REJECTED);
-        return TC_ACT_SHOT;
-    }
-    if (ip6h->version != 6 || ip6h->nexthdr != NEXTHDR_ICMP) {
-        mtu_chamber_count(MTU_CHAMBER_STAT_PTB_REJECTED);
-        return TC_ACT_SHOT;
-    }
-
+    // Everything this function needs from the packet is read here, with the
+    // helper, before any map work. A packet pointer cannot be held across a
+    // helper call: the verifier ends up treating the reloaded register as a
+    // scalar and refuses the program, which is what happened to an earlier
+    // version of this function on the target kernel. Reading up front also makes
+    // the shape of "validate, then act" the shape of the code.
+    u8 outer_version_byte = 0;
+    u8 outer_nexthdr = 0;
+    u8 icmp_type = 0;
+    u8 icmp_code = 0;
+    __be32 advertised_mtu = 0;
     u32 icmp_offset = l3_offset + sizeof(struct ipv6hdr);
-    struct icmp6hdr *icmp6 = NULL;
-    if (VALIDATE_READ_DATA(skb, &icmp6, icmp_offset, sizeof(*icmp6))) {
+    if (bpf_skb_load_bytes(skb, l3_offset, &outer_version_byte, sizeof(outer_version_byte)) ||
+        bpf_skb_load_bytes(skb, l3_offset + offsetof(struct ipv6hdr, nexthdr), &outer_nexthdr,
+                           sizeof(outer_nexthdr)) ||
+        bpf_skb_load_bytes(skb, icmp_offset, &icmp_type, sizeof(icmp_type)) ||
+        bpf_skb_load_bytes(skb, icmp_offset + offsetof(struct icmp6hdr, icmp6_code), &icmp_code,
+                           sizeof(icmp_code)) ||
+        bpf_skb_load_bytes(skb, icmp_offset + offsetof(struct icmp6hdr, icmp6_dataun),
+                           &advertised_mtu, sizeof(advertised_mtu))) {
         mtu_chamber_count(MTU_CHAMBER_STAT_PTB_REJECTED);
         return TC_ACT_SHOT;
     }
-    if (icmp6->icmp6_type != ICMPV6_PKT_TOOBIG || icmp6->icmp6_code != 0) {
+    if ((outer_version_byte >> 4) != 6 || outer_nexthdr != NEXTHDR_ICMP ||
+        icmp_type != ICMPV6_PKT_TOOBIG || icmp_code != 0) {
         mtu_chamber_count(MTU_CHAMBER_STAT_PTB_REJECTED);
         return TC_ACT_SHOT;
     }
@@ -416,15 +437,22 @@ static __always_inline int mtu_chamber_return(struct __sk_buff *skb, u32 l3_offs
     // LAN's own, because that is what a client expects its gateway to say - and
     // an error from any other address is not the error this datapath asked for.
     // A ULA client and a global client legitimately get different ones.
-    bool source_known = false;
+    u8 outer_src[16];
+    if (bpf_skb_load_bytes(skb, l3_offset + offsetof(struct ipv6hdr, saddr), outer_src,
+                           sizeof(outer_src))) {
+        mtu_chamber_count(MTU_CHAMBER_STAT_PTB_REJECTED);
+        return TC_ACT_SHOT;
+    }
     u32 source_count = cfg->source_count;
     if (source_count > MTU_CHAMBER_MAX_SOURCES) source_count = MTU_CHAMBER_MAX_SOURCES;
+    bool source_known = false;
+    // Unrolled so each `sources[i]` is a constant offset into the map value, which
+    // is what lets the verifier bound the read without reasoning about `i`.
 #pragma unroll
     for (int i = 0; i < MTU_CHAMBER_MAX_SOURCES; i++) {
-        if ((u32)i >= source_count) break;
-        if (__builtin_memcmp(ip6h->saddr.in6_u.u6_addr8, cfg->sources[i].bytes, 16) == 0) {
+        if ((u32)i < source_count &&
+            __builtin_memcmp(outer_src, cfg->sources[i].bytes, sizeof(outer_src)) == 0) {
             source_known = true;
-            break;
         }
     }
     if (!source_known) {
@@ -433,37 +461,51 @@ static __always_inline int mtu_chamber_return(struct __sk_buff *skb, u32 l3_offs
     }
 
     // The quoted packet is what ties this to one admission. It must be present
-    // in full enough to identify: an IPv6 header plus the L4 identity.
+    // in full enough to identify: an IPv6 header plus the L4 identity. Read with
+    // the helper, for the same reason as the source addresses above.
     u32 quote_offset = icmp_offset + sizeof(struct icmp6hdr);
-    struct ipv6hdr *quote = NULL;
-    if (VALIDATE_READ_DATA(skb, &quote, quote_offset, sizeof(*quote))) {
-        mtu_chamber_count(MTU_CHAMBER_STAT_PTB_REJECTED);
-        return TC_ACT_SHOT;
-    }
-    if (quote->version != 6) {
+    u8 quote_version = 0;
+    u8 quote_nexthdr = 0;
+    u8 quote_saddr[16];
+    u8 quote_daddr[16];
+    bool quoted = true;
+    quoted &= bpf_skb_load_bytes(skb, quote_offset, &quote_version, sizeof(quote_version)) == 0;
+    quoted &= bpf_skb_load_bytes(skb, quote_offset + offsetof(struct ipv6hdr, nexthdr),
+                                 &quote_nexthdr, sizeof(quote_nexthdr)) == 0;
+    quoted &= bpf_skb_load_bytes(skb, quote_offset + offsetof(struct ipv6hdr, saddr), quote_saddr,
+                                 sizeof(quote_saddr)) == 0;
+    quoted &= bpf_skb_load_bytes(skb, quote_offset + offsetof(struct ipv6hdr, daddr), quote_daddr,
+                                 sizeof(quote_daddr)) == 0;
+    if (!quoted || (quote_version >> 4) != 6) {
         mtu_chamber_count(MTU_CHAMBER_STAT_PTB_REJECTED);
         return TC_ACT_SHOT;
     }
 
-    // The error is addressed to whoever sent the quoted packet; if it is not,
-    // it is not this exchange and the datapath has no business relaying it.
-    if (__builtin_memcmp(ip6h->daddr.in6_u.u6_addr8, quote->saddr.in6_u.u6_addr8, 16) != 0) {
+    // The error is addressed to whoever sent the quoted packet; if it is not, it
+    // is not this exchange and the datapath has no business relaying it.
+    u8 outer_dst[16];
+    if (bpf_skb_load_bytes(skb, l3_offset + offsetof(struct ipv6hdr, daddr), outer_dst,
+                           sizeof(outer_dst))) {
+        mtu_chamber_count(MTU_CHAMBER_STAT_PTB_REJECTED);
+        return TC_ACT_SHOT;
+    }
+    if (__builtin_memcmp(outer_dst, quote_saddr, sizeof(outer_dst)) != 0) {
         mtu_chamber_count(MTU_CHAMBER_STAT_PTB_REJECTED);
         return TC_ACT_SHOT;
     }
 
     u32 ident = 0;
-    if (!mtu_chamber_l4_identity(skb, quote_offset + sizeof(struct ipv6hdr), quote->nexthdr,
+    if (!mtu_chamber_l4_identity(skb, quote_offset + sizeof(struct ipv6hdr), quote_nexthdr,
                                  &ident)) {
         mtu_chamber_count(MTU_CHAMBER_STAT_PTB_REJECTED);
         return TC_ACT_SHOT;
     }
 
     struct mtu_chamber_key key = {0};
-    COPY_ADDR_FROM(key.saddr.bytes, quote->saddr.in6_u.u6_addr8);
-    COPY_ADDR_FROM(key.daddr.bytes, quote->daddr.in6_u.u6_addr8);
+    COPY_ADDR_FROM(key.saddr.bytes, quote_saddr);
+    COPY_ADDR_FROM(key.daddr.bytes, quote_daddr);
     key.l4_ident = ident;
-    key.nexthdr = quote->nexthdr;
+    key.nexthdr = quote_nexthdr;
 
     struct mtu_chamber_value *admission = bpf_map_lookup_elem(&mtu_chamber_state_map, &key);
     if (admission == NULL) {
@@ -481,7 +523,7 @@ static __always_inline int mtu_chamber_return(struct __sk_buff *skb, u32 l3_offs
 
     // The promised MTU has to be the MTU of the egress that admitted it, or the
     // client would be told to shrink to a number this path never verified.
-    if (bpf_ntohl(icmp6->icmp6_dataun.un_data32[0]) != admission->egress_mtu) {
+    if (bpf_ntohl(advertised_mtu) != admission->egress_mtu) {
         bpf_map_delete_elem(&mtu_chamber_state_map, &key);
         mtu_chamber_count(MTU_CHAMBER_STAT_PTB_REJECTED);
         return TC_ACT_SHOT;
@@ -495,7 +537,7 @@ static __always_inline int mtu_chamber_return(struct __sk_buff *skb, u32 l3_offs
     // Deliver the way the datapath delivers everything else: from the link
     // addresses it learned for this client, out the interface it came in on.
     union u_inet6_addr client = {0};
-    COPY_ADDR_FROM(client.bytes, quote->saddr.in6_u.u6_addr8);
+    COPY_ADDR_FROM(client.bytes, quote_saddr);
     struct mac_value_v6 *mac = bpf_map_lookup_elem(&ip_mac_v6, &client);
     if (mac == NULL || mac->ifindex != lan_ifindex) {
         mtu_chamber_count(MTU_CHAMBER_STAT_PTB_NO_MAC);

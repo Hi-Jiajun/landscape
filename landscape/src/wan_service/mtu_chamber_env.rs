@@ -70,6 +70,25 @@ pub struct MtuChamberEnv {
     pub sources: Vec<Ipv6Addr>,
 }
 
+/// The chamber's shape, derived from the live interfaces.
+///
+/// This is what has to stay in step with reality, so it is also what the
+/// reconcile compares: the egress's effective MTU, and the set of addresses the
+/// chamber has to be able to speak with. Both are read from the kernel on every
+/// pass rather than remembered, because both change under this code - the WAN
+/// device is 1500 until PPPoE sets it, and a LAN prefix changes when the ISP
+/// delegates a different one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MtuChamberProbe {
+    /// The number to compare against and to advertise.
+    pub effective_mtu: u16,
+    /// The device's own MTU, kept so the two can be logged together.
+    pub device_mtu: u16,
+    /// The configured clamp, the other input to the minimum.
+    pub clamp_size: u16,
+    pub sources: Vec<Ipv6Addr>,
+}
+
 impl MtuChamberEnv {
     /// The datapath-facing wiring for a chamber that is up and verified.
     pub fn wiring(&self, ttl_ms: u32, burst: u32) -> MtuChamberWiring {
@@ -96,7 +115,7 @@ impl MtuChamberEnv {
     /// How the chamber is described in the log and in the leak report.
     pub fn describe(&self) -> String {
         format!(
-            "netns {} on {} (mtu {}), speaking as {}, divert target {}",
+            "netns {} on {} (advertising mtu {}), speaking as {}, divert target {}",
             self.ns,
             self.wan_iface,
             self.wan_mtu,
@@ -163,6 +182,25 @@ async fn sysctl_in(ns: &str, key: &str, value: &str) -> Result<(), String> {
     in_ns(ns, "sysctl", &["-qw", &format!("{key}={value}")]).await.map(|_| ())
 }
 
+/// The link address of an interface in the main namespace.
+async fn read_mac(iface: &str) -> Result<String, String> {
+    let text = std::fs::read_to_string(format!("/sys/class/net/{iface}/address"))
+        .map_err(|e| format!("read {iface}'s address: {e}"))?;
+    let mac = text.trim().to_string();
+    if mac.is_empty() { Err(format!("{iface} has no link address")) } else { Ok(mac) }
+}
+
+/// The link address of an interface inside a namespace.
+async fn read_mac_in_ns(ns: &str, iface: &str) -> Result<String, String> {
+    let text = ip_ns(ns, &["-o", "link", "show", iface]).await?;
+    let mac = text
+        .split_whitespace()
+        .skip_while(|field| *field != "link/ether")
+        .nth(1)
+        .ok_or_else(|| format!("{iface} in {ns} has no link/ether in {:?}", text.trim()))?;
+    Ok(mac.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Setup
 // ---------------------------------------------------------------------------
@@ -213,6 +251,42 @@ fn parse_link_local(text: &str) -> Option<Ipv6Addr> {
     None
 }
 
+/// Derive the chamber's shape from the live interfaces.
+///
+/// Read fresh every pass, because the two inputs both move: the WAN device is
+/// 1500 until PPPoE has set it to the negotiated MTU, and the LAN's global
+/// prefix changes when the ISP delegates a different one. An earlier version of
+/// this read both once at startup and latched whatever a restart happened to look
+/// like - measured on 2026-10-07, it came up advertising 1500 and speaking as one
+/// address, which is exactly the wrong number and an incomplete set.
+///
+/// The MTU is the **minimum** of the device's own and the configured clamp. The
+/// clamp is already this system's statement of how large a packet the egress
+/// carries - it is what the MSS clamp enforces - so the stage and the chamber
+/// must not disagree with it; and the device's number is the link's own, so the
+/// error can never advertise more than either. That makes the transient 1500
+/// harmless rather than something to wait out.
+pub async fn probe(
+    wan_iface: &str,
+    settings: &MtuChamberSettings,
+    clamp_size: u16,
+) -> Result<MtuChamberProbe, String> {
+    let device_mtu = read_iface_mtu(wan_iface)
+        .await
+        .ok_or_else(|| format!("cannot read the MTU of {wan_iface}"))?;
+    let sources = collect_sources(&settings.lan_iface_names)
+        .await?
+        .into_iter()
+        .map(|(address, _)| address)
+        .collect();
+    Ok(MtuChamberProbe {
+        effective_mtu: device_mtu.min(clamp_size),
+        device_mtu,
+        clamp_size,
+        sources,
+    })
+}
+
 /// Bring the chamber up, or leave nothing behind.
 ///
 /// The result is read back from the kernel, not assumed from the commands: a
@@ -223,13 +297,19 @@ pub async fn bring_up(
     wan_iface: &str,
     wan_ifindex: u32,
     settings: &MtuChamberSettings,
+    probe: &MtuChamberProbe,
 ) -> Result<MtuChamberEnv, String> {
     settings.validate()?;
 
-    let wan_mtu = read_iface_mtu(wan_iface)
-        .await
-        .ok_or_else(|| format!("cannot read the MTU of {wan_iface}"))?;
-    let sources = collect_sources(&settings.lan_iface_names).await?;
+    // Taken from the probe rather than re-derived, so the number the stage
+    // compares against, the number the dummy carries, and the number the error
+    // advertises are one reading instead of three that can disagree.
+    let wan_mtu = probe.effective_mtu;
+    let (sources_by_prefix, sources) = {
+        let collected = collect_sources(&settings.lan_iface_names).await?;
+        let addresses: Vec<Ipv6Addr> = collected.iter().map(|(a, _)| *a).collect();
+        (collected, addresses)
+    };
 
     // Names carry the WAN interface's index so two WANs cannot collide, and stay
     // inside the 15-byte limit.
@@ -280,12 +360,54 @@ pub async fn bring_up(
             found.ok_or_else(|| format!("{veth_main} did not get a link-local address"))?
         };
 
+        // The two ends learn each other's link address statically, so the main
+        // namespace's firewall never has to admit this link and no neighbour
+        // discovery crosses it.
+        //
+        // They cannot learn it the ordinary way: the main namespace's INPUT
+        // policy is DROP with exceptions only for `lo` and the LAN, so a
+        // neighbour advertisement arriving on this veth is dropped and both
+        // neighbour tables sit at FAILED. Measured on 2026-10-07: the divert
+        // reported every oversized packet as handed over, the chamber received
+        // none of them, and the cause was the unresolved neighbour on this side.
+        let main_mac = read_mac(&veth_main).await?;
+        let chamber_mac = read_mac_in_ns(&ns, &veth_chamber).await?;
+        ip(&[
+            "-6",
+            "neigh",
+            "replace",
+            &chamber_ll.to_string(),
+            "lladdr",
+            &chamber_mac,
+            "dev",
+            &veth_main,
+            "nud",
+            "permanent",
+        ])
+        .await?;
+        ip_ns(
+            &ns,
+            &[
+                "-6",
+                "neigh",
+                "replace",
+                &main_ll.to_string(),
+                "lladdr",
+                &main_mac,
+                "dev",
+                &veth_chamber,
+                "nud",
+                "permanent",
+            ],
+        )
+        .await?;
+
         // The addresses the chamber speaks as. `nodad` because the address is
         // already in use in the main namespace on the LAN link, and DAD here
         // would only produce a claim nobody asked for; `noprefixroute` because
         // the route back to the client must go through the main namespace, not
         // straight out of this link.
-        for (address, prefix) in &sources {
+        for (address, prefix) in &sources_by_prefix {
             ip_ns(
                 &ns,
                 &[
@@ -304,7 +426,7 @@ pub async fn bring_up(
 
         // Back to the client through the main namespace, by prefix.
         let mut routed: Vec<(Ipv6Addr, u8)> = Vec::new();
-        for (address, prefix) in &sources {
+        for (address, prefix) in &sources_by_prefix {
             if routed.iter().any(|(a, p)| a == address && p == prefix) {
                 continue;
             }
@@ -345,16 +467,18 @@ pub async fn bring_up(
         in_ns(&ns, "ip6tables", &["-F", "FORWARD"]).await?;
         in_ns(&ns, "ip6tables", &["-P", "FORWARD", "DROP"]).await?;
 
-        // Emitting: neighbour discovery with the peer, the Packet Too Big, and
-        // nothing else. Without the second rule the chamber could not answer the
-        // main namespace's lookup for it; without the first, it could not reach
-        // its peer at all; without the policy, the copies of the LAN addresses
-        // could be advertised on the wire as if this namespace owned them.
+        // Emitting: neighbour discovery addressed to the peer, the Packet Too
+        // Big, and nothing else. The peer rule is a /128 rather than the whole
+        // link-local scope, so this namespace cannot talk to any other
+        // link-local entity; the two neighbours are static, so in normal
+        // operation not even that is used. The policy is what stops the copies of
+        // the LAN addresses from being advertised on the wire as if this
+        // namespace owned them.
         in_ns(&ns, "ip6tables", &["-F", "OUTPUT"]).await?;
         in_ns(
             &ns,
             "ip6tables",
-            &["-A", "OUTPUT", "-o", &veth_chamber, "-d", "fe80::/10", "-j", "ACCEPT"],
+            &["-A", "OUTPUT", "-o", &veth_chamber, "-d", &format!("{main_ll}/128"), "-j", "ACCEPT"],
         )
         .await?;
         in_ns(
@@ -383,13 +507,15 @@ pub async fn bring_up(
         in_ns(&ns, "iptables", &["-P", "FORWARD", "DROP"]).await?;
         in_ns(&ns, "iptables", &["-P", "OUTPUT", "DROP"]).await?;
 
-        Ok::<Ipv6Addr, String>(chamber_ll)
+        // Both link-locals travel out of the build so the read-back can assert
+        // the static neighbours that were installed from them.
+        Ok::<(Ipv6Addr, Ipv6Addr), String>((chamber_ll, main_ll))
     }
     .await;
 
     // Any failure so far leaves a namespace behind; drop it before returning.
-    let chamber_link_local = match build {
-        Ok(ll) => ll,
+    let (chamber_link_local, main_link_local) = match build {
+        Ok(lls) => lls,
         Err(e) => {
             let _ = ip(&["netns", "del", &ns]).await;
             return Err(e);
@@ -404,7 +530,7 @@ pub async fn bring_up(
     let mut problems: Vec<String> = Vec::new();
 
     let addr_text = in_ns_lenient(&ns, "ip", &["-6", "addr", "show", "dev", &veth_chamber]).await;
-    let present = sources.iter().filter(|(a, _)| addr_text.contains(&a.to_string())).count();
+    let present = sources.iter().filter(|a| addr_text.contains(&a.to_string())).count();
     if present != sources.len() {
         problems.push(format!(
             "only {present} of {} LAN addresses are on {veth_chamber}",
@@ -417,7 +543,7 @@ pub async fn bring_up(
         problems
             .push(format!("no default route out {egress}: the egress MTU check would never run"));
     }
-    for (address, prefix) in &sources {
+    for (address, prefix) in &sources_by_prefix {
         let network = network_of(*address, *prefix);
         if !route_text.contains(&format!("{network}/{prefix} via")) {
             problems
@@ -457,6 +583,28 @@ pub async fn bring_up(
         }
     }
 
+    // The neighbours are the one part of this that failed silently in the field:
+    // the divert counted every packet as handed over while the chamber received
+    // none, because the main namespace's INPUT policy had dropped the neighbour
+    // advertisement and the entry was FAILED. A static entry is what removes the
+    // exchange, and this is what proves it is there.
+    let main_neigh = ip(&["-6", "neigh", "show", "dev", &veth_main]).await.unwrap_or_default();
+    if !main_neigh.contains(&chamber_link_local.to_string()) || !main_neigh.contains("PERMANENT") {
+        problems.push(format!(
+            "the chamber's link-local address is not a permanent neighbour on {veth_main}, so \
+             the divert would have nowhere to send a packet: {main_neigh:?}"
+        ));
+    }
+    let chamber_neigh =
+        in_ns_lenient(&ns, "ip", &["-6", "neigh", "show", "dev", &veth_chamber]).await;
+    if !chamber_neigh.contains(&main_link_local.to_string()) || !chamber_neigh.contains("PERMANENT")
+    {
+        problems.push(format!(
+            "the main namespace's link-local address is not a permanent neighbour in {ns}, so no \
+             error could be sent back: {chamber_neigh:?}"
+        ));
+    }
+
     if !problems.is_empty() {
         let _ = ip(&["netns", "del", &ns]).await;
         return Err(format!("the chamber did not come up as intended: {}", problems.join("; ")));
@@ -471,7 +619,7 @@ pub async fn bring_up(
         wan_mtu,
         veth_main_ifindex: iface.index,
         chamber_link_local,
-        sources: sources.iter().map(|(a, _)| *a).collect(),
+        sources,
     })
 }
 
