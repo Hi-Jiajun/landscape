@@ -261,7 +261,15 @@ impl DNSResolveRuntime {
                                 "upstream returned no records (NODATA)"
                             );
                         }
-                        return Err(DnsServiceError::Protocol(no_records.response_code));
+                        // The lifetime belongs to the answer: RFC 2308 §5 takes it
+                        // from the SOA, and hickory has already computed it (it is
+                        // present exactly when an SOA was). Carrying it here is what
+                        // lets the cache use the upstream's own value instead of a
+                        // number of our choosing.
+                        return Err(DnsServiceError::NegativeAnswer {
+                            code: no_records.response_code,
+                            negative_ttl: no_records.negative_ttl,
+                        });
                     }
                     hickory_resolver::net::NetError::Timeout => {
                         return Err(DnsServiceError::Timeout);

@@ -135,11 +135,39 @@ impl ClaimIndex {
 }
 
 /// Data required to write (or update) one cache entry.
+/// The lifetime to give a cache entry, as a pure decision.
+///
+/// Split out of `insert` so the rule is stated once and can be tested without a
+/// live cache: a positive answer lives as long as its shortest record says, and a
+/// negative answer lives as long as the upstream's SOA justified - capped by
+/// configuration, never extended by it.
+///
+/// RFC 2308 §5 takes a negative lifetime from `min(SOA TTL, SOA.MINIMUM)`, which
+/// the resolver computes and hands over as `negative_ttl`; it is `None` when the
+/// answer carried no SOA. `SHOULD NOT` cache that case, so the configured
+/// `negative_cache_ttl_without_soa` decides it explicitly - 0 meaning "do not
+/// cache", which the insert path already honours by returning before the write.
+fn entry_lifetime(
+    rdatas: &[Record],
+    negative_ttl: Option<u32>,
+    config: &CacheRuntimeConfig,
+) -> u32 {
+    if rdatas.is_empty() {
+        negative_ttl.unwrap_or(config.negative_cache_ttl_without_soa).min(config.negative_cache_ttl)
+    } else {
+        rdatas.iter().map(|r| r.ttl).min().unwrap_or(0)
+    }
+}
+
 pub(crate) struct CacheEntry {
     pub(crate) domain_key: Arc<str>,
     pub(crate) query_type: RecordType,
     pub(crate) rdatas: Vec<Record>,
     pub(crate) response_code: ResponseCode,
+    /// RFC 2308 §5's `min(SOA TTL, SOA.MINIMUM)`, from the answer that produced
+    /// this entry. `None` when the answer carried no SOA, which is "the upstream
+    /// justified no lifetime for this" rather than a value to invent.
+    pub(crate) negative_ttl: Option<u32>,
     pub(crate) mark: DnsRuntimeMarkInfo,
     pub(crate) filter: FilterResult,
     pub(crate) matched_rule_id: Option<Uuid>,
@@ -328,16 +356,26 @@ impl CacheHandle {
             query_type,
             rdatas,
             response_code,
+            negative_ttl,
             mark,
             filter,
             matched_rule_id,
             matched_rule_order,
         } = entry;
-        let min_ttl = rdatas
-            .iter()
-            .map(|r| r.ttl)
-            .min()
-            .unwrap_or_else(|| self.runtime_config.load().negative_cache_ttl);
+        // A negative answer's lifetime is a property of the answer, not of
+        // configuration: RFC 2308 §5 takes `min(SOA TTL, SOA.MINIMUM)`, which the
+        // resolver hands over as `negative_ttl`. Configuration only caps it, so a
+        // short upstream lifetime is never extended into a longer one.
+        //
+        // With no SOA the upstream justified no lifetime at all; RFC 2308 §5 says
+        // SHOULD NOT cache, and `negative_cache_ttl_without_soa` is that decision
+        // made explicit (0 = do not cache). It is the common case here, not an
+        // edge: the carrier resolver answers names that do not exist with
+        // `NOERROR` and no authority section.
+        let min_ttl = {
+            let config = self.runtime_config.load();
+            entry_lifetime(&rdatas, negative_ttl, &config)
+        };
 
         let cache_item = CacheDNSItem {
             rdatas,
@@ -501,17 +539,84 @@ impl CacheHandle {
         query_type: RecordType,
         rdatas: Vec<Record>,
         response_code: ResponseCode,
+        negative_ttl: Option<u32>,
     ) -> CacheEntry {
         CacheEntry {
             domain_key: domain_key.clone(),
             query_type,
             rdatas,
             response_code,
+            negative_ttl,
             mark: resolver.mark().clone(),
             filter: resolver.filter_mode(),
             matched_rule_id: Some(resolver.get_config_id()),
             matched_rule_order: Some(resolver.order()),
         }
+    }
+}
+
+#[cfg(test)]
+mod entry_lifetime_tests {
+    use super::*;
+
+    fn record(ttl: u32) -> Record {
+        use hickory_proto::rr::{Name, RData, RecordType, rdata::A};
+        use std::str::FromStr;
+        Record::from_rdata(
+            Name::from_str("example.com.").unwrap(),
+            ttl,
+            RData::A(A::new(203, 0, 113, 1)),
+        )
+    }
+
+    fn config() -> CacheRuntimeConfig {
+        CacheRuntimeConfig {
+            negative_cache_ttl: 120,
+            negative_cache_ttl_without_soa: 10,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_positive_answer_lives_as_long_as_its_shortest_record() {
+        let records = vec![record(300), record(60)];
+        assert_eq!(entry_lifetime(&records, None, &config()), 60);
+    }
+
+    #[test]
+    fn a_negative_answer_uses_the_lifetime_the_upstream_justified() {
+        // RFC 2308: the SOA-derived value, not a number of our choosing.
+        assert_eq!(entry_lifetime(&[], Some(45), &config()), 45);
+    }
+
+    #[test]
+    fn a_short_upstream_lifetime_is_never_extended_by_configuration() {
+        // The ceiling caps; it must not become a floor. Extending an upstream's
+        // 5 seconds to our 120 would keep a name that starts existing unreachable.
+        assert_eq!(entry_lifetime(&[], Some(5), &config()), 5);
+    }
+
+    #[test]
+    fn a_long_upstream_lifetime_is_capped() {
+        assert_eq!(entry_lifetime(&[], Some(86_400), &config()), 120);
+    }
+
+    #[test]
+    fn no_soa_means_the_configured_policy_decides() {
+        // The common case on this network's carrier resolver: NODATA with no
+        // authority section, so nothing was justified and the policy applies.
+        assert_eq!(entry_lifetime(&[], None, &config()), 10);
+
+        // ... and "do not cache" is expressible, which is what RFC 2308 §5 asks for.
+        let strict = CacheRuntimeConfig { negative_cache_ttl_without_soa: 0, ..config() };
+        assert_eq!(entry_lifetime(&[], None, &strict), 0);
+    }
+
+    #[test]
+    fn a_zero_lifetime_from_the_upstream_is_not_cached() {
+        // A zero is the upstream saying "do not reuse this"; the insert path treats
+        // a zero lifetime by returning before the write.
+        assert_eq!(entry_lifetime(&[], Some(0), &config()), 0);
     }
 }
 

@@ -85,7 +85,16 @@ pub struct MetricRuntimeConfig {
 pub struct DnsRuntimeConfig {
     pub cache_capacity: u32,
     pub cache_ttl: u32,
+    /// Ceiling for a negative answer's lifetime; the lifetime itself comes from
+    /// the answer's SOA (RFC 2308 §5), so this only caps it.
     pub negative_cache_ttl: u32,
+    /// The lifetime to use when a negative answer arrived with **no SOA**, in which
+    /// case the upstream justified none at all. `0` means do not cache it, which is
+    /// what RFC 2308 §5 asks for; the default keeps a short window so a burst of
+    /// repeated queries does not each reach the upstream. Measured on this network:
+    /// the carrier resolver answers names that do not exist with no SOA, so this is
+    /// the common case rather than an edge.
+    pub negative_cache_ttl_without_soa: u32,
     pub doh_listen_port: u16,
     pub doh_http_endpoint: String,
 }
@@ -269,6 +278,9 @@ impl DnsRuntimeConfig {
         }
         if let Some(v) = config.negative_cache_ttl {
             self.negative_cache_ttl = v;
+        }
+        if let Some(v) = config.negative_cache_ttl_without_soa {
+            self.negative_cache_ttl_without_soa = v;
         }
         if let Some(v) = config.doh_listen_port {
             self.doh_listen_port = v;

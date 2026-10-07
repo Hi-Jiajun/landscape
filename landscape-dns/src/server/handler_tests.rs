@@ -103,6 +103,9 @@ impl DnsRequestHandler {
                 query_type,
                 rdatas: rdata_ttl_vec,
                 response_code,
+                // A positive answer has no negative lifetime; the tests that want
+                // the negative path build their own entry.
+                negative_ttl: None,
                 mark: mark.clone(),
                 filter,
                 matched_rule_id,
@@ -165,6 +168,7 @@ mod tests {
             cache_capacity: 16,
             cache_ttl: 60,
             negative_cache_ttl,
+            negative_cache_ttl_without_soa: 10,
         }
     }
 
@@ -598,7 +602,17 @@ mod tests {
             let handler = test_handler_with_config(runtime_config.clone(), 9, vec![], vec![]);
             let handler_clone = handler.clone();
 
-            runtime_config.store(Arc::new(test_cache_runtime_config(33)));
+            // The entry inserted below carries no SOA (nothing justified a
+            // lifetime), so the value it picks up is the no-SOA policy. That is the
+            // knob this test has to move to observe a config change reaching a
+            // cached negative answer - the ceiling no longer decides it, which is
+            // the point of taking the lifetime from the answer.
+            runtime_config.store(Arc::new(CacheRuntimeConfig {
+                cache_capacity: 16,
+                cache_ttl: 60,
+                negative_cache_ttl: 120,
+                negative_cache_ttl_without_soa: 33,
+            }));
             handler.renew_runtime_config(false).await;
 
             handler_clone
@@ -868,6 +882,7 @@ mod tests {
                 cache_capacity: 16,
                 cache_ttl: 120,
                 negative_cache_ttl: 22,
+                negative_cache_ttl_without_soa: 10,
             }));
             handler.renew_runtime_config(true).await;
 

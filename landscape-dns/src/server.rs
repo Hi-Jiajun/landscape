@@ -488,6 +488,7 @@ mod tests {
             cache_capacity: 16,
             cache_ttl: 60,
             negative_cache_ttl: 10,
+            negative_cache_ttl_without_soa: 10,
         }
     }
 

@@ -31,6 +31,18 @@ pub enum DnsServiceError {
     #[api_error(id = "dns_service.protocol", status = 502)]
     Protocol(ResponseCode),
 
+    /// The upstream answered *negatively*: NXDOMAIN, or NODATA (`NoError` with no
+    /// records). Both are answers rather than failures, and both carry a lifetime
+    /// that belongs to the answer rather than to configuration.
+    ///
+    /// `negative_ttl` is RFC 2308 §5's `min(SOA TTL, SOA.MINIMUM)`, which hickory
+    /// computes and hands over. It is `None` when the answer carried **no SOA** -
+    /// the case that SHOULD NOT be cached, and the common case on this network's
+    /// carrier resolver, so it is a state to decide about rather than an edge.
+    #[error("DNS negative answer: {code:?}")]
+    #[api_error(id = "dns_service.protocol", status = 502)]
+    NegativeAnswer { code: ResponseCode, negative_ttl: Option<u32> },
+
     #[error("Upstream timeout")]
     #[api_error(id = "dns_service.timeout", status = 504)]
     Timeout,

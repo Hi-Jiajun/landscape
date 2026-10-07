@@ -450,6 +450,7 @@ fn split_dns_runtime_config(
             cache_capacity: dns_config.cache_capacity,
             cache_ttl: dns_config.cache_ttl,
             negative_cache_ttl: dns_config.negative_cache_ttl,
+            negative_cache_ttl_without_soa: dns_config.negative_cache_ttl_without_soa,
         },
         DohRuntimeConfig {
             listen_port: dns_config.doh_listen_port,

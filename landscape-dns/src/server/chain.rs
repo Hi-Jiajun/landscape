@@ -35,10 +35,11 @@ const LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 /// Outcome of a matched rule's upstream lookup; the caller (`stage_rule`) has
 /// already applied the cache write policy via `apply_outcome_to_cache`.
 enum RuleLookupOutcome {
-    /// Upstream answered (possibly an empty NOERROR answer).
-    NoError { records: Vec<Record> },
+    /// Upstream answered. `negative_ttl` is set only when the answer is empty
+    /// (NODATA) and the upstream's SOA justified a lifetime for it.
+    NoError { records: Vec<Record>, negative_ttl: Option<u32> },
     /// Upstream answered NXDOMAIN.
-    NxDomain,
+    NxDomain { negative_ttl: Option<u32> },
     /// Upstream answered with an explicit error code (Refused, NotImp,
     /// FormErr, ServFail, ...). The code is passed through to the client.
     ErrorCode(ResponseCode),
@@ -47,15 +48,18 @@ enum RuleLookupOutcome {
 }
 
 impl RuleLookupOutcome {
-    /// The (records, response code) pair to cache for this outcome, if any.
+    /// The (records, response code, negative lifetime) to cache for this outcome,
+    /// if any.
     /// `NxDomain` caches an empty (negative) answer, explicit error codes and
     /// failures nothing.
-    fn cache_write(&self) -> Option<(Vec<Record>, ResponseCode)> {
+    fn cache_write(&self) -> Option<(Vec<Record>, ResponseCode, Option<u32>)> {
         match self {
-            RuleLookupOutcome::NoError { records } => {
-                Some((records.clone(), ResponseCode::NoError))
+            RuleLookupOutcome::NoError { records, negative_ttl } => {
+                Some((records.clone(), ResponseCode::NoError, *negative_ttl))
             }
-            RuleLookupOutcome::NxDomain => Some((vec![], ResponseCode::NXDomain)),
+            RuleLookupOutcome::NxDomain { negative_ttl } => {
+                Some((vec![], ResponseCode::NXDomain, *negative_ttl))
+            }
             RuleLookupOutcome::ErrorCode(_) | RuleLookupOutcome::Failed => None,
         }
     }
@@ -129,7 +133,9 @@ impl<'a> ResolveChain<'a> {
             match with_lookup_timeout(resolver.lookup(domain.raw(), query_type), LOOKUP_TIMEOUT)
                 .await
             {
-                Ok(rdata_vec) => RuleLookupOutcome::NoError { records: rdata_vec },
+                Ok(rdata_vec) => {
+                    RuleLookupOutcome::NoError { records: rdata_vec, negative_ttl: None }
+                }
                 Err(err) => rule_lookup_outcome_from_error(&err),
             };
 
@@ -237,12 +243,12 @@ impl<'a> ResolveChain<'a> {
             };
 
             return match outcome {
-                RuleLookupOutcome::NoError { records } => DnsQueryAnswer {
+                RuleLookupOutcome::NoError { records, .. } => DnsQueryAnswer {
                     records: filter_result(records, &filter),
                     outcome: DnsOutcome::Normal,
                     response_code: ResponseCode::NoError,
                 },
-                RuleLookupOutcome::NxDomain => DnsQueryAnswer {
+                RuleLookupOutcome::NxDomain { .. } => DnsQueryAnswer {
                     records: vec![],
                     outcome: DnsOutcome::NxDomain,
                     response_code: ResponseCode::NXDomain,
@@ -300,7 +306,7 @@ impl<'a> ResolveChain<'a> {
             } else {
                 // Read-only: no cache writes here, the cache report below
                 // shows what a client would currently see.
-                if let Ok(RuleLookupOutcome::NoError { records }) =
+                if let Ok(RuleLookupOutcome::NoError { records, .. }) =
                     self.stage_rule(domain, query_type, resolver, CacheWritePolicy::ReadOnly).await
                 {
                     result.records = Some(crate::to_common_records(if apply_filter {
@@ -393,14 +399,14 @@ impl<'a> ResolveChain<'a> {
                 tracing::error!("refusing to refresh '{}': {e}", domain.raw());
                 return Err(DnsServiceError::RefreshFailed(domain.raw().to_string()));
             }
-            Ok(RuleLookupOutcome::NoError { records }) => {
+            Ok(RuleLookupOutcome::NoError { records, .. }) => {
                 result.records = Some(if apply_filter {
                     crate::to_common_records(filter_result(records, &filter))
                 } else {
                     crate::to_common_records(records)
                 });
             }
-            Ok(RuleLookupOutcome::NxDomain) => {
+            Ok(RuleLookupOutcome::NxDomain { .. }) => {
                 result.records = Some(vec![]);
             }
             Ok(RuleLookupOutcome::ErrorCode(_)) => {
@@ -508,7 +514,7 @@ async fn apply_outcome_to_cache(
 ) -> Result<(), DnsMarkInstallError> {
     if query_filtered {
         cache.invalidate(domain, query_type).await;
-    } else if let Some((records, code)) = outcome.cache_write() {
+    } else if let Some((records, code, negative_ttl)) = outcome.cache_write() {
         cache
             .insert(CacheHandle::resolver_cache_entry(
                 resolver,
@@ -516,6 +522,7 @@ async fn apply_outcome_to_cache(
                 query_type,
                 records,
                 code,
+                negative_ttl,
             ))
             .await?;
     }
@@ -527,11 +534,22 @@ async fn apply_outcome_to_cache(
 /// NoError are still treated as negative answers, everything else fails.
 fn rule_lookup_outcome_from_error(err: &DnsServiceError) -> RuleLookupOutcome {
     match err {
+        DnsServiceError::NegativeAnswer { code: ResponseCode::NXDomain, negative_ttl } => {
+            RuleLookupOutcome::NxDomain { negative_ttl: *negative_ttl }
+        }
+        DnsServiceError::NegativeAnswer { code: ResponseCode::NoError, negative_ttl } => {
+            RuleLookupOutcome::NoError { records: vec![], negative_ttl: *negative_ttl }
+        }
+        // An explicit error code that is not a negative answer is passed through
+        // and cached as nothing.
+        DnsServiceError::NegativeAnswer { code, .. } => RuleLookupOutcome::ErrorCode(*code),
+        // Retained for callers that build a protocol error directly (the rule
+        // engine's own tests do); a code with no SOA behind it carries no lifetime.
         DnsServiceError::Protocol(code) if *code == ResponseCode::NXDomain => {
-            RuleLookupOutcome::NxDomain
+            RuleLookupOutcome::NxDomain { negative_ttl: None }
         }
         DnsServiceError::Protocol(code) if *code == ResponseCode::NoError => {
-            RuleLookupOutcome::NoError { records: vec![] }
+            RuleLookupOutcome::NoError { records: vec![], negative_ttl: None }
         }
         DnsServiceError::Protocol(code) => RuleLookupOutcome::ErrorCode(*code),
         _ => RuleLookupOutcome::Failed,
@@ -661,7 +679,7 @@ mod tests {
         ));
         assert!(matches!(
             rule_lookup_outcome_from_error(&DnsServiceError::Protocol(ResponseCode::NXDomain)),
-            RuleLookupOutcome::NxDomain
+            RuleLookupOutcome::NxDomain { .. }
         ));
         assert!(matches!(
             rule_lookup_outcome_from_error(&DnsServiceError::Protocol(ResponseCode::NoError)),
@@ -676,15 +694,38 @@ mod tests {
             RuleLookupOutcome::Failed
         ));
 
-        let no_error = RuleLookupOutcome::NoError { records: vec![] };
-        let (records, code) = no_error.cache_write().unwrap();
+        // A negative answer carries the lifetime the upstream's SOA justified.
+        let no_records = rule_lookup_outcome_from_error(&DnsServiceError::NegativeAnswer {
+            code: ResponseCode::NoError,
+            negative_ttl: Some(30),
+        });
+        assert!(matches!(no_records, RuleLookupOutcome::NoError { negative_ttl: Some(30), .. }));
+
+        let nx = rule_lookup_outcome_from_error(&DnsServiceError::NegativeAnswer {
+            code: ResponseCode::NXDomain,
+            negative_ttl: Some(60),
+        });
+        assert!(matches!(nx, RuleLookupOutcome::NxDomain { negative_ttl: Some(60) }));
+
+        // No SOA means no lifetime was justified - carried through as `None` so the
+        // cache can apply the configured policy rather than inventing a value.
+        let without_soa = rule_lookup_outcome_from_error(&DnsServiceError::NegativeAnswer {
+            code: ResponseCode::NXDomain,
+            negative_ttl: None,
+        });
+        assert!(matches!(without_soa, RuleLookupOutcome::NxDomain { negative_ttl: None }));
+
+        let no_error = RuleLookupOutcome::NoError { records: vec![], negative_ttl: None };
+        let (records, code, ttl) = no_error.cache_write().unwrap();
         assert!(records.is_empty());
         assert_eq!(code, ResponseCode::NoError);
+        assert_eq!(ttl, None);
 
-        let nxdomain = RuleLookupOutcome::NxDomain;
-        let (records, code) = nxdomain.cache_write().unwrap();
+        let nxdomain = RuleLookupOutcome::NxDomain { negative_ttl: Some(45) };
+        let (records, code, ttl) = nxdomain.cache_write().unwrap();
         assert!(records.is_empty());
         assert_eq!(code, ResponseCode::NXDomain);
+        assert_eq!(ttl, Some(45), "the answer's own lifetime must reach the cache");
 
         // Explicit upstream error codes are never cached, like failures.
         assert!(RuleLookupOutcome::ErrorCode(ResponseCode::Refused).cache_write().is_none());
