@@ -338,7 +338,16 @@ impl DnsLeakGuard {
                 // Detach the jump first, then drop the chain: the other order
                 // leaves a jump pointing at a missing chain, which netfilter
                 // rejects.
-                let _ = run(family, &["-t", table, "-D", HOOK, "-j", chain]).await;
+                //
+                // The jump has to be deleted by repeating the rule exactly as the
+                // kernel has it. `-D ... -j CHAIN` alone does not match a rule
+                // that also carries `-i lan`, and the delete then fails while
+                // looking like it succeeded - which is how a stale, permanently
+                // empty chain came to be hooked into PREROUTING on the live box.
+                if let Err(e) = detach_jumps(family, table, chain).await {
+                    errors.push(format!("{} {}: {e}", family.label(), chain));
+                    continue;
+                }
                 match run(family, &["-t", table, "-F", chain]).await {
                     Ok(_) => {}
                     // No chain means nothing to flush.
@@ -545,6 +554,35 @@ impl DnsLeakGuard {
 async fn jump_present(family: Family, table: &str, chain: &str) -> Result<bool, String> {
     let output = run(family, &["-t", table, "-S", HOOK]).await?;
     Ok(output.lines().any(|line| line.contains(chain)))
+}
+
+/// Remove every jump from `HOOK` into `chain`, repeating each rule exactly as the
+/// kernel reports it.
+///
+/// Matching by target alone is not enough: `-D` compares the whole rule, so a
+/// jump carrying `-i lan` is not matched by a spec that omits it. Reading the
+/// rules back and deleting what is actually there is order- and shape-
+/// independent, and it cannot take a neighbouring rule with it because only
+/// lines whose target is exactly this chain are used.
+async fn detach_jumps(family: Family, table: &str, chain: &str) -> Result<(), String> {
+    let listing = run(family, &["-t", table, "-S", HOOK]).await?;
+    for line in listing.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        // `-A <hook> ... -j <chain>`; the target must be this chain exactly, not
+        // a longer name that merely starts with it.
+        if fields.len() < 4 || fields[0] != "-A" || fields[1] != HOOK {
+            continue;
+        }
+        if fields[fields.len() - 1] != chain {
+            continue;
+        }
+        let mut arguments =
+            vec!["-t".to_string(), table.to_string(), "-D".to_string(), HOOK.to_string()];
+        arguments.extend(fields[2..].iter().map(|field| field.to_string()));
+        let borrowed: Vec<&str> = arguments.iter().map(String::as_str).collect();
+        run(family, &borrowed).await?;
+    }
+    Ok(())
 }
 
 /// Sum the packet counter of every rule in `chain` whose target is `target`.
