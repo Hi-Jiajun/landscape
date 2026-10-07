@@ -17,6 +17,8 @@ use landscape_common::lan_service::lan_ipv6::dataplane::Ip6DaoFilterDataplane;
 use landscape_common::lan_service::lan_route::dataplane::LanRouteDataplane;
 use landscape_common::lan_service::mac_binding::MacBindingDataplane;
 use landscape_common::net::MacAddr;
+use landscape_common::proxy::DnsGuardCounters;
+use landscape_common::proxy::dataplane::{DnsGuardDataplane, DnsGuardSpec};
 use landscape_common::sys_service::route_service::dataplane::RouteTableDataplane;
 use landscape_common::wan_service::addr_binding::WanAddrBinding;
 use landscape_common::wan_service::firewall::dataplane::FirewallDataplane;
@@ -565,5 +567,29 @@ impl MacBindingDataplane for EbpfMacBindingDataplane {
         if let Err(e) = maps::mac::upsert_ipv6_ip_mac(&self.rt.paths, ifindex, ip, mac, dev_mac) {
             tracing::error!("upsert ipv6 ip_mac binding error: {e:?}");
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Managed-DNS guard
+// ─────────────────────────────────────────────────────────────────────────
+
+pub struct EbpfDnsGuardDataplane {
+    rt: Arc<EbpfRuntime>,
+}
+
+impl EbpfDnsGuardDataplane {
+    pub(crate) fn new(rt: Arc<EbpfRuntime>) -> Self {
+        Self { rt }
+    }
+}
+
+impl DnsGuardDataplane for EbpfDnsGuardDataplane {
+    fn apply(&self, spec: &DnsGuardSpec) -> Result<(), String> {
+        maps::dns_guard::apply_dns_guard(&self.rt.paths, spec)
+    }
+
+    fn counters(&self) -> Result<DnsGuardCounters, String> {
+        maps::dns_guard::dns_guard_counters(&self.rt.paths)
     }
 }

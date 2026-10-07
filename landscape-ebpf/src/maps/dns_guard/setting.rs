@@ -17,6 +17,18 @@ use crate::maps::{RawEbpfMapEntries, apply_raw_map_diff, diff_raw_map, snapshot_
 use super::init::DNS_GUARD_STAT_MAX;
 use super::types::{DnsGuardConfig, DnsGuardExemptKey};
 
+// Counter slot order must match the `dns_guard_stat` enum in
+// `bpf/dns_guard/dns_guard.h`; the constants below are the only place the two
+// are tied together on the Rust side.
+const STAT_HANDOFF_53: usize = 0;
+const STAT_HANDOFF_DOT: usize = 1;
+const STAT_HANDOFF_DOH: usize = 2;
+const STAT_EXEMPT: usize = 3;
+const STAT_FRAGMENT_DROPPED: usize = 4;
+const STAT_FRAGMENT_PASSED: usize = 5;
+const STAT_PARSE_FAILED: usize = 6;
+const STAT_LAN_DESTINATION: usize = 7;
+
 /// One authorised exception: this client may use this service on this
 /// destination without being handed to the guard.
 ///
@@ -125,6 +137,82 @@ pub fn read_dns_guard_stats(map: &MapHandle) -> LdEbpfResult<Vec<u64>> {
         out.push(u64::from_ne_bytes(bytes));
     }
     Ok(out)
+}
+
+/// Programme both halves of the datapath for one [`DnsGuardSpec`].
+///
+/// Opening the pinned maps fails when the datapath is not running; that is
+/// reported as an error rather than swallowed, because "the datapath half is
+/// missing" means direct flows are not guarded at all.
+pub fn apply_dns_guard(
+    paths: &crate::LandscapeMapPath,
+    spec: &landscape_common::proxy::dataplane::DnsGuardSpec,
+) -> Result<(), String> {
+    let open = |path: &std::path::Path, what: &str| {
+        MapHandle::from_pinned_path(path).map_err(|e| format!("open {what} ({path:?}): {e}"))
+    };
+
+    let config_map = open(&paths.dns_guard_config, "dns_guard_config_map")?;
+    let doh4 = open(&paths.dns_guard_doh4, "dns_guard_doh4_map")?;
+    let doh6 = open(&paths.dns_guard_doh6, "dns_guard_doh6_map")?;
+    let exempt = open(&paths.dns_guard_exempt, "dns_guard_exempt_map")?;
+
+    set_dns_guard_config(
+        &config_map,
+        DnsGuardConfig {
+            enabled: u8::from(spec.enabled),
+            drop_fragments: u8::from(spec.drop_fragments),
+            drop_unclassified: u8::from(spec.drop_unclassified),
+            _pad: 0,
+            // A stamp the operator can use to tell one apply from the next when
+            // reading the map by hand.
+            generation: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as u32)
+                .unwrap_or(0),
+        },
+    )
+    .map_err(|e| format!("write dns_guard_config_map: {e}"))?;
+
+    set_dns_guard_doh(&doh4, &doh6, &spec.doh_block)
+        .map_err(|e| format!("write dns_guard DoH sets: {e}"))?;
+
+    let entries: Vec<DnsGuardExemption> = spec
+        .exempt
+        .iter()
+        .flat_map(|entry| {
+            entry.protocol.as_l4_protocols().into_iter().map(move |proto| DnsGuardExemption {
+                src: entry.client,
+                dst: entry.destination,
+                l4_protocol: proto,
+                port: entry.port,
+            })
+        })
+        .collect();
+    set_dns_guard_exempt(&exempt, &entries)
+        .map_err(|e| format!("write dns_guard_exempt_map: {e}"))?;
+
+    Ok(())
+}
+
+/// Read the datapath counters, named.
+pub fn dns_guard_counters(
+    paths: &crate::LandscapeMapPath,
+) -> Result<landscape_common::proxy::DnsGuardCounters, String> {
+    let map = MapHandle::from_pinned_path(&paths.dns_guard_stats)
+        .map_err(|e| format!("open dns_guard_stats_map ({:?}): {e}", paths.dns_guard_stats))?;
+    let raw = read_dns_guard_stats(&map).map_err(|e| format!("read dns_guard_stats_map: {e}"))?;
+    let at = |idx: usize| raw.get(idx).copied().unwrap_or(0);
+    Ok(landscape_common::proxy::DnsGuardCounters {
+        handoff_plaintext: at(STAT_HANDOFF_53),
+        handoff_dot: at(STAT_HANDOFF_DOT),
+        handoff_doh: at(STAT_HANDOFF_DOH),
+        exempted: at(STAT_EXEMPT),
+        fragments_refused: at(STAT_FRAGMENT_DROPPED),
+        fragments_passed: at(STAT_FRAGMENT_PASSED),
+        unclassified_passed: at(STAT_PARSE_FAILED),
+        lan_destination: at(STAT_LAN_DESTINATION),
+    })
 }
 
 #[cfg(test)]

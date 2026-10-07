@@ -3,6 +3,8 @@ use uuid::Uuid;
 
 use crate::service::ServiceStatus;
 
+pub mod dataplane;
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -112,6 +114,127 @@ pub struct ProxyPluginConfig {
     /// (fail-closed).
     #[serde(default)]
     pub tproxy_missing_listener: TproxyMissingListener,
+
+    /// Block the DNS paths that bypass the managed resolver.
+    #[serde(default)]
+    pub dns_guard: DnsGuardConfig,
+}
+
+/// How aggressively to block DNS paths that bypass the managed resolver.
+///
+/// Plaintext DNS is already redirected into the resolver, so this is about the
+/// encrypted paths a client can choose for itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct DnsGuardConfig {
+    /// Off by default: it refuses client traffic, which is a decision to make
+    /// deliberately.
+    #[serde(default)]
+    pub enable: bool,
+    /// Which interface's clients are guarded. Matches the interface the existing
+    /// DNS redirect hooks, so both cover the same clients.
+    #[serde(default = "default_guard_iface")]
+    pub lan_iface: String,
+    /// Known DoH endpoints to refuse. Ordinary HTTPS, so only an address works;
+    /// an endpoint nobody listed is a documented boundary.
+    #[serde(default)]
+    #[cfg_attr(feature = "openapi", schema(value_type = Vec<String>))]
+    pub doh_block_ips: Vec<std::net::IpAddr>,
+    /// Trusted hosts allowed to keep speaking an encrypted resolver to one named
+    /// destination.
+    ///
+    /// A destination is required rather than optional. "This host may use DoT
+    /// anywhere" cannot be expressed, and that is deliberate: the exemption is
+    /// an authorisation for one service on one peer, so the safe default (no
+    /// exemption at all) stays the only way to say "anything".
+    #[serde(default)]
+    pub exempt: Vec<DnsGuardExempt>,
+    /// Refuse IPv4 fragments and IPv6 packets carrying a Fragment header.
+    ///
+    /// A non-first fragment has no L4 header and cannot be classified, so
+    /// letting it through would let a client reach the resolver the guard just
+    /// refused. On by default, because the safe direction here is to refuse and
+    /// count; every refusal is visible in the counters.
+    #[serde(default = "default_true")]
+    pub drop_fragments: bool,
+    /// Refuse packets whose header chain cannot be parsed.
+    ///
+    /// Off by default, and this deliberately diverges from the stricter
+    /// reading: on IPv6 the scanner rejects ESP/AH chains, and silently dropping
+    /// those looks like a broken network rather than a policy. They are counted
+    /// either way.
+    #[serde(default)]
+    pub drop_unclassified: bool,
+}
+
+fn default_guard_iface() -> String {
+    "lan".to_string()
+}
+
+impl Default for DnsGuardConfig {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            lan_iface: default_guard_iface(),
+            doh_block_ips: Vec::new(),
+            exempt: Vec::new(),
+            drop_fragments: true,
+            drop_unclassified: false,
+        }
+    }
+}
+
+/// Which transport a [`DnsGuardExempt`] covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub enum DnsGuardProtocol {
+    Tcp,
+    Udp,
+    Both,
+}
+
+impl DnsGuardProtocol {
+    /// The `iptables -p` argument list this covers.
+    pub fn as_iptables_protocols(self) -> Vec<&'static str> {
+        match self {
+            Self::Tcp => vec!["tcp"],
+            Self::Udp => vec!["udp"],
+            Self::Both => vec!["tcp", "udp"],
+        }
+    }
+
+    /// The IP protocol numbers this covers, for the datapath map key.
+    pub fn as_l4_protocols(self) -> Vec<u8> {
+        match self {
+            Self::Tcp => vec![6],
+            Self::Udp => vec![17],
+            Self::Both => vec![6, 17],
+        }
+    }
+}
+
+/// One trusted host, one service, one destination.
+///
+/// Identity is the source address plus the service, never the flow: the flow a
+/// packet lands in is chosen by its destination, so a flow or a `local_tproxy`
+/// target carries no identity at all.
+///
+/// Matching a bare source address is not authentication - anything on the same
+/// flat LAN can claim it. The trusted boundary has to come from the link (a
+/// separate VLAN, switch-side source filtering); a static DHCP lease does not
+/// provide it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct DnsGuardExempt {
+    /// The trusted host.
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
+    pub client: std::net::IpAddr,
+    /// The only peer this host may reach with this service.
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
+    pub destination: std::net::IpAddr,
+    pub protocol: DnsGuardProtocol,
+    pub port: u16,
 }
 
 /// What to do when a `LocalTproxy` flow points at a port with no listener.
@@ -133,6 +256,77 @@ pub enum TproxyMissingListener {
     /// expose the router's real WAN address for a flow that was meant to be
     /// proxied.
     Direct,
+}
+
+/// Kernel state of the DNS leak guard.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct DnsGuardStatus {
+    pub enabled: bool,
+    /// Which interface's clients are guarded.
+    pub lan_iface: String,
+    /// The rules currently installed, as the tool prints them.
+    #[serde(default)]
+    pub rules: Vec<String>,
+    /// How many DoH endpoints are blocked by address.
+    #[serde(default)]
+    pub doh_blocked: usize,
+    /// How many hosts hold an encrypted-resolver exemption.
+    #[serde(default)]
+    pub exempted_hosts: usize,
+    /// Datapath counters, per packet.
+    #[serde(default)]
+    pub counters: DnsGuardCounters,
+    /// Packets refused by the refusal chain, per packet.
+    ///
+    /// Read from the kernel rather than remembered, so it is the counter the
+    /// rules themselves kept. It is comparable with
+    /// [`DnsGuardCounters::handoff_dot`] and `handoff_doh`: a handoff with no
+    /// refusal is a packet that was taken away from the normal path and then
+    /// ruled on by nothing.
+    #[serde(default)]
+    pub refused_packets: u64,
+    /// Plaintext-DNS connections sent to the managed resolver.
+    ///
+    /// Per *connection*, not per packet, because the hijack is a NAT rule and
+    /// NAT decides on the first packet of a flow. It must not be compared with
+    /// the per-packet handoff counter.
+    #[serde(default)]
+    pub hijacked_connections: u64,
+    /// Set when the datapath half could not be programmed. The rules above are
+    /// the netfilter half, which may still be installed; with the datapath half
+    /// missing, direct flows are not guarded at all, so this is not a detail.
+    #[serde(default)]
+    pub dataplane_error: Option<String>,
+    pub last_error: Option<String>,
+}
+
+/// Datapath packet counters.
+///
+/// These are per packet, while the netfilter counters are per rule match, so the
+/// two never line up one for one. What does mean something is a nonzero handoff
+/// count with the matching refusal count staying at zero: the packet is being
+/// handed to the stack and nothing is ruling on it.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct DnsGuardCounters {
+    /// Handed to the local stack for the resolver to answer.
+    pub handoff_plaintext: u64,
+    /// Handed to the local stack so the 853 rule can refuse it.
+    pub handoff_dot: u64,
+    /// Handed to the local stack so the DoH rule can refuse it.
+    pub handoff_doh: u64,
+    /// Left alone because the host holds an exemption for exactly this service.
+    pub exempted: u64,
+    /// Refused in the datapath because a fragment cannot be classified.
+    pub fragments_refused: u64,
+    /// Passed through because fragment refusal is switched off.
+    pub fragments_passed: u64,
+    /// Passed through because the header chain could not be parsed and refusal
+    /// is switched off.
+    pub unclassified_passed: u64,
+    /// Ignored because the destination is on the LAN.
+    pub lan_destination: u64,
 }
 
 /// Which of the four leak classes a finding belongs to.
@@ -452,6 +646,7 @@ impl Default for ProxyPluginConfig {
             listeners: default_listeners(),
             manage_tproxy_delivery: true,
             tproxy_missing_listener: TproxyMissingListener::default(),
+            dns_guard: DnsGuardConfig::default(),
         }
     }
 }

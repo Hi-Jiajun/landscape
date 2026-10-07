@@ -578,7 +578,11 @@ async fn run_system(
     // Created before the flow service so the latter can publish the
     // `flow_id -> local TProxy listener` mapping the plugin has to deliver.
     let docker_service = LandscapeDockerService::new(home_path.clone(), route_service.clone());
-    let proxy_service = landscape::proxy::LandscapeProxyService::new(home_path.clone()).await;
+    let proxy_service = landscape::proxy::LandscapeProxyService::new(
+        home_path.clone(),
+        ebpf_rt.clone().dns_guard(),
+    )
+    .await;
 
     let flow_rule_service = startup_phase!(
         "flow_rule_service.new",

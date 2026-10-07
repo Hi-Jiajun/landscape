@@ -143,6 +143,13 @@ impl EbpfRuntime {
         Arc::new(crate::runtime_impls::EbpfFirewallDataplane::new(self))
     }
 
+    /// Managed-DNS guard capability.
+    pub fn dns_guard(
+        self: Arc<Self>,
+    ) -> Arc<dyn landscape_common::proxy::dataplane::DnsGuardDataplane> {
+        Arc::new(crate::runtime_impls::EbpfDnsGuardDataplane::new(self))
+    }
+
     /// NAT capability (stage attach + static mapping sync).
     pub fn nat(
         self: Arc<Self>,

@@ -11,6 +11,7 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 use uuid::Uuid;
 
+pub mod dns_guard;
 pub mod leak_guard;
 pub mod tproxy;
 
@@ -127,11 +128,22 @@ pub struct LandscapeProxyService {
     /// Owns the kernel TPROXY fabric that delivers `LocalTproxy` flows to this
     /// plugin's transparent listeners.
     tproxy: Arc<TproxyDelivery>,
+    /// Blocks the DNS paths that bypass the managed resolver.
+    dns_guard: Arc<dns_guard::DnsLeakGuard>,
     http_client: reqwest::Client,
 }
 
 impl LandscapeProxyService {
-    pub async fn new(home_path: PathBuf) -> Self {
+    /// Build the service.
+    ///
+    /// `dns_guard_dataplane` is the datapath half of the DNS leak guard. It is
+    /// passed in rather than reached for globally because the guard cannot work
+    /// through netfilter alone: a direct flow is forwarded in TC before netfilter
+    /// runs, so the decision has to be programmed into the datapath maps.
+    pub async fn new(
+        home_path: PathBuf,
+        dns_guard_dataplane: Arc<dyn landscape_common::proxy::dataplane::DnsGuardDataplane>,
+    ) -> Self {
         let proxy_dir = home_path.join("proxy");
         let _ = fs::create_dir_all(&proxy_dir);
         let _ = fs::create_dir_all(proxy_dir.join("providers"));
@@ -165,6 +177,7 @@ impl LandscapeProxyService {
                 initial_config.manage_tproxy_delivery,
                 initial_config.tproxy_missing_listener,
             )),
+            dns_guard: dns_guard::DnsLeakGuard::new(dns_guard_dataplane),
             http_client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
@@ -290,6 +303,21 @@ impl LandscapeProxyService {
         self.tproxy.status().await
     }
 
+    /// Kernel state of the DNS leak guard.
+    pub async fn dns_guard_status(&self) -> landscape_common::proxy::DnsGuardStatus {
+        self.dns_guard.status().await
+    }
+
+    /// Apply the DNS leak guard from the current configuration.
+    ///
+    /// Called whenever the configuration is saved and at startup, so the kernel
+    /// follows the configuration rather than being toggled by hand.
+    pub async fn apply_dns_guard(&self) {
+        let config = self.config.read().await.dns_guard.clone();
+        self.dns_guard.set_config(&config);
+        self.dns_guard.apply().await;
+    }
+
     /// Borrow the delivery fabric so the flow service can publish the
     /// `flow_id -> listener port` mapping it owns.
     pub fn tproxy_delivery(&self) -> Arc<TproxyDelivery> {
@@ -315,6 +343,9 @@ impl LandscapeProxyService {
             // go, otherwise turning the feature off leaves redirects behind.
             self.tproxy.teardown().await;
         }
+        // The DNS guard follows the configuration the same way: applied when
+        // saved, removed when turned off.
+        self.apply_dns_guard().await;
         Ok(())
     }
 
@@ -340,6 +371,7 @@ impl LandscapeProxyService {
         if management_turned_off {
             self.tproxy.teardown().await;
         }
+        self.apply_dns_guard().await;
         Ok(())
     }
 
@@ -582,6 +614,11 @@ impl LandscapeProxyService {
         // every flow that targets one of them. Idempotent, so a plain restart
         // does not rewrite the ruleset.
         self.tproxy.activate().await;
+
+        // The DNS guard is independent of the engine, so it is applied here too:
+        // a restart must not leave the encrypted-DNS path open because the guard
+        // was only ever applied when the configuration was saved.
+        self.apply_dns_guard().await;
 
         Ok(())
     }

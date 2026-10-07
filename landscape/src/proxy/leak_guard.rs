@@ -7,8 +7,8 @@
 //! configuration; nothing here changes state.
 
 use landscape_common::proxy::{
-    LeakClass, LeakFinding, LeakGuardReport, LeakSeverity, MatrixCell, TproxyDeliveryStatus,
-    TproxyMissingListener, TproxyTargetStatus,
+    DnsGuardStatus, LeakClass, LeakFinding, LeakGuardReport, LeakSeverity, MatrixCell,
+    TproxyDeliveryStatus, TproxyMissingListener, TproxyTargetStatus,
 };
 
 /// Everything the check needs, gathered by the caller so this stays testable
@@ -24,6 +24,9 @@ pub struct LeakGuardInput<'a> {
     pub wan_has_ipv6: bool,
     /// `iptables -S`-style lines of the DNS hijack rules, when known.
     pub dns_hijack_rules: Vec<String>,
+    /// Kernel state of the DNS leak guard, which blocks the paths that bypass the
+    /// managed resolver.
+    pub dns_guard: DnsGuardStatus,
     /// Flow ids the flow rules classify as proxied. The fabric's targets come from
     /// the same rules, so a flow listed here but absent from the fabric is one the
     /// configuration expects to be proxied and is not.
@@ -240,6 +243,110 @@ fn check_dns(report: &mut LeakGuardReport, input: &LeakGuardInput<'_>) {
         detail: "Client DNS is redirected to the managed resolver.".into(),
         evidence: input.dns_hijack_rules.clone(),
     });
+
+    // "A rule exists" is not the same as "the guard owns it". A hand-installed
+    // redirect is not reconciled by any configuration and does not survive a
+    // reboot, so the false sense of coverage it creates is worth a warning of its
+    // own.
+    if !dns_hijack_is_owned(&input.dns_hijack_rules) {
+        report.push(LeakFinding {
+            class: LeakClass::Dns,
+            severity: LeakSeverity::Warn,
+            check: "dns_hijack_unowned".into(),
+            detail: "The plaintext-DNS redirect is not owned by anything that reconciles it: it \
+                     is not in the guard's own chain, so it is not re-applied when the \
+                     configuration changes and it disappears on reboot. Plaintext DNS works \
+                     today on the strength of a rule nobody maintains."
+                .into(),
+            evidence: input.dns_hijack_rules.clone(),
+        });
+    }
+
+    // The redirect covers plaintext DNS. A client that chooses an encrypted
+    // resolver for itself is a separate path, and whether it is blocked is a
+    // configuration decision rather than an accident.
+    if !input.dns_guard.enabled {
+        report.push(LeakFinding {
+            class: LeakClass::Dns,
+            severity: LeakSeverity::Warn,
+            check: "encrypted_dns_blocked".into(),
+            detail: "The DNS leak guard is off, so a client can reach a resolver of its own \
+                     choosing over DoT or DoQ and bypass the managed resolver entirely. \
+                     Plaintext DNS is still redirected."
+                .into(),
+            evidence: vec![
+                "dns_guard.enable = false".into(),
+                format!("plaintext redirect rules: {}", input.dns_hijack_rules.len()),
+            ],
+        });
+    } else if let Some(error) = &input.dns_guard.last_error {
+        report.push(LeakFinding {
+            class: LeakClass::Dns,
+            severity: LeakSeverity::Leak,
+            check: "encrypted_dns_blocked".into(),
+            detail: "The DNS leak guard is enabled but could not be applied, so the encrypted \
+                     path is open despite the configuration."
+                .into(),
+            evidence: vec![error.clone()],
+        });
+    } else if let Some(error) = &input.dns_guard.dataplane_error {
+        // The rules being installed is not the same as the path being closed. On
+        // this router a direct flow is forwarded in TC before netfilter runs, so
+        // a guard that only exists in netfilter refuses nothing at all - which is
+        // exactly the state this reports instead of calling it healthy.
+        report.push(LeakFinding {
+            class: LeakClass::Dns,
+            severity: LeakSeverity::Leak,
+            check: "encrypted_dns_blocked".into(),
+            detail: "The DNS leak guard is enabled, but the half that decides sits in the \
+                     datapath and could not be programmed. Netfilter alone cannot refuse a \
+                     client's encrypted DNS: the datapath forwards a direct flow before \
+                     netfilter sees it, so the path is open despite the rules being installed."
+                .into(),
+            evidence: vec![
+                error.clone(),
+                format!("{} refusal rule(s) installed", input.dns_guard.rules.len()),
+            ],
+        });
+    } else if input.dns_guard.counters.handoff_dot + input.dns_guard.counters.handoff_doh > 0
+        && input.dns_guard.refused_packets == 0
+    {
+        // A handoff with nothing refusing it: the packet was taken off the normal
+        // path and then ruled on by no one. Both counters are per packet, so they
+        // are comparable - this is not the documented handoff-versus-connection
+        // mismatch, which is why only the refusal counter is used here.
+        let handed_off =
+            input.dns_guard.counters.handoff_dot + input.dns_guard.counters.handoff_doh;
+        report.push(LeakFinding {
+            class: LeakClass::Dns,
+            severity: LeakSeverity::Leak,
+            check: "encrypted_dns_blocked".into(),
+            detail: "Encrypted-DNS packets are being taken off the normal path but nothing is \
+                     refusing them, so the guard is only half installed."
+                .into(),
+            evidence: vec![
+                format!("handed to the receive side: {handed_off} packet(s)"),
+                format!(
+                    "refused by the refusal chain: {} packet(s)",
+                    input.dns_guard.refused_packets
+                ),
+            ],
+        });
+    } else {
+        report.push(LeakFinding {
+            class: LeakClass::Dns,
+            severity: LeakSeverity::Ok,
+            check: "encrypted_dns_blocked".into(),
+            detail: format!(
+                "DoT and DoQ from the LAN are refused, so a client cannot take its DNS to a \
+                 resolver of its own choosing. {}known DoH endpoint(s) are refused by address; \
+                 an endpoint nobody listed is indistinguishable from other HTTPS and is not \
+                 claimed to be covered.",
+                if input.dns_guard.doh_blocked == 0 { "No " } else { "" }
+            ),
+            evidence: input.dns_guard.rules.clone(),
+        });
+    }
 
     // A TPROXY rule outside our chain, or an `ip rule` that also points at our
     // route table, can take packets a flow marked for proxying and route them by
@@ -494,11 +601,19 @@ pub fn wan_has_global_ipv6() -> bool {
 
 /// The DNS redirect rules that are actually installed, so the DNS verdict rests
 /// on the kernel rather than on what the configuration intended.
+///
+/// Both our own chain and anything that redirects 53 from `PREROUTING` are
+/// collected. The distinction between them is reported, because a rule nobody
+/// owns is a rule that survives the next configuration change and disappears at
+/// the next reboot - which is exactly how the only hijack rule on the live box
+/// came to be there, in no file in this repository and in no script on it.
 pub async fn dns_hijack_rules() -> Vec<String> {
     let mut out = Vec::new();
-    for arguments in
-        [vec!["-t", "nat", "-S", "PREROUTING"], vec!["-t", "nat", "-S", "LANDSCAPE_DNS"]]
-    {
+    for arguments in [
+        vec!["-t", "nat", "-S", "PREROUTING"],
+        vec!["-t", "nat", "-S", "LANDSCAPE_DNS"],
+        vec!["-t", "nat", "-S", "LANDSCAPE_DNS_HIJACK"],
+    ] {
         if let Ok(stdout) = run_iptables(&arguments).await {
             for line in stdout.lines() {
                 // Only the rules that actually send 53 somewhere are evidence.
@@ -509,6 +624,14 @@ pub async fn dns_hijack_rules() -> Vec<String> {
         }
     }
     out
+}
+
+/// Whether the installed hijack rules include one this service owns.
+///
+/// A rule in `PREROUTING` that redirects 53 is *not* ours: the guard works
+/// through its own chain, so anything else was put there by hand.
+pub fn dns_hijack_is_owned(rules: &[String]) -> bool {
+    rules.iter().any(|rule| rule.contains("LANDSCAPE_DNS_HIJACK"))
 }
 
 async fn run_iptables(arguments: &[&str]) -> Result<String, String> {
@@ -554,9 +677,30 @@ mod tests {
             missing_listener_policy: policy,
             wan_has_ipv6: true,
             dns_hijack_rules: vec![
-                "-A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53".to_string(),
+                "-A PREROUTING -i lan -j LANDSCAPE_DNS_HIJACK".to_string(),
+                "-A LANDSCAPE_DNS_HIJACK -p udp --dport 53 -j REDIRECT --to-ports 53".to_string(),
             ],
+            dns_guard: enabled_dns_guard(),
             proxied_flows: vec![14],
+        }
+    }
+
+    /// The guard as it looks when it has been turned on and applied.
+    fn enabled_dns_guard() -> DnsGuardStatus {
+        DnsGuardStatus {
+            enabled: true,
+            lan_iface: "lan".into(),
+            rules: vec![
+                "iptables -t mangle -A LANDSCAPE_DNS_GUARD -p tcp --dport 853 -j DROP".into(),
+                "iptables -t mangle -A LANDSCAPE_DNS_GUARD -p udp --dport 853 -j DROP".into(),
+            ],
+            doh_blocked: 0,
+            exempted_hosts: 0,
+            counters: landscape_common::proxy::DnsGuardCounters::default(),
+            refused_packets: 0,
+            hijacked_connections: 0,
+            dataplane_error: None,
+            last_error: None,
         }
     }
 
@@ -687,6 +831,131 @@ mod tests {
         input.dns_hijack_rules.clear();
         let report = evaluate(input);
         assert_eq!(severity_of(&report, "dns_hijack_present"), Some(LeakSeverity::Warn));
+    }
+
+    #[test]
+    fn the_guard_being_off_is_reported_as_a_warning() {
+        // Plaintext DNS is redirected either way; this is about the encrypted path
+        // a client can choose for itself.
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.dns_guard = DnsGuardStatus::default();
+        let report = evaluate(input);
+        let finding = report.findings.iter().find(|f| f.check == "encrypted_dns_blocked").unwrap();
+        assert_eq!(finding.severity, LeakSeverity::Warn);
+        assert!(finding.detail.contains("DoT"));
+        // The plaintext redirect is still reported as covered, so the two paths
+        // are not conflated.
+        assert_eq!(severity_of(&report, "dns_hijack_present"), Some(LeakSeverity::Ok));
+    }
+
+    #[test]
+    fn a_guard_that_could_not_be_applied_is_a_leak_not_a_notice() {
+        // Configured-on but not in the kernel is the dangerous state: the operator
+        // believes the path is closed.
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.dns_guard = DnsGuardStatus {
+            enabled: true,
+            lan_iface: "lan".into(),
+            rules: vec![],
+            doh_blocked: 0,
+            exempted_hosts: 0,
+            counters: landscape_common::proxy::DnsGuardCounters::default(),
+            refused_packets: 0,
+            hijacked_connections: 0,
+            dataplane_error: None,
+            last_error: Some("ip6tables: no chain".into()),
+        };
+        let report = evaluate(input);
+        let finding = report.findings.iter().find(|f| f.check == "encrypted_dns_blocked").unwrap();
+        assert_eq!(finding.severity, LeakSeverity::Leak);
+        assert!(finding.evidence[0].contains("no chain"));
+    }
+
+    #[test]
+    fn a_guard_that_only_exists_in_netfilter_is_a_leak() {
+        // The measured live state on 2026-10-07: refusal rules installed and
+        // counted, and a client's DoT still connected, because the datapath
+        // forwards a direct flow before netfilter runs. Reporting that as healthy
+        // is the failure this branch exists to prevent.
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.dns_guard = enabled_dns_guard();
+        input.dns_guard.dataplane_error = Some("open dns_guard_config_map: No such file".into());
+        let report = evaluate(input);
+        let finding = report.findings.iter().find(|f| f.check == "encrypted_dns_blocked").unwrap();
+        assert_eq!(finding.severity, LeakSeverity::Leak);
+        assert!(finding.evidence[0].contains("dns_guard_config_map"));
+    }
+
+    #[test]
+    fn handing_packets_over_without_refusing_them_is_a_leak() {
+        // Both of these counters are per packet, so a handoff with no refusal is
+        // a real inconsistency and not the documented handoff-versus-connection
+        // mismatch.
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.dns_guard = enabled_dns_guard();
+        input.dns_guard.counters.handoff_dot = 12;
+        input.dns_guard.refused_packets = 0;
+        let report = evaluate(input);
+        let finding = report.findings.iter().find(|f| f.check == "encrypted_dns_blocked").unwrap();
+        assert_eq!(finding.severity, LeakSeverity::Leak);
+        assert!(finding.evidence[0].contains("12"));
+    }
+
+    #[test]
+    fn a_handoff_that_is_being_refused_is_healthy() {
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.dns_guard = enabled_dns_guard();
+        input.dns_guard.counters.handoff_dot = 12;
+        input.dns_guard.refused_packets = 12;
+        // The hijack counter is per connection, so it is allowed to differ from
+        // the per-packet handoff count without that meaning anything.
+        input.dns_guard.counters.handoff_plaintext = 40;
+        input.dns_guard.hijacked_connections = 7;
+        let report = evaluate(input);
+        let finding = report.findings.iter().find(|f| f.check == "encrypted_dns_blocked").unwrap();
+        assert_eq!(finding.severity, LeakSeverity::Ok);
+    }
+
+    #[test]
+    fn a_hijack_rule_nobody_owns_is_reported_even_though_dns_works() {
+        // The measured live state: exactly one redirect rule, in no file in this
+        // repository and in no script on the box. DNS worked, and would have
+        // stopped working at the next reboot.
+        let tproxy = healthy_tproxy();
+        let mut input = base(&tproxy, TproxyMissingListener::Drop);
+        input.dns_hijack_rules =
+            vec!["-A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53".to_string()];
+        let report = evaluate(input);
+        assert_eq!(severity_of(&report, "dns_hijack_present"), Some(LeakSeverity::Ok));
+        assert_eq!(severity_of(&report, "dns_hijack_unowned"), Some(LeakSeverity::Warn));
+    }
+
+    #[test]
+    fn a_hijack_rule_the_guard_owns_produces_no_such_warning() {
+        let tproxy = healthy_tproxy();
+        let input = base(&tproxy, TproxyMissingListener::Drop);
+        assert!(dns_hijack_is_owned(&input.dns_hijack_rules));
+        let report = evaluate(input);
+        assert_eq!(severity_of(&report, "dns_hijack_unowned"), None);
+    }
+
+    #[test]
+    fn an_applied_guard_reports_its_rules_and_does_not_claim_unlisted_doh() {
+        let tproxy = healthy_tproxy();
+        let report = evaluate(base(&tproxy, TproxyMissingListener::Drop));
+        let finding = report.findings.iter().find(|f| f.check == "encrypted_dns_blocked").unwrap();
+        assert_eq!(finding.severity, LeakSeverity::Ok);
+        assert!(!finding.evidence.is_empty(), "the installed rules are the evidence");
+        assert!(
+            finding.detail.contains("not") && finding.detail.contains("claimed to be covered"),
+            "the boundary must be stated rather than glossed: {}",
+            finding.detail
+        );
     }
 
     #[test]

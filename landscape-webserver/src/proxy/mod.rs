@@ -14,11 +14,35 @@ use crate::LandscapeApp;
 use crate::api::{JsonBody, LandscapeApiResp};
 use crate::error::{LandscapeApiError, LandscapeApiResult};
 
+/// Request body for changing the DNS leak guard.
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+pub struct SetDnsGuardReq {
+    /// Whether to block the DNS paths that bypass the managed resolver.
+    pub enable: bool,
+    /// Interface whose clients are guarded. Defaults to the configured value.
+    #[serde(default)]
+    pub lan_iface: Option<String>,
+    /// Known DoH endpoints to refuse. Ordinary HTTPS, so only an address works.
+    #[serde(default)]
+    pub doh_block_ips: Option<Vec<String>>,
+    /// Trusted hosts and the one service each may keep using. Replaces the whole
+    /// list when present.
+    #[serde(default)]
+    pub exempt: Option<Vec<landscape_common::proxy::DnsGuardExempt>>,
+    /// Refuse fragments that cannot be classified.
+    #[serde(default)]
+    pub drop_fragments: Option<bool>,
+    /// Refuse packets whose header chain cannot be parsed.
+    #[serde(default)]
+    pub drop_unclassified: Option<bool>,
+}
+
 pub fn build_proxy_openapi_router() -> OpenApiRouter<LandscapeApp> {
     OpenApiRouter::new()
         .routes(routes!(get_proxy_status))
         .routes(routes!(get_tproxy_status))
         .routes(routes!(get_leak_report))
+        .routes(routes!(get_dns_guard, set_dns_guard))
         .routes(routes!(get_proxy_config, update_proxy_config))
         .routes(routes!(toggle_proxy))
         .routes(routes!(restart_proxy))
@@ -106,9 +130,86 @@ async fn get_leak_report(State(state): State<LandscapeApp>) -> LandscapeApiResul
         missing_listener_policy: config.tproxy_missing_listener,
         wan_has_ipv6: wan_has_global_ipv6(),
         dns_hijack_rules: dns_hijack_rules().await,
+        dns_guard: state.proxy_service.dns_guard_status().await,
         proxied_flows,
     });
     LandscapeApiResp::success(report)
+}
+
+#[utoipa::path(
+    get,
+    path = "/dns_guard",
+    tag = "Proxy Plugin",
+    operation_id = "get_proxy_dns_guard",
+    responses((
+        status = 200,
+        description = "The DNS leak guard's kernel state: which rules are installed, and the \
+                       last error when it could not be applied",
+        body = CommonApiResp<landscape_common::proxy::DnsGuardStatus>
+    ))
+)]
+async fn get_dns_guard(
+    State(state): State<LandscapeApp>,
+) -> LandscapeApiResult<landscape_common::proxy::DnsGuardStatus> {
+    LandscapeApiResp::success(state.proxy_service.dns_guard_status().await)
+}
+
+#[utoipa::path(
+    post,
+    path = "/dns_guard",
+    tag = "Proxy Plugin",
+    operation_id = "set_proxy_dns_guard",
+    request_body = SetDnsGuardReq,
+    responses((
+        status = 200,
+        description = "The guard was applied and its kernel state is returned",
+        body = CommonApiResp<landscape_common::proxy::DnsGuardStatus>
+    ))
+)]
+async fn set_dns_guard(
+    State(state): State<LandscapeApp>,
+    JsonBody(req): JsonBody<SetDnsGuardReq>,
+) -> LandscapeApiResult<landscape_common::proxy::DnsGuardStatus> {
+    // Parsed here rather than in the body type so a typo is a clear 400 instead of
+    // a silent omission from the block list.
+    let parse =
+        |values: &Option<Vec<String>>, what: &str| -> Result<Vec<std::net::IpAddr>, String> {
+            values
+                .as_ref()
+                .map(|list| {
+                    list.iter()
+                        .map(|value| {
+                            value
+                                .parse::<std::net::IpAddr>()
+                                .map_err(|e| format!("invalid IP in {what}: {value}: {e}"))
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .unwrap_or_else(|| Ok(Vec::new()))
+        };
+    let blocked = parse(&req.doh_block_ips, "doh_block_ips").map_err(LandscapeApiError::Proxy)?;
+
+    state
+        .proxy_service
+        .update_config(|config| {
+            config.dns_guard.enable = req.enable;
+            if let Some(iface) = &req.lan_iface {
+                config.dns_guard.lan_iface = iface.clone();
+            }
+            config.dns_guard.doh_block_ips = blocked.clone();
+            if let Some(drop_fragments) = req.drop_fragments {
+                config.dns_guard.drop_fragments = drop_fragments;
+            }
+            if let Some(drop_unclassified) = req.drop_unclassified {
+                config.dns_guard.drop_unclassified = drop_unclassified;
+            }
+            if let Some(exempt) = &req.exempt {
+                config.dns_guard.exempt = exempt.clone();
+            }
+        })
+        .await
+        .map_err(LandscapeApiError::Proxy)?;
+    LandscapeApiResp::success(state.proxy_service.dns_guard_status().await)
 }
 
 #[utoipa::path(
