@@ -190,21 +190,25 @@ impl NatServiceManagerService {
     ) -> Self {
         let mut wan_route_events = route_service.subscribe_wan_route_events();
         let store = store_service.nat_service_store();
-        let service =
-            ServiceManager::init(store.list().await.unwrap(), NatService { dataplane }).await;
+        let initial_configs = store.list().await.unwrap_or_else(|e| {
+            tracing::error!("failed to load NAT configs: {e}");
+            Vec::new()
+        });
+        let service = ServiceManager::init(initial_configs, NatService { dataplane }).await;
 
         let service_clone = service.clone();
         spawn_task(task_label::task::NAT_OBSERVER, async move {
-            while let Ok(msg) = dev_observer.recv().await {
+            while let Some(msg) = dev_observer.recv_skipping_lag().await {
                 match msg {
                     IfaceObserverAction::Up(iface_name) => {
                         tracing::info!("restart {iface_name} Nat service");
-                        let service_config = if let Some(service_config) =
-                            store.find_by_id(iface_name.clone()).await.unwrap()
-                        {
-                            service_config
-                        } else {
-                            continue;
+                        let service_config = match store.find_by_id(iface_name.clone()).await {
+                            Ok(Some(cfg)) => cfg,
+                            Ok(None) => continue,
+                            Err(e) => {
+                                tracing::error!("failed to find NAT config for {iface_name}: {e}");
+                                continue;
+                            }
                         };
 
                         let _ = service_clone.update_service(service_config).await;

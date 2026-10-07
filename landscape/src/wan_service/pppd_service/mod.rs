@@ -183,7 +183,11 @@ impl PPPDServiceConfigManagerService {
     ) -> Self {
         let store = store_service.pppd_service_store();
         let server_starter = PPPDService::new(route_service, addr_binding);
-        let service = ServiceManager::init(store.list().await.unwrap(), server_starter).await;
+        let initial_configs = store.list().await.unwrap_or_else(|e| {
+            tracing::error!("failed to load PPPD configs: {e}");
+            Vec::new()
+        });
+        let service = ServiceManager::init(initial_configs, server_starter).await;
 
         Self { service, store }
     }
@@ -192,7 +196,7 @@ impl PPPDServiceConfigManagerService {
         &self,
         attach_name: String,
     ) -> Vec<PPPDServiceConfig> {
-        self.store.get_pppd_configs_by_attach_iface_name(attach_name).await.unwrap()
+        self.store.get_pppd_configs_by_attach_iface_name(attach_name).await.unwrap_or_default()
     }
 
     pub async fn get_config_by_name(&self, iface_name: String) -> Option<PPPDServiceConfig> {

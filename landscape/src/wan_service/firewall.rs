@@ -132,16 +132,19 @@ impl FirewallServiceManagerService {
 
         let service_clone = service.clone();
         spawn_task(task_label::task::FIREWALL_OBSERVER, async move {
-            while let Ok(msg) = dev_observer.recv().await {
+            while let Some(msg) = dev_observer.recv_skipping_lag().await {
                 match msg {
                     IfaceObserverAction::Up(iface_name) => {
                         tracing::info!("restart {iface_name} Firewall service");
-                        let service_config = if let Some(service_config) =
-                            store.find_by_id(iface_name.clone()).await.unwrap()
-                        {
-                            service_config
-                        } else {
-                            continue;
+                        let service_config = match store.find_by_id(iface_name.clone()).await {
+                            Ok(Some(service_config)) => service_config,
+                            Ok(None) => continue,
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to fetch firewall config for {iface_name}: {e:?}"
+                                );
+                                continue;
+                            }
                         };
 
                         let _ = service_clone.update_service(service_config).await;
