@@ -92,6 +92,21 @@ pub fn init_tc_lan_route(
         pin_and_reuse_map(&mut open_skel.maps.rt6_cache_map, &paths.rt6_cache_map),
         "tc_lan_route pin rt6_cache_map"
     )?;
+    // The unclassified-destination policy, read by both flow verdicts.
+    crate::bpf_ctx!(
+        pin_and_reuse_map(
+            &mut open_skel.maps.route_unclassified_cfg_map,
+            &paths.route_unclassified_cfg
+        ),
+        "tc_lan_route pin route_unclassified_cfg_map"
+    )?;
+    crate::bpf_ctx!(
+        pin_and_reuse_map(
+            &mut open_skel.maps.route_unclassified_stats_map,
+            &paths.route_unclassified_stats
+        ),
+        "tc_lan_route pin route_unclassified_stats_map"
+    )?;
     crate::bpf_ctx!(
         pin_and_reuse_map(&mut open_skel.maps.ip_mac_v4, &paths.ip_mac_v4),
         "tc_lan_route pin ip_mac_v4"
@@ -103,6 +118,35 @@ pub fn init_tc_lan_route(
     crate::bpf_ctx!(
         pin_and_reuse_map(&mut open_skel.maps.xdp_redirect_able, &paths.xdp_redirect_able),
         "tc_lan_route pin xdp_redirect_able"
+    )?;
+    // The managed-DNS guard's maps.
+    //
+    // Every shared map has to be listed here, not just declared in C: a map that
+    // is only declared falls back to `LIBBPF_PIN_BY_NAME` against libbpf's
+    // default pin root and is therefore pinned somewhere else than the path the
+    // rest of the daemon writes to. That does not fail - it silently gives the
+    // program and the configuration two different map instances, so the guard
+    // reads a switch nobody writes and looks like a guard that is simply never
+    // triggered.
+    crate::bpf_ctx!(
+        pin_and_reuse_map(&mut open_skel.maps.dns_guard_config_map, &paths.dns_guard_config),
+        "tc_lan_route pin dns_guard_config_map"
+    )?;
+    crate::bpf_ctx!(
+        pin_and_reuse_map(&mut open_skel.maps.dns_guard_doh4_map, &paths.dns_guard_doh4),
+        "tc_lan_route pin dns_guard_doh4_map"
+    )?;
+    crate::bpf_ctx!(
+        pin_and_reuse_map(&mut open_skel.maps.dns_guard_doh6_map, &paths.dns_guard_doh6),
+        "tc_lan_route pin dns_guard_doh6_map"
+    )?;
+    crate::bpf_ctx!(
+        pin_and_reuse_map(&mut open_skel.maps.dns_guard_exempt_map, &paths.dns_guard_exempt),
+        "tc_lan_route pin dns_guard_exempt_map"
+    )?;
+    crate::bpf_ctx!(
+        pin_and_reuse_map(&mut open_skel.maps.dns_guard_stats_map, &paths.dns_guard_stats),
+        "tc_lan_route pin dns_guard_stats_map"
     )?;
     let intro_skel = bpf_ctx!(open_skel.load(), "load per-if tc_lan_ingress_intro")?;
     let mut ingress_hook = TcHookProxy::new(

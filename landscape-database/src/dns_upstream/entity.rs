@@ -25,6 +25,10 @@ pub struct Model {
 
     pub ips: DBJson,
 
+    /// Addresses of the resolver to use when `ips` cannot be reached. Nullable so
+    /// rows written before the column existed stay valid; read as empty.
+    pub backup_ips: Option<DBJson>,
+
     pub port: Option<u16>,
 
     pub enable_ip_validation: Option<bool>,
@@ -62,6 +66,10 @@ impl From<Model> for DnsUpstreamConfig {
             remark: entity.remark,
             mode: serde_json::from_value(entity.mode).unwrap(),
             ips: serde_json::from_value(entity.ips).unwrap(),
+            backup_ips: entity
+                .backup_ips
+                .and_then(|value| serde_json::from_value(value).ok())
+                .unwrap_or_default(),
             port: entity.port,
             update_at: entity.update_at,
             enable_ip_validation: entity.enable_ip_validation,
@@ -87,6 +95,7 @@ impl UpdateActiveModel<ActiveModel> for DnsUpstreamConfig {
         active.remark = Set(self.remark);
         active.mode = Set(serde_json::to_value(self.mode).unwrap());
         active.ips = Set(serde_json::to_value(self.ips).unwrap());
+        active.backup_ips = Set(Some(serde_json::to_value(self.backup_ips).unwrap()));
         active.port = Set(self.port);
         active.enable_ip_validation = Set(self.enable_ip_validation);
         active.use_experimental_pool = Set(self.use_experimental_pool);

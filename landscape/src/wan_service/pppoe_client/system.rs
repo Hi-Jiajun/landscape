@@ -158,6 +158,8 @@ pub(crate) async fn create_session(
                 weight: 1,
                 mac: Some(iface_mac),
                 is_docker: false,
+                is_tproxy: false,
+                tproxy_port: 0,
                 iface_name: iface_name.clone(),
                 iface_ip: IpAddr::V4(client_ip),
                 default_route: config.default_router,

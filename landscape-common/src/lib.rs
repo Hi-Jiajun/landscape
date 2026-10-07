@@ -5,6 +5,7 @@ pub use landscape_macro::LdApiError;
 
 pub mod api_response;
 pub mod args;
+pub mod audit;
 pub mod lan_service;
 
 pub mod concurrency;
@@ -38,6 +39,7 @@ pub mod net_proto;
 pub mod pty;
 
 pub mod net;
+pub mod proxy;
 pub mod sys_service;
 pub mod test;
 pub mod utils;
@@ -113,6 +115,21 @@ pub const MAX_METRIC_DB_MAX_MB: u64 = 1024 * 1024;
 pub const DEFAULT_DNS_CACHE_CAPACITY: u32 = 4096;
 pub const DEFAULT_DNS_CACHE_TTL: u32 = 24 * 60 * 60;
 pub const DEFAULT_DNS_NEGATIVE_CACHE_TTL: u32 = 120;
+
+/// How long to cache a negative answer that arrived **without** the SOA that
+/// RFC 2308 §5 requires before a negative answer may be cached at all.
+///
+/// `SHOULD NOT` is not `MUST NOT`, and the two costs are not symmetric: caching
+/// one for the full ceiling makes a newly-registered name unreachable for that
+/// whole window, while not caching it at all means every query for a
+/// non-existent name reaches the upstream. Measured on this network: the carrier
+/// resolver answers `NOERROR` with **no SOA at all** for names that do not exist,
+/// so this is the common case here rather than an edge.
+///
+/// Ten seconds is the compromise - long enough to absorb a burst of repeated
+/// queries, short enough that a name which starts existing is reachable almost
+/// immediately. Set it to 0 to follow RFC 2308 literally and cache nothing.
+pub const DEFAULT_DNS_NEGATIVE_CACHE_TTL_WITHOUT_SOA: u32 = 10;
 pub const DEFAULT_DNS_DOH_LISTEN_PORT: u16 = 6053;
 pub const DEFAULT_LAN_HOSTNAME_ENABLE: bool = true;
 pub const DEFAULT_DNS_LAN_SUFFIX: &str = "lan";

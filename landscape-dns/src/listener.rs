@@ -6,6 +6,13 @@ use std::time::Duration;
 use hickory_server::Server;
 use rustls::server::ResolvesServerCert;
 use tokio::net::UdpSocket;
+
+/// How long a plaintext-DNS TCP connection may stay open without completing an
+/// exchange.
+const DNS_TCP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Response buffer for one TCP DNS exchange; TCP is the path that carries answers
+/// too large for a datagram.
+const DNS_TCP_RESPONSE_BUFFER: usize = 65535;
 use tokio_util::sync::CancellationToken;
 
 use crate::server::handler::DnsRequestHandler;
@@ -171,6 +178,35 @@ pub(crate) async fn start_flow_dns_listener(
     let mut server = Server::new(handler);
     server.register_socket(udp);
 
+    // Plaintext DNS over TCP.
+    //
+    // UDP is the common path, but TCP is a normal resolver path rather than an
+    // optional extra: a truncated answer (or a client that simply prefers TCP)
+    // makes the client retry over TCP, and a hijack that points a client's TCP
+    // query at a listener that cannot serve it turns a working query into a
+    // refused one.
+    //
+    // This listener used to be impossible to add: registered like the UDP socket,
+    // it shared the map's single "TCP" key with the DoH listener, so one overwrote
+    // the other and a TCP :53 connection was dispatched to a socket in another
+    // reuseport group - which the kernel answers with EBADFD, and for TCP that is
+    // an immediate RST. `register_dns_socket(.., is_tcp = true)` now has its own
+    // key, and the DoH listener registers separately, so the two no longer collide.
+    match create_tcp_listener(addr) {
+        Ok((tcp, tcp_fd)) => {
+            attach_dns_socket(socket_registrar.as_ref(), flow_id, tcp_fd, true);
+            // Bounded so a client that connects and never asks cannot hold a task;
+            // far longer than a resolver exchange, far shorter than a stuck session.
+            server.register_listener(tcp, DNS_TCP_TIMEOUT, DNS_TCP_RESPONSE_BUFFER);
+        }
+        Err(e) => {
+            tracing::error!(
+                "[flow: {flow_id}]: create tcp listener error: {e:?}; plaintext DNS over TCP is \
+                 not served for this flow, so a client's TCP query must not be hijacked to it"
+            );
+        }
+    }
+
     if let Some(doh) = doh {
         register_doh_listener(
             flow_id,
@@ -234,7 +270,9 @@ fn register_doh_listener(
 ) {
     match create_tcp_listener(doh.addr) {
         Ok((listener, sock_fd)) => {
-            attach_dns_socket(socket_registrar.as_ref(), flow_id, sock_fd, true);
+            // Its own registration: DoH is TCP like the plaintext listener, and a
+            // shared key would make the two overwrite each other.
+            socket_registrar.register_doh_socket(flow_id, sock_fd);
             doh::spawn_doh_listener(
                 flow_id,
                 listener,

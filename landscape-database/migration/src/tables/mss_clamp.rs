@@ -6,5 +6,7 @@ pub enum MssClampServiceConfigs {
     IfaceName,
     Enable,
     ClampSize,
+    /// The IPv6 Packet Too Big chamber for this interface, or NULL for none.
+    MtuChamber,
     UpdateAt,
 }

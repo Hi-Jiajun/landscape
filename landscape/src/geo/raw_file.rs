@@ -118,6 +118,83 @@ pub fn write_bytes_to_tmp(final_path: &Path, bytes: &[u8]) -> std::io::Result<Se
     tmp.seal()
 }
 
+/// Default local proxy used when a direct download fails (i.e. GitHub blocked).
+const DEFAULT_GEO_PROXY: &str = "http://127.0.0.1:7890";
+
+/// Upper bound for one geo data file download, covering connect, headers and
+/// body: a stalled connection must not block a refresh forever.
+const GEO_DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Local proxy endpoint for the geo fallback download (`LANDSCAPE_GEO_PROXY`
+/// overrides it, e.g. when the proxy plugin listens on a non-default port).
+fn geo_proxy_url() -> String {
+    std::env::var("LANDSCAPE_GEO_PROXY").unwrap_or_else(|_| DEFAULT_GEO_PROXY.to_string())
+}
+
+/// Download URL to `{final_path}.tmp` and seal, with a whole-transfer deadline.
+pub async fn download_with_proxy_fallback(
+    client: &reqwest::Client,
+    url: &str,
+    final_path: &Path,
+) -> Result<SealedRawFile, String> {
+    match tokio::time::timeout(
+        GEO_DOWNLOAD_TIMEOUT,
+        download_with_proxy_fallback_inner(client, url, final_path),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            Err(format!("download of {url} timed out after {}s", GEO_DOWNLOAD_TIMEOUT.as_secs()))
+        }
+    }
+}
+
+/// Attempts a direct fetch first; if that fails (e.g. GitHub blocked by GFW),
+/// falls back to the local proxy from [`geo_proxy_url`].
+async fn download_with_proxy_fallback_inner(
+    client: &reqwest::Client,
+    url: &str,
+    final_path: &Path,
+) -> Result<SealedRawFile, String> {
+    match client.get(url).send().await {
+        Ok(resp) if resp.status().is_success() => stream_to_tmp(resp.bytes_stream(), final_path)
+            .await
+            .map_err(|e| format!("stream to tmp failed: {e}")),
+        Ok(resp) if resp.status().is_client_error() => Err(format!(
+            "Direct download returned HTTP {} (client error, aborting without proxy retry)",
+            resp.status()
+        )),
+        direct_err => {
+            let proxy_addr = geo_proxy_url();
+            tracing::warn!(
+                "Direct download of {url} failed ({direct_err:?}), attempting fallback via local proxy {proxy_addr}..."
+            );
+            if let Ok(proxy) = reqwest::Proxy::all(proxy_addr.as_str())
+                && let Ok(proxy_client) = reqwest::Client::builder()
+                    .proxy(proxy)
+                    .timeout(std::time::Duration::from_secs(60))
+                    .build()
+            {
+                match proxy_client.get(url).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        return stream_to_tmp(resp.bytes_stream(), final_path)
+                            .await
+                            .map_err(|e| format!("stream via proxy failed: {e}"));
+                    }
+                    Err(e) => {
+                        return Err(format!("Download via proxy failed: {e}"));
+                    }
+                    Ok(resp) => {
+                        return Err(format!("Download via proxy returned HTTP {}", resp.status()));
+                    }
+                }
+            }
+            Err(format!("Direct download failed and proxy fallback unavailable: {direct_err:?}"))
+        }
+    }
+}
+
 pub fn remove_raw_dat(kind: &str, id: Uuid) {
     let path = raw_dat_path(kind, id);
     if let Err(e) = fs::remove_file(&path)

@@ -8,6 +8,7 @@ pub mod ipconfig_service;
 pub mod ipv6pd_client;
 pub mod ipv6pd_service;
 pub mod mss_clamp_service;
+pub mod mtu_chamber_env;
 pub mod nat_service;
 pub mod pppd_service;
 pub mod pppoe_client;

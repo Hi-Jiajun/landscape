@@ -164,6 +164,10 @@ int tc_mss_wan_ingress(struct __sk_buff *skb) {
 
 SEC("tc/egress")
 int tc_mss_wan_egress(struct __sk_buff *skb) {
+    // The oversize check and the Packet Too Big remedy moved to
+    // `tc_mtu_chamber.bpf.c`, which runs after the firewall: a packet the
+    // operator refused must not learn anything about this egress, and must not
+    // be given an error either.
     clamp_tcp_if_present(skb, current_l3_offset, mtu_size);
 
     TC_CHAIN_WAN_EGRESS(skb);

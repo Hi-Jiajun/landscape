@@ -29,7 +29,12 @@ pub async fn test_tcp(paths: &landscape_ebpf::maps::LandscapeMapPath) {
     landscape_ebpf::maps::dns::setting_dns_sock_map_tcp(paths, sock_fd2, 10);
 
     // attach eBPF
-    landscape_ebpf::dns_dispatcher::attach_reuseport_ebpf(paths, sock_fd1).unwrap();
+    landscape_ebpf::dns_dispatcher::attach_reuseport_ebpf(
+        paths,
+        sock_fd1,
+        landscape_ebpf::dns_dispatcher::ListenerKind::Plaintext,
+    )
+    .unwrap();
 
     println!("Listening on TCP port 55 with sk_reuseport eBPF");
 
@@ -52,7 +57,12 @@ pub async fn test_udp(paths: &landscape_ebpf::maps::LandscapeMapPath) {
     landscape_ebpf::maps::dns::setting_dns_sock_map(paths, sock_fd2, 10);
 
     // attach eBPF
-    landscape_ebpf::dns_dispatcher::attach_reuseport_ebpf(paths, sock_fd1).unwrap();
+    landscape_ebpf::dns_dispatcher::attach_reuseport_ebpf(
+        paths,
+        sock_fd1,
+        landscape_ebpf::dns_dispatcher::ListenerKind::Plaintext,
+    )
+    .unwrap();
 
     println!("Listening on UDP port 55 with sk_reuseport eBPF");
 

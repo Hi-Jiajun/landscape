@@ -19,12 +19,23 @@ pub mod upstream;
 pub use runtime::{CacheRuntimeConfig, DohRuntimeConfig, FlowDnsDependencies};
 
 pub fn gen_default_dns_rule_and_upstream() -> (DNSRuleConfig, DnsUpstreamConfig) {
-    let upstream = DnsUpstreamConfig::default();
+    // The seed exists so a fresh install has a rule to edit, not so that DNS
+    // works before anything is configured: it ships **disabled** and carries no
+    // upstream address.
+    //
+    // Both halves matter. No address means nothing to query, so the rule cannot
+    // quietly become a public-resolver fallback. Disabled means it does not take
+    // part in resolution at all — an enabled rule with an empty source matches
+    // every domain, so shipping one would answer (or refuse) the whole internet
+    // for an install that has not been configured yet.
+    let mut upstream = DnsUpstreamConfig::default();
+    upstream.ips.clear();
+    upstream.remark = "Unconfigured placeholder: set a real DNS upstream for this rule".to_string();
     let rule = DNSRuleConfig {
         id: gen_database_uuid(),
         name: "Landscape Router default rule".into(),
         index: 10000,
-        enable: true,
+        enable: false,
         filter: FilterResult::default(),
         mark: Default::default(),
         source: vec![],

@@ -123,12 +123,12 @@ impl IpV6PdState {
             // IpV6PdState::Advertise { xid, .. } => xid.clone(),
             IpV6PdState::Request { xid, .. } => *xid,
             IpV6PdState::Bound { xid, .. } => *xid,
-            IpV6PdState::Confirm => todo!(),
+            IpV6PdState::Confirm => 0,
             IpV6PdState::Renew { xid, .. } => *xid,
             IpV6PdState::WaitToRebind { xid, .. } => *xid,
             IpV6PdState::Rebind { xid, .. } => *xid,
             IpV6PdState::Release { xid, .. } => *xid,
-            IpV6PdState::Decline => todo!(),
+            IpV6PdState::Decline => 0,
             IpV6PdState::Stop => 0,
         }
     }
@@ -142,7 +142,7 @@ impl IpV6PdState {
             | IpV6PdState::WaitToRebind { service_id, .. }
             // TODO: simple exit
             | IpV6PdState::Rebind { service_id, .. } => Some(service_id),
-            IpV6PdState::Confirm => todo!(),
+            IpV6PdState::Confirm => None,
             IpV6PdState::Release { .. } => None,
             IpV6PdState::Decline => None,
             IpV6PdState::Stop => None,
@@ -540,7 +540,12 @@ async fn send_current_status_packet(
             };
             return SendStatusOutcome::RESET_TIMEOUT;
         }
-        IpV6PdState::Confirm => todo!(),
+        IpV6PdState::Confirm => {
+            tracing::warn!(
+                "DHCPv6-PD Confirm state send handler not yet implemented, resetting timeout"
+            );
+            return SendStatusOutcome::RESET_TIMEOUT;
+        }
         IpV6PdState::Renew { xid, service_id, iapd, renew_time, bound_time } => {
             //
             let mut send_msg = v6::Message::new(V6MessageType::Renew);
@@ -613,9 +618,9 @@ async fn send_current_status_packet(
 
             send_data(&send_msg, send_socket, None).await;
         }
-        IpV6PdState::Release { .. } => todo!(),
-        IpV6PdState::Decline => todo!(),
-        IpV6PdState::Stop => todo!(),
+        IpV6PdState::Release { .. } | IpV6PdState::Decline | IpV6PdState::Stop => {
+            tracing::debug!("DHCPv6-PD terminal/unhandled state reached in send_status");
+        }
     }
     SendStatusOutcome::NO_CHANGE
 }

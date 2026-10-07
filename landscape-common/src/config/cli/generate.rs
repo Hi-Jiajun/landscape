@@ -279,6 +279,10 @@ impl ConfigCliArgs {
                         iface_name: iface.clone(),
                         enable: true,
                         clamp_size: DEFAULT_MSS_CLAMP_SIZE,
+                        // No chamber on a generated configuration: it needs the
+                        // LAN interface named, and turning a divert on by default
+                        // is not something a generator should decide.
+                        mtu_chamber: None,
                         update_at: now,
                     }),
                     "route-wan" => init.route_wans.push(RouteWanServiceConfig {

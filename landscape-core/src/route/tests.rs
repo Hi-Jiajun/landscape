@@ -22,6 +22,8 @@ fn ipv4_wan_route(iface_name: &str, iface_ip: Ipv4Addr) -> RouteTargetInfo {
         mac: None,
         default_route: true,
         is_docker: false,
+        is_tproxy: false,
+        tproxy_port: 0,
         iface_name: iface_name.to_string(),
         iface_ip: IpAddr::V4(iface_ip),
         gateway_ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
@@ -572,7 +574,7 @@ fn collect_refresh_enabled_flow_with_matching_targets() {
     let configs =
         vec![flow_config(5, true, vec![iface_target("wan0", 3), iface_target("wan1", 1)])];
 
-    let result = collect_target_refresh_result(&configs, &wan_infos);
+    let result = collect_target_refresh_result(&configs, &wan_infos, false);
 
     let targets = result.get(&5).expect("flow_id 5 should be present");
     assert_eq!(targets.len(), 2);
@@ -589,7 +591,7 @@ fn collect_refresh_disabled_flow_yields_empty() {
 
     let configs = vec![flow_config(5, false, vec![iface_target("wan0", 1)])];
 
-    let result = collect_target_refresh_result(&configs, &wan_infos);
+    let result = collect_target_refresh_result(&configs, &wan_infos, false);
 
     let targets = result.get(&5).expect("flow_id 5 should be present");
     assert!(targets.is_empty());
@@ -601,7 +603,7 @@ fn collect_refresh_enabled_flow_with_unresolved_targets_yields_empty() {
 
     let configs = vec![flow_config(5, true, vec![iface_target("missing_wan", 2)])];
 
-    let result = collect_target_refresh_result(&configs, &wan_infos);
+    let result = collect_target_refresh_result(&configs, &wan_infos, false);
 
     let targets = result.get(&5).expect("flow_id 5 should be present");
     assert!(targets.is_empty());
@@ -615,7 +617,7 @@ fn collect_refresh_partial_match_keeps_only_resolved() {
     let configs =
         vec![flow_config(5, true, vec![iface_target("wan0", 3), iface_target("missing_wan", 1)])];
 
-    let result = collect_target_refresh_result(&configs, &wan_infos);
+    let result = collect_target_refresh_result(&configs, &wan_infos, false);
 
     let targets = result.get(&5).expect("flow_id 5 should be present");
     assert_eq!(targets.len(), 1);
@@ -630,7 +632,7 @@ fn collect_refresh_netns_target_resolves_by_container_name() {
 
     let configs = vec![flow_config(3, true, vec![netns_target("ns0", 5)])];
 
-    let result = collect_target_refresh_result(&configs, &wan_infos);
+    let result = collect_target_refresh_result(&configs, &wan_infos, false);
 
     let targets = result.get(&3).expect("flow_id 3 should be present");
     assert_eq!(targets.len(), 1);
@@ -649,9 +651,33 @@ fn collect_refresh_multiple_flows_independent() {
         flow_config(3, true, vec![iface_target("missing", 1)]),
     ];
 
-    let result = collect_target_refresh_result(&configs, &wan_infos);
+    let result = collect_target_refresh_result(&configs, &wan_infos, false);
 
     assert_eq!(result.get(&1).unwrap().len(), 1);
     assert!(result.get(&2).unwrap().is_empty());
     assert!(result.get(&3).unwrap().is_empty());
+}
+
+#[test]
+fn collect_refresh_tproxy_target_resolves_directly() {
+    let wan_infos = WanRoutesByOwner::new();
+    let configs = vec![flow_config(
+        7,
+        true,
+        vec![WeightedFlowTarget::new(FlowTarget::LocalTproxy { port: 7892 }, 4)],
+    )];
+
+    let result_v4 = collect_target_refresh_result(&configs, &wan_infos, false);
+    let targets_v4 = result_v4.get(&7).expect("flow_id 7 should be present");
+    assert_eq!(targets_v4.len(), 1);
+    assert!(targets_v4[0].0.is_tproxy);
+    assert_eq!(targets_v4[0].0.tproxy_port, 7892);
+    assert_eq!(targets_v4[0].1, 4);
+    assert_eq!(targets_v4[0].0.iface_name, "tproxy-7892");
+
+    let result_v6 = collect_target_refresh_result(&configs, &wan_infos, true);
+    let targets_v6 = result_v6.get(&7).expect("flow_id 7 should be present");
+    assert_eq!(targets_v6.len(), 1);
+    assert!(targets_v6[0].0.is_tproxy);
+    assert_eq!(targets_v6[0].0.tproxy_port, 7892);
 }

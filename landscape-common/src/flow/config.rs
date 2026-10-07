@@ -164,6 +164,7 @@ fn default_prefix_len() -> u8 {
 pub enum FlowTarget {
     Interface { name: String },
     Netns { container_name: String },
+    LocalTproxy { port: u16 },
 }
 
 fn default_flow_target_weight() -> u32 {

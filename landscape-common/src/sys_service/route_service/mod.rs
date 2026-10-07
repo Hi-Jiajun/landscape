@@ -11,6 +11,8 @@ pub struct RouteTargetInfo {
     pub mac: Option<MacAddr>,
     pub default_route: bool,
     pub is_docker: bool,
+    pub is_tproxy: bool,
+    pub tproxy_port: u16,
 
     pub iface_name: String,
 
@@ -27,6 +29,8 @@ impl RouteTargetInfo {
                 mac: Some(MacAddr::dummy()),
                 default_route: false,
                 is_docker: true,
+                is_tproxy: false,
+                tproxy_port: 0,
                 iface_name: iface_name.to_string(),
                 iface_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
                 gateway_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -37,6 +41,8 @@ impl RouteTargetInfo {
                 mac: Some(MacAddr::dummy()),
                 default_route: false,
                 is_docker: true,
+                is_tproxy: false,
+                tproxy_port: 0,
                 iface_name: iface_name.to_string(),
                 iface_ip: IpAddr::V6(Ipv6Addr::UNSPECIFIED),
                 gateway_ip: IpAddr::V6(Ipv6Addr::UNSPECIFIED),
@@ -44,8 +50,39 @@ impl RouteTargetInfo {
         )
     }
 
+    pub fn tproxy_new(port: u16) -> (Self, Self) {
+        (
+            RouteTargetInfo {
+                weight: 0,
+                ifindex: 0,
+                mac: None,
+                default_route: false,
+                is_docker: false,
+                is_tproxy: true,
+                tproxy_port: port,
+                iface_name: format!("tproxy-{port}"),
+                iface_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                gateway_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            },
+            RouteTargetInfo {
+                weight: 0,
+                ifindex: 0,
+                mac: None,
+                default_route: false,
+                is_docker: false,
+                is_tproxy: true,
+                tproxy_port: port,
+                iface_name: format!("tproxy-{port}"),
+                iface_ip: IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+                gateway_ip: IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+            },
+        )
+    }
+
     pub fn get_flow_target(&self) -> FlowTarget {
-        if self.is_docker {
+        if self.is_tproxy {
+            FlowTarget::LocalTproxy { port: self.tproxy_port }
+        } else if self.is_docker {
             FlowTarget::Netns { container_name: self.iface_name.clone() }
         } else {
             FlowTarget::Interface { name: self.iface_name.clone() }

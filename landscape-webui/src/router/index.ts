@@ -22,6 +22,7 @@ import CertOrders from "@/views/cert/CertOrders.vue";
 import DdnsJobs from "@/views/domain/DdnsJobs.vue";
 import DnsProviderProfiles from "@/views/domain/DnsProviderProfiles.vue";
 import Gateway from "@/views/Gateway.vue";
+import Proxy from "@/views/Proxy.vue";
 import NotFound from "@/views/error/NotFound.vue";
 import Unavailable from "@/views/error/Unavailable.vue";
 import { useCapabilityStore } from "@/stores/capability";
@@ -119,6 +120,12 @@ const inner_zone: Array<RouteRecordRaw> = [
     name: "routes.gateway",
     component: Gateway,
     meta: { capability: "gateway" },
+  },
+  {
+    path: "/proxy",
+    name: "routes.proxy",
+    component: Proxy,
+    meta: { capability: "proxy" },
   },
   {
     path: "/about",

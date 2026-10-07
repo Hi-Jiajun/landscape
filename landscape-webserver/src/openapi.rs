@@ -231,6 +231,11 @@ pub fn build_gateway_openapi_router() -> OpenApiRouter<LandscapeApp> {
     OpenApiRouter::new().merge(get_gateway_paths())
 }
 
+/// /proxy — Outbound proxy plugin
+pub fn build_proxy_openapi_router() -> OpenApiRouter<LandscapeApp> {
+    crate::proxy::build_proxy_openapi_router()
+}
+
 // ── OpenAPI spec assembly ────────────────────────────────────────────
 
 /// Prepend a prefix to all OpenAPI paths in the spec.
@@ -329,6 +334,11 @@ pub fn build_full_openapi_spec() -> utoipa::openapi::OpenApi {
     prefix_paths(&mut gateway_openapi, "/api/v1/gateway");
     spec.merge(gateway_openapi);
 
+    // /api/v1/proxy
+    let (_, mut proxy_openapi) = build_proxy_openapi_router().split_for_parts();
+    prefix_paths(&mut proxy_openapi, "/api/v1/proxy");
+    spec.merge(proxy_openapi);
+
     // Add x-tagGroups for Scalar UI sidebar grouping
     let tag_groups = serde_json::json!([
         {
@@ -424,6 +434,10 @@ pub fn build_full_openapi_spec() -> utoipa::openapi::OpenApi {
         {
             "name": "Gateway",
             "tags": ["Gateway"]
+        },
+        {
+            "name": "Proxy Plugin",
+            "tags": ["Proxy Plugin"]
         }
     ]);
     spec.extensions

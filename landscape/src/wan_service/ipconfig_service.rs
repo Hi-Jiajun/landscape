@@ -153,6 +153,8 @@ async fn init_service_from_config(
                         weight: 1,
                         mac: iface.mac,
                         is_docker: false,
+                        is_tproxy: false,
+                        tproxy_port: 0,
                         iface_name: iface_name.clone(),
                         iface_ip: IpAddr::V4(ipv4),
                         default_route: default_router,

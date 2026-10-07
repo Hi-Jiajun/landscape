@@ -47,3 +47,48 @@ pub enum DstIpRuleError {
     #[api_error(id = "dst_ip_rule.cannot_change_flow", status = 400)]
     CannotChangeFlow(ConfigId),
 }
+
+/// A resolved DNS answer could not be registered in the datapath.
+///
+/// The `(ip, mark)` pairs produced for an answer are the only thing that keeps a
+/// proxied or blocked address from being sent out natively by a device whose own
+/// flow is direct. Losing that registration while still handing the address to
+/// the client opens a leak window, so this is reported as an error and the
+/// caller is expected to refuse the answer instead of degrading to "no marks".
+#[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+#[error("flow {flow_id}: {detail}")]
+pub struct DnsMarkInstallError {
+    pub flow_id: u32,
+    pub detail: String,
+    /// True when the mark was refused because the answer belongs to a rule
+    /// generation a rebuild already replaced, rather than because the datapath
+    /// failed. The caller must refuse such an answer regardless of the mark it
+    /// carries: the rules that produced it no longer exist, so the domain may
+    /// have been moved to a stricter action since.
+    pub superseded: bool,
+}
+
+impl DnsMarkInstallError {
+    /// The answer belongs to a rule generation a rebuild has already replaced,
+    /// so its mark was deliberately not written.
+    ///
+    /// Writing it would re-apply the rules that were just changed — including
+    /// re-adding a mark for a domain the new rules send somewhere else. The
+    /// answer is refused (for load-bearing marks) so the client retries and gets
+    /// a fresh decision under the current rules.
+    pub fn superseded(flow_id: u32, answer_generation: u64, current_generation: u64) -> Self {
+        Self {
+            flow_id,
+            detail: format!(
+                "answer belongs to rule generation {answer_generation}, \
+                 but generation {current_generation} is already in effect"
+            ),
+            superseded: true,
+        }
+    }
+
+    /// The datapath refused the write for its own reasons (map unavailable, ...).
+    pub fn write_failed(flow_id: u32, detail: String) -> Self {
+        Self { flow_id, detail, superseded: false }
+    }
+}

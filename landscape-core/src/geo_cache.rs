@@ -66,30 +66,46 @@ where
         // 文件夹不存在 创建它
         // max 和
         let (max_era, min_era) = if !data_floder.exists() {
-            std::fs::create_dir_all(&data_floder).unwrap();
+            if let Err(e) = std::fs::create_dir_all(&data_floder) {
+                tracing::warn!("failed to create geo cache directory {data_floder:?}: {e}");
+            }
             (0, 0)
         } else {
             let mut max_index = u64::MIN;
             let mut min_index = u64::MAX;
-            for entry in data_floder.read_dir().expect("read_dir call failed").flatten() {
+            let dir_entries = match data_floder.read_dir() {
+                Ok(rd) => rd.flatten().collect::<Vec<_>>(),
+                Err(e) => {
+                    tracing::warn!("read_dir failed for geo cache {data_floder:?}: {e}");
+                    Vec::new()
+                }
+            };
+            for entry in dir_entries {
                 let file_path = entry.path();
-                // println!("文件: {:?}", entry.path());
                 if file_path.is_dir() {
-                    panic!("不允许存在文件夹");
-                }
-                if file_path.extension().unwrap().to_string_lossy() != name {
-                    panic!(
-                        "不允许存在其他文件: 当前目录后缀为: {:?}, 存在的文件为: {:?}",
-                        name, file_path
+                    tracing::warn!(
+                        "Ignoring unexpected subdirectory in geo cache folder: {file_path:?}"
                     );
+                    continue;
                 }
-                let index = file_path
-                    .file_stem()
-                    .unwrap()
-                    .to_string_lossy()
-                    .to_string()
-                    .parse::<u64>()
-                    .unwrap();
+                let Some(ext) = file_path.extension() else {
+                    continue;
+                };
+                if ext.to_string_lossy() != name {
+                    tracing::warn!(
+                        "Ignoring unexpected file extension in geo cache folder: {file_path:?}"
+                    );
+                    continue;
+                }
+                let Some(stem) = file_path.file_stem() else {
+                    continue;
+                };
+                let Ok(index) = stem.to_string_lossy().parse::<u64>() else {
+                    tracing::warn!(
+                        "Ignoring non-numeric file stem in geo cache folder: {file_path:?}"
+                    );
+                    continue;
+                };
                 if index > max_index {
                     max_index = index;
                 }
@@ -99,7 +115,7 @@ where
                 }
             }
 
-            if max_index == u64::MAX { (0, 0) } else { (max_index, min_index) }
+            if max_index == u64::MIN { (0, 0) } else { (max_index, min_index) }
         };
 
         let (current_era, writer, index, readers, junk_data_size) = if max_era == 0 {

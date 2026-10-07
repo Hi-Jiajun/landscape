@@ -37,6 +37,13 @@ pub struct LandscapeMapPath {
     pub firewall_ipv4_block: PathBuf,
     pub firewall_ipv6_block: PathBuf,
 
+    /// Managed-DNS guard: switch, DoH address sets, trust list, counters.
+    pub dns_guard_config: PathBuf,
+    pub dns_guard_doh4: PathBuf,
+    pub dns_guard_doh6: PathBuf,
+    pub dns_guard_exempt: PathBuf,
+    pub dns_guard_stats: PathBuf,
+
     /// Flow
     pub flow_match_map: PathBuf,
 
@@ -60,6 +67,20 @@ pub struct LandscapeMapPath {
     pub rt4_cache_map: PathBuf,
     pub rt6_cache_map: PathBuf,
 
+    /// Policy for a destination nothing classified: pass through, drop, or a
+    /// fallback tier. Read by the flow verdict in both address families.
+    pub route_unclassified_cfg: PathBuf,
+    /// What the unclassified-destination policy did, per family and reason.
+    pub route_unclassified_stats: PathBuf,
+    /// Packets the WAN egress could not carry, by family and DF.
+    pub mtu_guard_stats: PathBuf,
+    /// The IPv6 Packet Too Big chamber: its wiring, its admission table, the
+    /// per-source budget, and what it did.
+    pub mtu_chamber_cfg: PathBuf,
+    pub mtu_chamber_stats: PathBuf,
+    pub mtu_chamber_state: PathBuf,
+    pub mtu_chamber_budget: PathBuf,
+
     // IP MAC
     pub ip_mac_v4: PathBuf,
     pub ip_mac_v6: PathBuf,
@@ -79,7 +100,8 @@ impl LandscapeMapPath {
     /// paths, skeleton pin reuse and tests all share one source of truth.
     pub fn from_root(root: &Path) -> Self {
         use crate::maps::{
-            dns, firewall, flow, flow_dns, flow_wanip, mac, nat, redirect_able, route, wan,
+            dns, dns_guard, firewall, flow, flow_dns, flow_wanip, mac, mtu_chamber, mtu_guard, nat,
+            redirect_able, route, wan,
         };
 
         let root = root.to_path_buf();
@@ -92,6 +114,13 @@ impl LandscapeMapPath {
             // 防火墙黑名单
             firewall_ipv4_block: root.join(firewall::FIREWALL_BLOCK_IP4_MAP_PIN),
             firewall_ipv6_block: root.join(firewall::FIREWALL_BLOCK_IP6_MAP_PIN),
+
+            // Managed-DNS guard
+            dns_guard_config: root.join(dns_guard::DNS_GUARD_CONFIG_PIN),
+            dns_guard_doh4: root.join(dns_guard::DNS_GUARD_DOH4_PIN),
+            dns_guard_doh6: root.join(dns_guard::DNS_GUARD_DOH6_PIN),
+            dns_guard_exempt: root.join(dns_guard::DNS_GUARD_EXEMPT_PIN),
+            dns_guard_stats: root.join(dns_guard::DNS_GUARD_STATS_PIN),
 
             // Flow
             flow_match_map: root.join(flow::FLOW_MATCH_MAP_PIN),
@@ -115,6 +144,13 @@ impl LandscapeMapPath {
 
             rt4_cache_map: root.join(route::RT4_CACHE_MAP_PIN),
             rt6_cache_map: root.join(route::RT6_CACHE_MAP_PIN),
+            route_unclassified_cfg: root.join(route::ROUTE_UNCLASSIFIED_PIN),
+            route_unclassified_stats: root.join(route::ROUTE_UNCLASSIFIED_STATS_PIN),
+            mtu_guard_stats: root.join(mtu_guard::MTU_GUARD_STATS_PIN),
+            mtu_chamber_cfg: root.join(mtu_chamber::MTU_CHAMBER_CFG_PIN),
+            mtu_chamber_stats: root.join(mtu_chamber::MTU_CHAMBER_STATS_PIN),
+            mtu_chamber_state: root.join(mtu_chamber::MTU_CHAMBER_STATE_PIN),
+            mtu_chamber_budget: root.join(mtu_chamber::MTU_CHAMBER_BUDGET_PIN),
 
             // IP MAC
             ip_mac_v4: root.join(mac::IP_MAC_V4_PIN),
@@ -183,6 +219,10 @@ const PPPOE_EGRESS_PRIORITY: u32 = 2;
 // LAN ingress TC classifier priorities (smaller runs first)
 pub(crate) const TC_LAN_INGRESS_INTRO_PRIORITY: u32 = 1;
 pub(crate) const TC_LAN_INGRESS_DAO_PRIORITY: u32 = 2;
+/// The chamber's return gate is the only filter on the chamber's veth, so it
+/// takes the first slot: nothing may run before the thing that decides what this
+/// link is allowed to carry.
+pub(crate) const TC_CHAMBER_RETURN_PRIORITY: u32 = 1;
 
 // const FLOW_EGRESS_PRIORITY: u32 = 4;
 const LANDSCAPE_IPV4_TYPE: u8 = 0;

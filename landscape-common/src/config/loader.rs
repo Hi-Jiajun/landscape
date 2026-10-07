@@ -208,6 +208,10 @@ impl RuntimeConfig {
                 .dns
                 .negative_cache_ttl
                 .unwrap_or(crate::DEFAULT_DNS_NEGATIVE_CACHE_TTL),
+            negative_cache_ttl_without_soa: config
+                .dns
+                .negative_cache_ttl_without_soa
+                .unwrap_or(crate::DEFAULT_DNS_NEGATIVE_CACHE_TTL_WITHOUT_SOA),
             doh_listen_port: config
                 .dns
                 .doh_listen_port

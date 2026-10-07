@@ -57,6 +57,7 @@ wl-nl80211 = { workspace = true }
 genetlink = { workspace = true }
 netlink-packet-generic = { workspace = true }
 libc = { workspace = true }
+nix = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 
@@ -70,6 +71,7 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 
 idna = { workspace = true }
+url = { workspace = true }
 
 tokio = { workspace = true, features = ["full", "net", "io-util"] }
 tokio-util = { workspace = true }

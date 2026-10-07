@@ -17,6 +17,7 @@ pub mod lan_ipv6_v2;
 pub mod mss_clamp;
 pub mod pppd;
 pub mod provider;
+pub mod rescue;
 pub mod rollback;
 pub mod wifi;
 

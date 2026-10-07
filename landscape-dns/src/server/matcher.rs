@@ -92,7 +92,13 @@ impl DomainMatcher {
                 }
             }
         };
-        let keyword_ac = AhoCorasick::new(&keywords).unwrap();
+        let keyword_ac = match AhoCorasick::new(&keywords) {
+            Ok(ac) => ac,
+            Err(error) => {
+                tracing::error!(%error, "failed to build keyword aho-corasick automaton");
+                AhoCorasick::new(Vec::<&str>::new()).expect("empty AC build should never fail")
+            }
+        };
         let regex_set = match RegexSet::new(&regex_patterns) {
             Ok(set) => set,
             Err(error) => {
@@ -427,10 +433,14 @@ mod tests {
         println!("==== start ====");
         test_memory_usage();
 
-        let mut site_store: GeoCacheStore<GeoFileCacheKey, GeoDomainConfig> = GeoCacheStore::new(
-            PathBuf::from("/root/.landscape-router").join(LANDSCAPE_GEO_CACHE_TMP_DIR),
-            "site".to_string(),
-        );
+        let base_path = PathBuf::from("/root/.landscape-router");
+        let base_path = if base_path.exists() && std::fs::read_dir(&base_path).is_ok() {
+            base_path
+        } else {
+            std::env::temp_dir().join("landscape-router-test")
+        };
+        let mut site_store: GeoCacheStore<GeoFileCacheKey, GeoDomainConfig> =
+            GeoCacheStore::new(base_path.join(LANDSCAPE_GEO_CACHE_TMP_DIR), "site".to_string());
 
         println!("==== after GeoCacheStore::new ====");
         test_memory_usage();

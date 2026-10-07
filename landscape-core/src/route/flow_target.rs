@@ -15,19 +15,25 @@ use landscape_common::{
 
 use super::{IpRouteService, WanRoutesByOwner};
 
-fn find_route_target<'a>(
-    wan_infos: &'a WanRoutesByOwner,
+fn find_route_target(
+    wan_infos: &WanRoutesByOwner,
     target: &FlowTarget,
-) -> Option<&'a RouteTargetInfo> {
+    is_v6: bool,
+) -> Option<RouteTargetInfo> {
     match target {
-        FlowTarget::Interface { name } => wan_infos.get(name),
-        FlowTarget::Netns { container_name } => wan_infos.get(container_name),
+        FlowTarget::Interface { name } => wan_infos.get(name).cloned(),
+        FlowTarget::Netns { container_name } => wan_infos.get(container_name).cloned(),
+        FlowTarget::LocalTproxy { port } => {
+            let (v4, v6) = RouteTargetInfo::tproxy_new(*port);
+            Some(if is_v6 { v6 } else { v4 })
+        }
     }
 }
 
 pub(super) fn collect_target_refresh_result(
     flow_configs: &[FlowConfig],
     wan_infos: &WanRoutesByOwner,
+    is_v6: bool,
 ) -> HashMap<FlowId, Vec<(RouteTargetInfo, u32)>> {
     let mut result = HashMap::new();
 
@@ -37,8 +43,7 @@ pub(super) fn collect_target_refresh_result(
                 .flow_targets
                 .iter()
                 .filter_map(|target| {
-                    find_route_target(wan_infos, &target.target)
-                        .cloned()
+                    find_route_target(wan_infos, &target.target, is_v6)
                         .map(|route| (route, target.weight))
                 })
                 .collect()
@@ -89,13 +94,13 @@ impl IpRouteService {
         let ipv4_wan_infos = self.clone_ipv4_wan_infos().await;
         apply_ipv4_target_refresh_result(
             &*self.dataplane,
-            collect_target_refresh_result(flow_configs, &ipv4_wan_infos),
+            collect_target_refresh_result(flow_configs, &ipv4_wan_infos, false),
         );
 
         let ipv6_wan_infos = self.clone_ipv6_wan_infos().await;
         apply_ipv6_target_refresh_result(
             &*self.dataplane,
-            collect_target_refresh_result(flow_configs, &ipv6_wan_infos),
+            collect_target_refresh_result(flow_configs, &ipv6_wan_infos, true),
         );
 
         self.dataplane.invalidate_lan_cache();

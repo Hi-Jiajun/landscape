@@ -1,4 +1,3 @@
-use core::panic;
 use std::net::Ipv4Addr;
 
 use pnet::util::Octets;
@@ -8,7 +7,7 @@ use super::{icmp::IcmpEthFrame, udp_packet::UdpEthFrame};
 
 pub fn split_u8_by_index(byte: u8, index: usize) -> (u8, u8) {
     if index > 7 {
-        panic!("index out of range");
+        return (0, byte);
     }
     (byte >> index, byte & ((1 << index) - 1))
 }
@@ -191,9 +190,46 @@ impl EthIpType {
 
     pub fn caculate_checksum(&mut self, source_addr: &Ipv4Addr, denst_addr: &Ipv4Addr) -> u16 {
         match self {
-            EthIpType::Icmp(_) => todo!(),
-            EthIpType::Ipv4(_) => todo!(),
-            EthIpType::Tcp(_) => todo!(),
+            EthIpType::Icmp(icmp) => {
+                let mut data = vec![icmp.icmp_type, icmp.code, 0, 0];
+                data.extend_from_slice(&icmp.rest);
+                let check = checksum(&data);
+                icmp.checksum = check as u32;
+                check
+            }
+            EthIpType::Ipv4(ip) => ip.caculate_checksum(),
+            EthIpType::Tcp(data) => {
+                // A TCP checksum covers the IPv4 pseudo-header plus the TCP
+                // segment with its own checksum field zeroed. The previous
+                // implementation returned `checksum(segment)` only (no
+                // pseudo-header, checksum field not cleared), which would put
+                // an invalid checksum on the wire.
+                const TCP_HEADER_LEN: usize = 20;
+                const PSEUDO_HEADER_LEN: usize = 12;
+                if data.len() < TCP_HEADER_LEN {
+                    tracing::warn!(
+                        "cannot compute a TCP checksum for a {}-byte segment (shorter than the {TCP_HEADER_LEN}-byte TCP header)",
+                        data.len()
+                    );
+                    return 0;
+                }
+
+                let mut checksum_vec = Vec::with_capacity(PSEUDO_HEADER_LEN + data.len());
+                checksum_vec.extend(source_addr.octets());
+                checksum_vec.extend(denst_addr.octets());
+                checksum_vec.push(0);
+                checksum_vec.push(6); // IPPROTO_TCP
+                checksum_vec.extend((data.len() as u16).to_be_bytes());
+                checksum_vec.extend_from_slice(data);
+                // The checksum field itself must be zero while summing.
+                checksum_vec[PSEUDO_HEADER_LEN + 16] = 0;
+                checksum_vec[PSEUDO_HEADER_LEN + 17] = 0;
+
+                let check = checksum(&checksum_vec);
+                data[16] = (check >> 8) as u8;
+                data[17] = check as u8;
+                check
+            }
             EthIpType::Udp(udp) => {
                 let mut checksum_vec = vec![];
                 checksum_vec.extend(source_addr.octets());
@@ -205,24 +241,28 @@ impl EthIpType {
 
                 checksum_vec.extend(udp.get_check_sum_part());
 
-                println!("print pseudo_header: {checksum_vec:?}");
                 let check = checksum(&checksum_vec);
                 udp.checksum = check;
                 check
             }
-            EthIpType::Ipv6(_) => todo!(),
-            EthIpType::Raw(_, _) => todo!(),
+            EthIpType::Ipv6(inner) => inner.caculate_checksum(source_addr, denst_addr),
+            EthIpType::Raw(_, data) => checksum(data),
         }
     }
 
     pub fn as_payload(&self) -> Vec<u8> {
         match self {
-            EthIpType::Icmp(_) => todo!(),
-            EthIpType::Ipv4(_) => todo!(),
-            EthIpType::Tcp(_) => todo!(),
+            EthIpType::Icmp(icmp) => {
+                let mut data = vec![icmp.icmp_type, icmp.code];
+                data.extend_from_slice(&(icmp.checksum as u16).to_be_bytes());
+                data.extend_from_slice(&icmp.rest);
+                data
+            }
+            EthIpType::Ipv4(ip) => ip.as_payload(),
+            EthIpType::Tcp(data) => data.clone(),
             EthIpType::Udp(udp) => udp.as_payload(),
-            EthIpType::Ipv6(_) => todo!(),
-            EthIpType::Raw(_, _) => todo!(),
+            EthIpType::Ipv6(inner) => inner.as_payload(),
+            EthIpType::Raw(_, data) => data.clone(),
         }
     }
 

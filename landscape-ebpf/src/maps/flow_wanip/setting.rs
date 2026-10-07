@@ -85,8 +85,11 @@ where
         count += 1;
     }
 
-    if count > 0 {
-        map.update_batch(&keys, &values, count, MapFlags::ANY, MapFlags::ANY).unwrap();
+    if count > 0
+        && let Err(e) = map.update_batch(&keys, &values, count, MapFlags::ANY, MapFlags::ANY)
+    {
+        tracing::error!("failed to batch update flow4 ip rules (count={count}): {e:?}");
+        return Err(e);
     }
     Ok(())
 }
@@ -169,8 +172,11 @@ where
         count += 1;
     }
 
-    if count > 0 {
-        map.update_batch(&keys, &values, count, MapFlags::ANY, MapFlags::ANY).unwrap();
+    if count > 0
+        && let Err(e) = map.update_batch(&keys, &values, count, MapFlags::ANY, MapFlags::ANY)
+    {
+        tracing::error!("failed to batch update flow6 ip rules (count={count}): {e:?}");
+        return Err(e);
     }
     Ok(())
 }
@@ -186,4 +192,26 @@ fn add_wan_ip_mark_inner(
     let flow_ip_match_map = libbpf_rs::MapHandle::from_pinned_path(&paths.flow6_ip_map)?;
     create_inner_flow_match_map_v6(&flow_ip_match_map, flow_id, &ips)?;
     Ok(())
+}
+
+pub fn delete_flow_wan_ip(paths: &LandscapeMapPath, flow_id: u32) -> LdEbpfResult<()> {
+    let key = flow_id.to_ne_bytes();
+    let map4 = libbpf_rs::MapHandle::from_pinned_path(&paths.flow4_ip_map)?;
+    delete_outer_slot(&map4, &key, flow_id)?;
+    let map6 = libbpf_rs::MapHandle::from_pinned_path(&paths.flow6_ip_map)?;
+    delete_outer_slot(&map6, &key, flow_id)?;
+    Ok(())
+}
+
+/// Delete an outer map-in-map slot, treating "no such entry" as success and
+/// reporting every other failure to the caller.
+fn delete_outer_slot<T: MapCore>(map: &T, key: &[u8], flow_id: u32) -> LdEbpfResult<()> {
+    match map.delete(key) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == libbpf_rs::ErrorKind::NotFound => Ok(()),
+        Err(e) => {
+            tracing::error!("failed to delete flow_wanip outer slot for flow {flow_id}: {e:?}");
+            Err(e.into())
+        }
+    }
 }
