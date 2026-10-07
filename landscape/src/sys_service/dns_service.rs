@@ -290,6 +290,17 @@ impl LandscapeDnsService {
         self.dns_service.check_domain(req).await
     }
 
+    /// Per-rule match counts for a flow, for the configuration audit.
+    ///
+    /// `None` means the flow has no live rule set, so the counts would say nothing
+    /// rather than "unused".
+    pub async fn rule_match_counts(
+        &self,
+        flow_id: u32,
+    ) -> (Option<std::collections::BTreeMap<u32, u64>>, Option<u64>) {
+        self.dns_service.rule_match_counts(flow_id).await
+    }
+
     pub async fn invalidate_domain_cache(
         &self,
         req: CheckDnsReq,

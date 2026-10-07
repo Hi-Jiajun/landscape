@@ -366,6 +366,24 @@ impl LandscapeDnsServer {
         }
     }
 
+    /// Per-rule match counts for a flow, and how long they cover.
+    ///
+    /// `(None, None)` means the flow has no live rule set, so nothing has been
+    /// counted: the audit treats that as "statistics unavailable" rather than as
+    /// "every rule is unused".
+    pub async fn rule_match_counts(
+        &self,
+        flow_id: u32,
+    ) -> (Option<std::collections::BTreeMap<u32, u64>>, Option<u64>) {
+        let entry = self.get_entry(flow_id).await;
+        let handler = entry
+            .and_then(|entry| entry.runtime.load_full().map(|runtime| runtime.handler.clone()));
+        match handler {
+            Some(handler) => (Some(handler.rule_match_counts()), handler.observation_secs()),
+            None => (None, None),
+        }
+    }
+
     pub async fn invalidate_domain_cache(
         &self,
         req: CheckDnsReq,

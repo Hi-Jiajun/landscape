@@ -23,6 +23,15 @@ pub struct FlowMark {
 }
 
 impl FlowMark {
+    /// Build a mark from its parts.
+    ///
+    /// The fields are private so the bit layout stays an implementation detail;
+    /// this is the way to construct one outside this module (tests, tooling, the
+    /// audit's suggestions).
+    pub fn new(action: FlowMarkAction, flow_id: u8, allow_reuse_port: bool) -> Self {
+        Self { action, allow_reuse_port, flow_id }
+    }
+
     /// The routing action this mark selects.
     pub fn action(&self) -> FlowMarkAction {
         self.action
