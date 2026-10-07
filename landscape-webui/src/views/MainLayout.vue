@@ -13,12 +13,15 @@ import { usePtyStore } from "@/stores/pty";
 import { useEnrolledDeviceStore } from "@/stores/enrolled_device";
 import IntervalFetch from "@/components/head/IntervalFetch.vue";
 import LanguageSetting from "@/components/head/LanguageSetting.vue";
+import ThemeSwitch from "@/components/head/ThemeSwitch.vue";
 import GlobalTerminal from "@/components/GlobalTerminal.vue";
 import LandscapeSiderBar from "@/views/LandscapeSiderBar.vue";
+import { useThemePluginStore } from "@/stores/theme_plugin";
 
 const router = useRouter();
 const route = useRoute();
 const historyStore = useHistoryRouteStore();
+const themePlugin = useThemePluginStore();
 const { t } = useI18n();
 
 const themeVars = useThemeVars();
@@ -104,9 +107,21 @@ const contentStyle = computed(() => {
       <LandscapeSiderBar />
       <n-layout>
         <n-layout-header
-          style="height: 30px; padding: 0 10px; display: flex"
+          :style="
+            themePlugin.currentStyle === 'beam'
+              ? 'height: 46px; padding: 0 16px; display: flex; align-items: center;'
+              : 'height: 30px; padding: 0 10px; display: flex'
+          "
           bordered
         >
+          <div
+            v-if="themePlugin.currentStyle === 'beam'"
+            class="beam-brand-badge"
+            style="margin-right: 14px"
+          >
+            <span class="beam-status-dot"></span>
+            <span>BEAM OS</span>
+          </div>
           <n-flex
             style="flex: 1; width: 0"
             justify="space-between"
@@ -153,7 +168,8 @@ const contentStyle = computed(() => {
               </n-flex>
             </n-scrollbar>
 
-            <n-flex :size="[5, 0]">
+            <n-flex :size="[5, 0]" align="center">
+              <ThemeSwitch />
               <LanguageSetting />
               <PresentationMode></PresentationMode>
               <n-flex align="center">

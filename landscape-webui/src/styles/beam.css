@@ -1,0 +1,278 @@
+/* ==========================================================================
+   Beam Theme - Modern Network Operating System Layout & Visual System
+   Design Philosophy: Elegant, Intuitive, Minimalist, Motion, Practical
+   ========================================================================== */
+
+/* 1. Global Page Foundation */
+html.theme-beam,
+html.theme-beam body {
+  background-color: #07090e !important;
+  color: #f1f5f9;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif !important;
+  letter-spacing: -0.015em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Background ambient light glow */
+html.theme-beam body::before {
+  content: "";
+  position: fixed;
+  top: -10vw;
+  right: -5vw;
+  width: 45vw;
+  height: 45vw;
+  background: radial-gradient(
+    circle,
+    rgba(14, 165, 233, 0.08) 0%,
+    rgba(59, 130, 246, 0.03) 50%,
+    transparent 70%
+  );
+  pointer-events: none;
+  z-index: 0;
+}
+
+html.theme-beam body::after {
+  content: "";
+  position: fixed;
+  bottom: -15vw;
+  left: 10vw;
+  width: 50vw;
+  height: 50vw;
+  background: radial-gradient(
+    circle,
+    rgba(99, 102, 241, 0.06) 0%,
+    rgba(139, 92, 246, 0.02) 60%,
+    transparent 80%
+  );
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* 2. Top Navigation Header Layout */
+html.theme-beam .n-layout-header {
+  height: 46px !important;
+  padding: 0 16px !important;
+  background: rgba(10, 14, 23, 0.75) !important;
+  backdrop-filter: blur(20px) saturate(190%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(190%) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.4) !important;
+  z-index: 100 !important;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Beam Brand Indicator */
+html.theme-beam .beam-brand-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  background: rgba(14, 165, 233, 0.12);
+  border: 1px solid rgba(14, 165, 233, 0.3);
+  font-size: 11px;
+  font-weight: 600;
+  color: #38bdf8;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+html.theme-beam .beam-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: #10b981;
+  box-shadow: 0 0 8px #10b981;
+  animation: beam-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes beam-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.85);
+  }
+}
+
+/* 3. Modern Floating Sidebar Layout */
+html.theme-beam .n-layout-sider {
+  background: rgba(10, 14, 23, 0.85) !important;
+  backdrop-filter: blur(24px) saturate(200%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(200%) !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.07) !important;
+  box-shadow: 4px 0 32px rgba(0, 0, 0, 0.45);
+  z-index: 90 !important;
+}
+
+html.theme-beam .n-layout-sider-scroll-container {
+  padding: 12px 6px !important;
+}
+
+/* Sidebar Menu Items */
+html.theme-beam .n-menu-item-content {
+  border-radius: 10px !important;
+  margin: 3px 6px !important;
+  padding: 8px 12px !important;
+  height: 38px !important;
+  line-height: 22px !important;
+  font-weight: 500 !important;
+  font-size: 13.5px !important;
+  color: #94a3b8 !important;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+html.theme-beam .n-menu-item-content:hover {
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: #f8fafc !important;
+  transform: translateX(2px);
+}
+
+html.theme-beam .n-menu-item-content--selected {
+  background: linear-gradient(
+    135deg,
+    rgba(14, 165, 233, 0.18) 0%,
+    rgba(99, 102, 241, 0.12) 100%
+  ) !important;
+  color: #38bdf8 !important;
+  border-left: 3px solid #0ea5e9 !important;
+  box-shadow:
+    0 4px 16px rgba(14, 165, 233, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+  font-weight: 600 !important;
+}
+
+html.theme-beam .n-menu-item-content .n-icon {
+  font-size: 17px !important;
+  transition: transform 0.2s ease;
+}
+
+html.theme-beam .n-menu-item-content--selected .n-icon {
+  color: #38bdf8 !important;
+  transform: scale(1.08);
+}
+
+/* 4. Main Body & Content Layout */
+html.theme-beam .main-body {
+  padding: 20px 24px 32px !important;
+  box-sizing: border-box !important;
+  position: relative;
+  z-index: 10;
+}
+
+/* 5. Modern Glassmorphic Cards */
+html.theme-beam .n-card {
+  background: rgba(15, 23, 42, 0.65) !important;
+  backdrop-filter: blur(16px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(180%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 14px !important;
+  box-shadow:
+    0 8px 32px -4px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(255, 255, 255, 0.03) !important;
+  transition:
+    transform 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 0.25s ease,
+    border-color 0.25s ease !important;
+}
+
+html.theme-beam .n-card:hover {
+  border-color: rgba(14, 165, 233, 0.3) !important;
+  box-shadow:
+    0 12px 36px -4px rgba(14, 165, 233, 0.15),
+    0 0 0 1px rgba(14, 165, 233, 0.2) !important;
+  transform: translateY(-2px);
+}
+
+html.theme-beam .n-card-header {
+  padding: 16px 20px !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+}
+
+html.theme-beam .n-card-header__main {
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+  color: #f8fafc !important;
+}
+
+/* 6. Tabs & Pills */
+html.theme-beam .n-tag {
+  border-radius: 8px !important;
+  font-weight: 500 !important;
+  transition: all 0.2s ease !important;
+}
+
+html.theme-beam .n-tag--primary-type {
+  background: rgba(14, 165, 233, 0.15) !important;
+  border: 1px solid rgba(14, 165, 233, 0.3) !important;
+  color: #38bdf8 !important;
+  box-shadow: 0 2px 8px rgba(14, 165, 233, 0.18) !important;
+}
+
+/* 7. Action Buttons */
+html.theme-beam .n-button--primary-type {
+  background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%) !important;
+  border: 1px solid rgba(56, 189, 248, 0.3) !important;
+  box-shadow: 0 4px 14px rgba(2, 132, 199, 0.35) !important;
+  font-weight: 500 !important;
+  border-radius: 9px !important;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+html.theme-beam .n-button--primary-type:hover {
+  background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%) !important;
+  box-shadow: 0 6px 20px rgba(14, 165, 233, 0.5) !important;
+  transform: translateY(-1px);
+}
+
+/* 8. Table Elevations */
+html.theme-beam .n-data-table {
+  border-radius: 12px !important;
+  overflow: hidden !important;
+  border: 1px solid rgba(255, 255, 255, 0.06) !important;
+}
+
+html.theme-beam .n-data-table-th {
+  background: rgba(15, 23, 42, 0.9) !important;
+  color: #94a3b8 !important;
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.04em !important;
+}
+
+html.theme-beam .n-data-table-td {
+  background: rgba(15, 23, 42, 0.5) !important;
+  color: #e2e8f0 !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04) !important;
+}
+
+html.theme-beam .n-data-table-tr:hover .n-data-table-td {
+  background: rgba(30, 41, 59, 0.6) !important;
+}
+
+/* 9. Minimalist Streamlined Scrollbars */
+html.theme-beam ::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+html.theme-beam ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+html.theme-beam ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 9999px;
+}
+
+html.theme-beam ::-webkit-scrollbar-thumb:hover {
+  background: rgba(14, 165, 233, 0.45);
+}
