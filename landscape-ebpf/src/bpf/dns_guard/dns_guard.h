@@ -60,11 +60,23 @@ enum dns_guard_stat {
     LD_DNS_GUARD_STAT_FRAGMENT_PASSED = 5,
     LD_DNS_GUARD_STAT_PARSE_FAILED = 6,
     LD_DNS_GUARD_STAT_LAN_DESTINATION = 7,
-    LD_DNS_GUARD_STAT_MAX = 8,
+    /// Plaintext DNS over TCP seen while the TCP hijack is switched off. The path
+    /// is open in that state; this counter is what makes that measurable rather
+    /// than assumed closed.
+    LD_DNS_GUARD_STAT_PLAINTEXT_TCP_LEFT = 8,
+    LD_DNS_GUARD_STAT_MAX = 9,
 };
 
 struct dns_guard_config {
     u8 enabled;
+    /// Hijack plaintext DNS over TCP as well as over UDP.
+    ///
+    /// Off by default, and switched on deliberately, because the receive side has
+    /// to exist first: hijacking a client's TCP query to a listener that only
+    /// speaks UDP turns a working query into a refused one. The managed resolver
+    /// serves TCP now, but that has to be checked rather than assumed - which is
+    /// what this separate switch is for. While it is off, TCP 53 is counted.
+    u8 plaintext_tcp;
     /// Refuse IPv4 fragments and IPv6 packets carrying a Fragment header.
     ///
     /// A non-first fragment has no L4 header, so it cannot be classified;
@@ -78,7 +90,9 @@ struct dns_guard_config {
     /// the scanner rejects ESP/AH chains, and silently dropping those looks like
     /// a broken network rather than a policy. The counter still reports them.
     u8 drop_unclassified;
-    u8 _pad;
+    // No explicit padding: the four switches above already fill the word that
+    // `generation` has to start on, and a stray `_pad` here is what the mirror
+    // layout test exists to catch.
     u32 generation;
 };
 
@@ -234,6 +248,15 @@ static __always_inline int dns_guard_check(struct __sk_buff *skb, u32 current_l3
 
     u32 stat;
     if (dport == bpf_htons(53)) {
+        // TCP needs the receive side to serve TCP. Until the operator says it
+        // does, leave the packet alone and count it: handing it over with nothing
+        // listening on TCP is a refused query, which is worse than the leak it
+        // replaces - and silence about which of the two states we are in is worse
+        // than both.
+        if (proto == IPPROTO_TCP && !cfg->plaintext_tcp) {
+            BPF_DNS_GUARD_STAT(LD_DNS_GUARD_STAT_PLAINTEXT_TCP_LEFT);
+            return LD_DNS_GUARD_CONTINUE;
+        }
         stat = LD_DNS_GUARD_STAT_HANDOFF_53;
     } else if (dport == bpf_htons(853)) {
         stat = LD_DNS_GUARD_STAT_HANDOFF_DOT;

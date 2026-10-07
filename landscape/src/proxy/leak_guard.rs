@@ -348,6 +348,28 @@ fn check_dns(report: &mut LeakGuardReport, input: &LeakGuardInput<'_>) {
         });
     }
 
+    // Plaintext DNS has two transports and they are not the same problem. UDP is
+    // managed; TCP needs the managed resolver to actually speak TCP, and
+    // redirecting a TCP query to a listener that does not is a refused query
+    // rather than a managed one. So the state is a declared choice with a
+    // counter, not an assumption - and while it is open, say so.
+    if input.dns_guard.enabled && input.dns_guard.counters.plaintext_tcp_left > 0 {
+        report.push(LeakFinding {
+            class: LeakClass::Dns,
+            severity: LeakSeverity::Warn,
+            check: "plaintext_dns_tcp_open".into(),
+            detail: "Plaintext DNS over TCP is not intercepted: the TCP hijack is switched off \
+                     because the managed resolver had not been confirmed to serve TCP. A client \
+                     that asks over TCP reaches the resolver it names. UDP is managed."
+                .into(),
+            evidence: vec![format!(
+                "{} TCP quer(ies) left on their normal path; turn the TCP hijack on only after \
+                 the managed resolver answers `dig +tcp`",
+                input.dns_guard.counters.plaintext_tcp_left
+            )],
+        });
+    }
+
     // A TPROXY rule outside our chain, or an `ip rule` that also points at our
     // route table, can take packets a flow marked for proxying and route them by
     // that rule instead.

@@ -35,6 +35,10 @@ pub struct SetDnsGuardReq {
     /// Refuse packets whose header chain cannot be parsed.
     #[serde(default)]
     pub drop_unclassified: Option<bool>,
+    /// Hijack plaintext DNS over TCP as well as UDP. Only after the managed
+    /// resolver has been checked to serve TCP.
+    #[serde(default)]
+    pub plaintext_tcp: Option<bool>,
 }
 
 pub fn build_proxy_openapi_router() -> OpenApiRouter<LandscapeApp> {
@@ -202,6 +206,9 @@ async fn set_dns_guard(
             }
             if let Some(drop_unclassified) = req.drop_unclassified {
                 config.dns_guard.drop_unclassified = drop_unclassified;
+            }
+            if let Some(plaintext_tcp) = req.plaintext_tcp {
+                config.dns_guard.plaintext_tcp = plaintext_tcp;
             }
             if let Some(exempt) = &req.exempt {
                 config.dns_guard.exempt = exempt.clone();

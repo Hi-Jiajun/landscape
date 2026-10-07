@@ -22,7 +22,7 @@ pub(crate) const DNS_GUARD_EXEMPT_PIN: &str = "dns_guard_exempt_map";
 pub(crate) const DNS_GUARD_STATS_PIN: &str = "dns_guard_stats_map";
 
 /// Number of `dns_guard_stat` slots; keep in step with the C enum.
-pub(crate) const DNS_GUARD_STAT_MAX: u32 = 8;
+pub(crate) const DNS_GUARD_STAT_MAX: u32 = 9;
 
 /// `dns_guard_config_map`: `BPF_MAP_TYPE_ARRAY`, key `u32`, value
 /// `dns_guard_config` (8), a single entry.

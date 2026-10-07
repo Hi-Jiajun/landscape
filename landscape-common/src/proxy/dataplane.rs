@@ -15,6 +15,10 @@ use crate::proxy::{DnsGuardCounters, DnsGuardExempt};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DnsGuardSpec {
     pub enabled: bool,
+    /// Hijack plaintext DNS over TCP as well as over UDP. Only meaningful once the
+    /// managed resolver serves TCP; see the switch's documentation in
+    /// `bpf/dns_guard/dns_guard.h`.
+    pub plaintext_tcp: bool,
     /// Refuse fragments that cannot be classified.
     pub drop_fragments: bool,
     /// Refuse packets whose header chain cannot be parsed.

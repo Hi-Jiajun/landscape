@@ -6,6 +6,12 @@ use std::time::Duration;
 use hickory_server::Server;
 use rustls::server::ResolvesServerCert;
 use tokio::net::UdpSocket;
+
+/// How long a TCP DNS connection may stay open without completing an exchange.
+const DNS_TCP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Response buffer for one TCP DNS exchange; the TCP path exists precisely
+/// because answers can be larger than a datagram.
+const DNS_TCP_RESPONSE_BUFFER: usize = 65535;
 use tokio_util::sync::CancellationToken;
 
 use crate::server::handler::DnsRequestHandler;
@@ -170,6 +176,34 @@ pub(crate) async fn start_flow_dns_listener(
     let doh_handler = handler.clone();
     let mut server = Server::new(handler);
     server.register_socket(udp);
+
+    // Plaintext DNS over TCP.
+    //
+    // UDP is the common path, but TCP is a normal resolver path rather than an
+    // optional extra: a truncated answer (or a client that simply prefers TCP)
+    // makes the client retry over TCP, and a hijack that redirects a client's TCP
+    // query to a listener that only speaks UDP breaks resolution instead of
+    // managing it. Measured before this existed: `dig +tcp @<router>` was refused
+    // while the datapath had started handing TCP queries to the local stack.
+    //
+    // A bind failure must not take the flow down: UDP keeps serving the LAN, and
+    // it is reported so the guard's TCP hijack is not switched on over a listener
+    // that is not there.
+    match create_tcp_listener(addr) {
+        Ok((tcp, tcp_fd)) => {
+            attach_dns_socket(socket_registrar.as_ref(), flow_id, tcp_fd, true);
+            // The timeout is bounded so a client that opens a connection and never
+            // asks anything cannot hold a task indefinitely; 5s is far longer than
+            // a resolver exchange and far shorter than a stuck session.
+            server.register_listener(tcp, DNS_TCP_TIMEOUT, DNS_TCP_RESPONSE_BUFFER);
+        }
+        Err(e) => {
+            tracing::error!(
+                "[flow: {flow_id}]: create tcp listener error: {e:?}; DNS over TCP is not \
+                 served for this flow, so a client's TCP query must not be hijacked to it"
+            );
+        }
+    }
 
     if let Some(doh) = doh {
         register_doh_listener(

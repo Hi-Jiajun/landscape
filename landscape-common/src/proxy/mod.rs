@@ -157,6 +157,14 @@ pub struct DnsGuardConfig {
     /// count; every refusal is visible in the counters.
     #[serde(default = "default_true")]
     pub drop_fragments: bool,
+    /// Hijack plaintext DNS over TCP as well as over UDP.
+    ///
+    /// Off by default: the hijack points a client's TCP query at the managed
+    /// resolver, so it may only be switched on once that resolver actually serves
+    /// TCP. While it is off, TCP 53 is left on its normal path and counted, so the
+    /// gap is visible in the report instead of being assumed closed.
+    #[serde(default)]
+    pub plaintext_tcp: bool,
     /// Refuse packets whose header chain cannot be parsed.
     ///
     /// Off by default, and this deliberately diverges from the stricter
@@ -179,6 +187,7 @@ impl Default for DnsGuardConfig {
             doh_block_ips: Vec::new(),
             exempt: Vec::new(),
             drop_fragments: true,
+            plaintext_tcp: false,
             drop_unclassified: false,
         }
     }
@@ -327,6 +336,9 @@ pub struct DnsGuardCounters {
     pub unclassified_passed: u64,
     /// Ignored because the destination is on the LAN.
     pub lan_destination: u64,
+    /// Plaintext DNS over TCP left on its normal path because the TCP hijack is
+    /// switched off. Nonzero means that path is open.
+    pub plaintext_tcp_left: u64,
 }
 
 /// Which of the four leak classes a finding belongs to.

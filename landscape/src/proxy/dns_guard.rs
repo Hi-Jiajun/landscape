@@ -122,6 +122,7 @@ struct GuardSpec {
     exempt: Vec<DnsGuardExempt>,
     drop_fragments: bool,
     drop_unclassified: bool,
+    plaintext_tcp: bool,
 }
 
 impl GuardSpec {
@@ -133,6 +134,7 @@ impl GuardSpec {
             exempt: config.exempt.clone(),
             drop_fragments: config.drop_fragments,
             drop_unclassified: config.drop_unclassified,
+            plaintext_tcp: config.plaintext_tcp,
         }
     }
 
@@ -143,6 +145,7 @@ impl GuardSpec {
             drop_unclassified: self.drop_unclassified,
             doh_block: self.doh_block.clone(),
             exempt: self.exempt.clone(),
+            plaintext_tcp: self.plaintext_tcp,
         }
     }
 }
@@ -477,7 +480,14 @@ impl DnsLeakGuard {
             }
         }
 
-        for protocol in ["udp", "tcp"] {
+        // Plaintext DNS. UDP always; TCP only once the operator has confirmed the
+        // resolver serves it, because redirecting a TCP query to a UDP-only
+        // listener is a refused query rather than a managed one.
+        let mut protocols = vec!["udp"];
+        if spec.plaintext_tcp {
+            protocols.push("tcp");
+        }
+        for protocol in protocols {
             rules.push(vec![
                 "-p".into(),
                 protocol.into(),
@@ -716,6 +726,7 @@ mod tests {
                 port: 853,
             }],
             drop_fragments: false,
+            plaintext_tcp: true,
             drop_unclassified: true,
         };
         let spec = GuardSpec::from_config(&config);
@@ -725,6 +736,7 @@ mod tests {
         assert_eq!(spec.exempt.len(), 1);
         assert!(!spec.drop_fragments);
         assert!(spec.drop_unclassified);
+        assert!(spec.plaintext_tcp);
 
         // The datapath half must see exactly what the netfilter half was given.
         let dp = spec.dataplane_spec();
@@ -733,6 +745,7 @@ mod tests {
         assert_eq!(dp.exempt, spec.exempt);
         assert_eq!(dp.drop_fragments, spec.drop_fragments);
         assert_eq!(dp.drop_unclassified, spec.drop_unclassified);
+        assert_eq!(dp.plaintext_tcp, spec.plaintext_tcp);
     }
 
     #[test]

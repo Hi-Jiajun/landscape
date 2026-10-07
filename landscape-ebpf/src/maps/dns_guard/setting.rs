@@ -28,6 +28,7 @@ const STAT_FRAGMENT_DROPPED: usize = 4;
 const STAT_FRAGMENT_PASSED: usize = 5;
 const STAT_PARSE_FAILED: usize = 6;
 const STAT_LAN_DESTINATION: usize = 7;
+const STAT_PLAINTEXT_TCP_LEFT: usize = 8;
 
 /// One authorised exception: this client may use this service on this
 /// destination without being handed to the guard.
@@ -161,9 +162,9 @@ pub fn apply_dns_guard(
         &config_map,
         DnsGuardConfig {
             enabled: u8::from(spec.enabled),
+            plaintext_tcp: u8::from(spec.plaintext_tcp),
             drop_fragments: u8::from(spec.drop_fragments),
             drop_unclassified: u8::from(spec.drop_unclassified),
-            _pad: 0,
             // A stamp the operator can use to tell one apply from the next when
             // reading the map by hand.
             generation: std::time::SystemTime::now()
@@ -212,6 +213,7 @@ pub fn dns_guard_counters(
         fragments_passed: at(STAT_FRAGMENT_PASSED),
         unclassified_passed: at(STAT_PARSE_FAILED),
         lan_destination: at(STAT_LAN_DESTINATION),
+        plaintext_tcp_left: at(STAT_PLAINTEXT_TCP_LEFT),
     })
 }
 

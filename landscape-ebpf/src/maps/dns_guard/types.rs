@@ -12,9 +12,9 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 #[derive(Debug, Default, Clone, Copy, FromBytes, IntoBytes, Immutable, PartialEq, Eq)]
 pub(crate) struct DnsGuardConfig {
     pub enabled: u8,
+    pub plaintext_tcp: u8,
     pub drop_fragments: u8,
     pub drop_unclassified: u8,
-    pub _pad: u8,
     pub generation: u32,
 }
 
@@ -52,6 +52,7 @@ mod tests {
     fn dns_guard_layouts_match_skel() {
         assert_size!(DnsGuardConfig, share::dns_guard_config);
         assert_field!(DnsGuardConfig, share::dns_guard_config, enabled);
+        assert_field!(DnsGuardConfig, share::dns_guard_config, plaintext_tcp);
         assert_field!(DnsGuardConfig, share::dns_guard_config, drop_fragments);
         assert_field!(DnsGuardConfig, share::dns_guard_config, drop_unclassified);
         assert_field!(DnsGuardConfig, share::dns_guard_config, generation);
