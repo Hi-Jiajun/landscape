@@ -5,6 +5,10 @@ use crate::maps::LandscapeMapPath;
 const DNS_FLOW_PROTO_UDP: u8 = 17;
 const DNS_FLOW_PROTO_TCP: u8 = 6;
 
+/// DoH socket keys live above the plaintext space. Must match `DNS_DOH_KEY_BASE`
+/// in `land_dns_dispatcher.bpf.c`.
+pub(crate) const DNS_DOH_KEY_BASE: u32 = 0x8000_0000;
+
 #[inline]
 fn dns_flow_key(flow_id: u32, proto: u8) -> u32 {
     let proto_bit = if proto == DNS_FLOW_PROTO_TCP { 1 } else { 0 };
@@ -46,6 +50,28 @@ pub fn setting_dns_sock_map_tcp(paths: &LandscapeMapPath, sock_fd: i32, flow_id:
     };
 
     setting_dns_sock_map_inner(&dns_flow_socks, sock_fd, flow_id, DNS_FLOW_PROTO_TCP);
+}
+
+/// Register the DoH listener's socket for `flow_id`.
+///
+/// Its own key namespace, because DoH is TCP like the plaintext DNS listener and
+/// the two are on different ports: sharing a key would make them overwrite each
+/// other, and the dispatcher would then hand a TCP :53 connection to a socket in
+/// another reuseport group - which the kernel refuses with EBADFD.
+pub fn setting_doh_sock_map(paths: &LandscapeMapPath, sock_fd: i32, flow_id: u32) {
+    let Ok(dns_flow_socks) = libbpf_rs::MapHandle::from_pinned_path(&paths.dns_flow_socks) else {
+        tracing::warn!(
+            "dns_flow_socks map not found at {:?}, skip DoH sock map update",
+            paths.dns_flow_socks
+        );
+        return;
+    };
+
+    let key = (DNS_DOH_KEY_BASE | flow_id).to_le_bytes();
+    let value = (sock_fd as u64).to_le_bytes();
+    if let Err(e) = dns_flow_socks.update(&key, &value, MapFlags::ANY) {
+        tracing::error!("update DoH dns_flow_socks entry error: {e:?}");
+    }
 }
 
 #[cfg(test)]

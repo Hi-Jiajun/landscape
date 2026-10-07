@@ -13,6 +13,26 @@ char LICENSE[] SEC("license") = "GPL";
 
 #undef BPF_LOG_TOPIC
 
+// Which listener this program instance was loaded for.
+//
+// The plaintext DNS listener and the DoH listener are both TCP, so `ip_protocol`
+// cannot tell them apart - and with one key slot for "TCP" they overwrote each
+// other in the map, whichever registered last. A TCP :53 query then selected the
+// DoH socket, which sits in a different reuseport group, and
+// `bpf_sk_select_reuseport` refused it with EBADFD (measured on the live router).
+//
+// Which namespace applies is decided by the reuseport group, not by inspecting the
+// packet: the two listeners are on different ports and therefore in different
+// groups, and each group carries the program instance loaded for it.
+const volatile u8 listener_kind = 0;
+
+#define DNS_LISTENER_KIND_PLAINTEXT 0
+#define DNS_LISTENER_KIND_DOH 1
+
+// DoH keys live above the plaintext `(flow_id << 1) | proto_bit` space, which for a
+// one-byte flow id cannot reach this high.
+#define DNS_DOH_KEY_BASE 0x80000000u
+
 SEC("sk_reuseport/migrate")
 int reuseport_dns_dispatcher(struct sk_reuseport_md *reuse_md) {
 #define BPF_LOG_TOPIC ">> select_dns"
@@ -65,11 +85,16 @@ int reuseport_dns_dispatcher(struct sk_reuseport_md *reuse_md) {
         flow_id = *flow_id_ptr;
     }
 
-    // keep UDP/TCP sockets in separate key spaces:
-    // key = (flow_id << 1) | proto_bit, where UDP=0, TCP=1
-    __u32 flow_sock_key = (flow_id << 1);
-    if (reuse_md->ip_protocol == IPPROTO_TCP) {
-        flow_sock_key |= 1;
+    __u32 flow_sock_key;
+    if (listener_kind == DNS_LISTENER_KIND_DOH) {
+        flow_sock_key = DNS_DOH_KEY_BASE | flow_id;
+    } else {
+        // keep UDP/TCP sockets in separate key spaces:
+        // key = (flow_id << 1) | proto_bit, where UDP=0, TCP=1
+        flow_sock_key = (flow_id << 1);
+        if (reuse_md->ip_protocol == IPPROTO_TCP) {
+            flow_sock_key |= 1;
+        }
     }
 
     // ld_bpf_log("find flow_id: %d, key: %d", flow_id, flow_sock_key);

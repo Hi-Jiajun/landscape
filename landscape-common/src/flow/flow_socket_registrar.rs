@@ -14,6 +14,14 @@
 pub trait FlowSocketRegistrar: Send + Sync {
     /// Bind a DNS listen socket to `flow_id`.
     fn register_dns_socket(&self, flow_id: u32, sock_fd: i32, is_tcp: bool);
+
+    /// Bind a DoH listen socket to `flow_id`.
+    ///
+    /// Separate from [`Self::register_dns_socket`] because DoH is TCP as well, and
+    /// the two live on different ports: a shared key would make them overwrite each
+    /// other, and a TCP plaintext query would then be dispatched to the DoH socket -
+    /// a socket in another reuseport group, which the kernel refuses.
+    fn register_doh_socket(&self, flow_id: u32, sock_fd: i32);
 }
 
 /// No-op registrar used by tests and non-Linux builds.
@@ -21,4 +29,6 @@ pub struct NoopFlowSocketRegistrar;
 
 impl FlowSocketRegistrar for NoopFlowSocketRegistrar {
     fn register_dns_socket(&self, _flow_id: u32, _sock_fd: i32, _is_tcp: bool) {}
+
+    fn register_doh_socket(&self, _flow_id: u32, _sock_fd: i32) {}
 }

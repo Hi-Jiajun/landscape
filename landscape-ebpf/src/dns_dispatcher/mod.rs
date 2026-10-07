@@ -13,11 +13,42 @@ use libc::{SOL_SOCKET, setsockopt, socklen_t};
 use std::os::fd::AsFd;
 use std::os::fd::AsRawFd;
 
-pub fn attach_reuseport_ebpf(paths: &LandscapeMapPath, sock_fd: i32) -> LdEbpfResult<()> {
+/// Which listener this program instance is being loaded for.
+///
+/// The value travels into the program's read-only data, so each reuseport group
+/// carries the key namespace its own sockets were registered under. The plaintext
+/// DNS listener and the DoH listener are both TCP, so this is the only thing that
+/// can tell them apart - and without it they share one key and a TCP :53 query is
+/// dispatched to the DoH socket, which the kernel refuses with EBADFD.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListenerKind {
+    Plaintext,
+    Doh,
+}
+
+impl ListenerKind {
+    /// Must match `DNS_LISTENER_KIND_*` in `land_dns_dispatcher.bpf.c`.
+    fn rodata_value(self) -> u8 {
+        match self {
+            ListenerKind::Plaintext => 0,
+            ListenerKind::Doh => 1,
+        }
+    }
+}
+
+pub fn attach_reuseport_ebpf(
+    paths: &LandscapeMapPath,
+    sock_fd: i32,
+    kind: ListenerKind,
+) -> LdEbpfResult<()> {
     let mut open_object = MaybeUninit::zeroed();
     let builder = LandDnsDispatcherSkelBuilder::default();
     let mut open_skel =
         crate::bpf_ctx!(builder.open(&mut open_object), "dns_dispatcher open skeleton failed")?;
+
+    if let Some(rodata) = open_skel.maps.rodata_data.as_deref_mut() {
+        rodata.listener_kind = kind.rodata_value();
+    }
 
     crate::bpf_ctx!(
         pin_and_reuse_map(&mut open_skel.maps.dns_flow_socks, &paths.dns_flow_socks),
