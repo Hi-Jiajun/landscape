@@ -184,6 +184,37 @@ pub enum RescueAction {
     Discard,
     /// Show whether a change is currently provisional
     Status,
+
+    /// Let one device through for a bounded time
+    ///
+    /// The last resort of the rescue channel: instead of turning the strict scope
+    /// off for everybody, one device is placed in the given flow until the time is
+    /// up. The grant is removed automatically, and the reason is recorded.
+    Authorize {
+        /// Device MAC address, e.g. `aa:bb:cc:dd:ee:ff`
+        #[arg(long)]
+        mac: String,
+        /// Flow to place the device in while the grant lasts
+        #[arg(long)]
+        flow_id: u32,
+        /// Minutes until the grant expires
+        #[arg(long, default_value_t = 30)]
+        minutes: u64,
+        /// Why the device is being let through (kept in the audit trail)
+        #[arg(short, long, default_value = "operator rescue")]
+        reason: String,
+    },
+    /// List the device grants that are still in force
+    Grants {
+        /// Include grants that have already expired
+        #[arg(long)]
+        all: bool,
+    },
+    /// Remove a device grant before its time is up
+    Revoke {
+        /// Grant id, as shown by `rescue grants`
+        id: String,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]

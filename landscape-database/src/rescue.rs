@@ -39,6 +39,9 @@ const SNAPSHOT_DIR: &str = "snapshots";
 /// and can be inspected by hand.
 const PENDING_FILE: &str = "pending_transaction.json";
 
+/// Time-limited device authorizations, in the same directory.
+const GRANTS_FILE: &str = "device_grants.json";
+
 /// A change that is applied but not yet accepted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingTransaction {
@@ -113,6 +116,177 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+/// A time-limited authorization for one device.
+///
+/// The rescue channel's last resort: instead of turning the strict scope off for
+/// everybody, one device is let through for a bounded time, with the reason
+/// recorded. Nothing here is permanent — the expiry is enforced when the grant is
+/// read, so a missed sweep cannot extend it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceGrant {
+    /// Stable id, used to revoke the grant.
+    pub id: String,
+    /// The device, as a MAC address. Matched the same way a flow match rule is.
+    pub mac: String,
+    /// The flow the device is temporarily placed in.
+    pub flow_id: u32,
+    /// Why it was granted, for the audit trail.
+    pub reason: String,
+    pub created_at_ms: f64,
+    pub expires_at_ms: f64,
+    /// The `FlowEntryRule` id that was added, when the caller recorded it, so the
+    /// exact rule can be removed again instead of guessing from the MAC.
+    #[serde(default)]
+    pub added_rule: Option<String>,
+}
+
+impl DeviceGrant {
+    /// The device as a `MacAddr`, or `None` when the stored text is not one.
+    ///
+    /// `MacAddr` has no `FromStr`, and a grant that cannot be parsed must be
+    /// reported rather than silently skipped — the operator asked for a device to
+    /// be let through, and quietly doing nothing would be worse than an error.
+    pub fn mac_addr(&self) -> Option<landscape_common::net::MacAddr> {
+        parse_mac(&self.mac)
+    }
+
+    pub fn is_expired(&self) -> bool {
+        now_ms() >= self.expires_at_ms
+    }
+
+    pub fn remaining_secs(&self) -> i64 {
+        ((self.expires_at_ms - now_ms()) / 1000.0).ceil() as i64
+    }
+
+    pub fn describe(&self) -> String {
+        let state = if self.is_expired() {
+            "EXPIRED".to_string()
+        } else {
+            format!("{}s left", self.remaining_secs().max(0))
+        };
+        format!("{}  {}  flow {}  {}  ({})", self.id, self.mac, self.flow_id, state, self.reason)
+    }
+}
+
+/// The grants, in a plain JSON file next to the snapshots.
+///
+/// A file rather than a table: a grant is operational state that must be readable
+/// and revocable even when the service cannot start, which is the situation the
+/// rescue channel exists for.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct GrantStore {
+    #[serde(default)]
+    grants: Vec<DeviceGrant>,
+}
+
+impl GrantStore {
+    fn path(dir: &Path) -> PathBuf {
+        dir.join(GRANTS_FILE)
+    }
+
+    /// Read the store; a missing file is an empty store, and a corrupt one is an
+    /// error rather than a silent reset (silently dropping grants would leave
+    /// devices authorized with nothing tracking them).
+    pub fn load(dir: &Path) -> Result<Self, DbError> {
+        let path = Self::path(dir);
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let text = fs::read_to_string(&path)?;
+        serde_json::from_str(&text)
+            .map_err(|e| DbError::Internal(format!("{}: {e}", path.display())))
+    }
+
+    fn save(&self, dir: &Path) -> Result<(), DbError> {
+        fs::create_dir_all(dir)?;
+        let path = Self::path(dir);
+        let text = serde_json::to_string_pretty(self)
+            .map_err(|e| DbError::Internal(format!("cannot serialise grants: {e}")))?;
+        // Written through a temporary file so a crash cannot leave a half-written
+        // store, which the next load would refuse to read.
+        let temporary = path.with_extension("json.tmp");
+        fs::write(&temporary, text)?;
+        fs::rename(&temporary, &path)?;
+        Ok(())
+    }
+
+    /// Grants that are still in force. Expiry is enforced here, not only by the
+    /// sweep, so an expired grant is never honoured even for an instant.
+    pub fn active(&self) -> Vec<DeviceGrant> {
+        self.grants.iter().filter(|grant| !grant.is_expired()).cloned().collect()
+    }
+
+    pub fn all(&self) -> &[DeviceGrant] {
+        &self.grants
+    }
+
+    /// Add a grant, refusing one that would not be time-limited.
+    pub fn add(
+        &mut self,
+        dir: &Path,
+        mac: String,
+        flow_id: u32,
+        reason: String,
+        duration_secs: u64,
+    ) -> Result<DeviceGrant, DbError> {
+        if duration_secs == 0 {
+            return Err(DbError::Internal(
+                "a grant must have a non-zero duration; a permanent authorization is a flow rule"
+                    .to_string(),
+            ));
+        }
+        let now = now_ms();
+        let grant = DeviceGrant {
+            id: format!("{}-{}", format_timestamp((now / 1000.0) as i64), self.grants.len() + 1),
+            mac,
+            flow_id,
+            reason,
+            created_at_ms: now,
+            expires_at_ms: now + (duration_secs as f64) * 1000.0,
+            added_rule: None,
+        };
+        self.grants.push(grant.clone());
+        self.save(dir)?;
+        Ok(grant)
+    }
+
+    /// Record which flow match rule the grant added, so it can be removed exactly.
+    pub fn record_rule(&mut self, dir: &Path, id: &str, rule_id: String) -> Result<(), DbError> {
+        if let Some(grant) = self.grants.iter_mut().find(|grant| grant.id == id) {
+            grant.added_rule = Some(rule_id);
+            self.save(dir)?;
+        }
+        Ok(())
+    }
+
+    /// Remove a grant by id, returning it so the caller can undo its effect.
+    pub fn revoke(&mut self, dir: &Path, id: &str) -> Result<DeviceGrant, DbError> {
+        let index = self
+            .grants
+            .iter()
+            .position(|grant| grant.id == id)
+            .ok_or_else(|| DbError::Internal(format!("no grant with id '{id}'")))?;
+        let grant = self.grants.remove(index);
+        self.save(dir)?;
+        Ok(grant)
+    }
+
+    /// Remove every expired grant, returning them so the caller can undo their
+    /// effects. This is what makes a grant temporary even if nobody looks at it.
+    pub fn take_expired(&mut self, dir: &Path) -> Result<Vec<DeviceGrant>, DbError> {
+        let (expired, kept): (Vec<_>, Vec<_>) =
+            self.grants.drain(..).partition(|grant| grant.is_expired());
+        if expired.is_empty() {
+            // Put them back unchanged: `drain` moved everything out.
+            self.grants = kept;
+            return Ok(Vec::new());
+        }
+        self.grants = kept;
+        self.save(dir)?;
+        Ok(expired)
+    }
+}
+
 /// The snapshot store: a directory holding database copies and their manifests.
 pub struct SnapshotStore {
     dir: PathBuf,
@@ -158,7 +332,16 @@ impl SnapshotStore {
                 }
             };
             let path = entry.path();
+            // Only files named like a snapshot id. The directory also holds the
+            // transaction marker and the device grants, and treating those as
+            // manifests would fill the log with warnings about files that are
+            // perfectly fine.
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let is_snapshot =
+                path.file_stem().and_then(|stem| stem.to_str()).is_some_and(looks_like_snapshot_id);
+            if !is_snapshot {
                 continue;
             }
             match fs::read_to_string(&path).map_err(DbError::from).and_then(|text| {
@@ -436,6 +619,23 @@ impl SnapshotStore {
     }
 }
 
+/// Whether a file stem is one of our snapshot ids (`YYYYMMDD-HHMMSS`, optionally
+/// with a `-N` suffix for a second snapshot in the same second).
+fn looks_like_snapshot_id(stem: &str) -> bool {
+    // `<8 digits>-<6 digits>` followed by nothing or a `-<digits>` suffix.
+    let mut parts = stem.split('-');
+    let date = parts.next().unwrap_or("");
+    let time = parts.next().unwrap_or("");
+    let all_digits = |text: &str| !text.is_empty() && text.chars().all(|c| c.is_ascii_digit());
+    if date.len() != 8 || time.len() != 6 || !all_digits(date) || !all_digits(time) {
+        return false;
+    }
+    match parts.next() {
+        Option::None => true,
+        Some(suffix) => all_digits(suffix) && parts.next().is_none(),
+    }
+}
+
 /// `YYYYMMDD-HHMMSS` in UTC, sortable as a string.
 fn format_timestamp(unix_seconds: i64) -> String {
     // Deliberately dependency-free: this only has to be unique and sortable, and
@@ -477,6 +677,23 @@ fn sql_quote_path(path: &Path) -> String {
 async fn connect(database_path: &str) -> Result<sea_orm::DatabaseConnection, DbError> {
     let options: migration::sea_orm::ConnectOptions = database_path.to_string().into();
     Ok(Database::connect(options).await?)
+}
+
+/// Parse `aa:bb:cc:dd:ee:ff` (or `aa-bb-cc-dd-ee-ff`) into a `MacAddr`.
+fn parse_mac(text: &str) -> Option<landscape_common::net::MacAddr> {
+    let cleaned: String = text.chars().filter(|c| *c != ':' && *c != '-').collect();
+    if cleaned.len() != 12 || !cleaned.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |index: usize| u8::from_str_radix(&cleaned[index * 2..index * 2 + 2], 16).ok();
+    Some(landscape_common::net::MacAddr::new(
+        byte(0)?,
+        byte(1)?,
+        byte(2)?,
+        byte(3)?,
+        byte(4)?,
+        byte(5)?,
+    ))
 }
 
 /// SHA-256 of a file, streamed so a large database is not read into memory.
@@ -546,5 +763,156 @@ mod tests {
         assert_eq!(format_bytes(512), "512B");
         assert_eq!(format_bytes(2048), "2.0KiB");
         assert_eq!(format_bytes(3 * 1024 * 1024), "3.0MiB");
+    }
+
+    fn temp_dir() -> PathBuf {
+        // Unique per call: tests run in parallel and would otherwise share a
+        // directory and clobber each other's store.
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("landscape-grants-{}-{unique}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_grant_is_active_until_its_deadline() {
+        let dir = temp_dir();
+        let mut store = GrantStore::load(&dir).unwrap();
+        let grant = store.add(&dir, "aa:bb:cc:dd:ee:ff".into(), 7, "rescue".into(), 60).unwrap();
+        assert!(!grant.is_expired());
+        assert_eq!(store.active().len(), 1);
+        assert!(grant.remaining_secs() > 55, "remaining: {}", grant.remaining_secs());
+    }
+
+    #[test]
+    fn a_grant_without_a_duration_is_refused() {
+        // A permanent authorization is a flow rule, not a grant; accepting it
+        // here would be the "silent direct" the objective forbids.
+        let dir = temp_dir();
+        let mut store = GrantStore::default();
+        assert!(store.add(&dir, "aa:bb:cc:dd:ee:ff".into(), 7, "-".into(), 0).is_err());
+        assert!(store.all().is_empty());
+    }
+
+    #[test]
+    fn expiry_is_enforced_on_read_not_only_by_the_sweep() {
+        let dir = temp_dir();
+        let mut store = GrantStore::default();
+        let grant = store.add(&dir, "aa:bb:cc:dd:ee:ff".into(), 7, "x".into(), 1).unwrap();
+        // Reach in and expire it, standing in for the clock passing.
+        store.grants[0].expires_at_ms = now_ms() - 1000.0;
+        assert!(store.grants[0].is_expired());
+        assert!(store.active().is_empty(), "an expired grant must never be honoured");
+        // The sweep then removes it for good.
+        let expired = store.take_expired(&dir).unwrap();
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].id, grant.id);
+        assert!(store.all().is_empty());
+    }
+
+    #[test]
+    fn the_sweep_keeps_the_grants_that_are_still_running() {
+        let dir = temp_dir();
+        let mut store = GrantStore::default();
+        store.add(&dir, "aa:bb:cc:dd:ee:01".into(), 7, "live".into(), 600).unwrap();
+        store.add(&dir, "aa:bb:cc:dd:ee:02".into(), 7, "dead".into(), 600).unwrap();
+        store.grants[1].expires_at_ms = now_ms() - 1000.0;
+
+        let expired = store.take_expired(&dir).unwrap();
+        assert_eq!(expired.len(), 1, "exactly the expired grant is taken");
+        assert_eq!(store.active().len(), 1);
+        // And the store on disk agrees.
+        let reloaded = GrantStore::load(&dir).unwrap();
+        assert_eq!(reloaded.all().len(), 1);
+    }
+
+    #[test]
+    fn grants_survive_a_reload() {
+        let dir = temp_dir();
+        let mut store = GrantStore::default();
+        let grant = store.add(&dir, "aa:bb:cc:dd:ee:ff".into(), 9, "persist".into(), 600).unwrap();
+        store.record_rule(&dir, &grant.id, "rule-1".into()).unwrap();
+
+        let reloaded = GrantStore::load(&dir).unwrap();
+        assert_eq!(reloaded.all().len(), 1);
+        assert_eq!(reloaded.all()[0].added_rule.as_deref(), Some("rule-1"));
+        assert_eq!(reloaded.all()[0].flow_id, 9);
+    }
+
+    #[test]
+    fn revoking_removes_only_that_grant() {
+        let dir = temp_dir();
+        let mut store = GrantStore::default();
+        let first = store.add(&dir, "aa:bb:cc:dd:ee:01".into(), 7, "one".into(), 600).unwrap();
+        store.add(&dir, "aa:bb:cc:dd:ee:02".into(), 7, "two".into(), 600).unwrap();
+
+        let revoked = store.revoke(&dir, &first.id).unwrap();
+        assert_eq!(revoked.id, first.id);
+        assert_eq!(store.all().len(), 1);
+        assert_eq!(store.all()[0].reason, "two");
+        // An unknown id is an error, not a silent no-op: the caller asked to
+        // revoke something, and not finding it means they are looking at stale
+        // state.
+        assert!(store.revoke(&dir, "nope").is_err());
+    }
+
+    #[test]
+    fn a_corrupt_store_is_an_error_rather_than_an_empty_one() {
+        // Returning "no grants" would leave devices authorized with nothing
+        // tracking them, so the caller has to see the problem.
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(GrantStore::path(&dir), "{ not json").unwrap();
+        assert!(GrantStore::load(&dir).is_err());
+    }
+
+    #[test]
+    fn a_missing_store_is_simply_empty() {
+        let dir = temp_dir();
+        let store = GrantStore::load(&dir).unwrap();
+        assert!(store.all().is_empty());
+    }
+
+    #[test]
+    fn mac_addresses_parse_in_both_common_forms() {
+        let colon = parse_mac("aa:bb:cc:dd:ee:ff").expect("colon form");
+        let dash = parse_mac("AA-BB-CC-DD-EE-FF").expect("dash form");
+        let plain = parse_mac("aabbccddeeff").expect("plain form");
+        assert_eq!(colon, dash);
+        assert_eq!(colon, plain);
+    }
+
+    #[test]
+    fn anything_that_is_not_a_mac_is_rejected() {
+        // Better to refuse than to place the wrong device in a flow.
+        for bad in ["", "aa:bb:cc:dd:ee", "aa:bb:cc:dd:ee:ff:00", "zz:bb:cc:dd:ee:ff", "not a mac"]
+        {
+            assert!(parse_mac(bad).is_none(), "{bad} should not parse");
+        }
+    }
+
+    #[test]
+    fn a_grant_reports_its_device() {
+        let dir = temp_dir();
+        let mut store = GrantStore::default();
+        let grant = store.add(&dir, "aa:bb:cc:dd:ee:ff".into(), 7, "x".into(), 600).unwrap();
+        assert!(grant.mac_addr().is_some());
+    }
+
+    #[test]
+    fn only_snapshot_ids_look_like_snapshot_ids() {
+        // The snapshots directory also holds the transaction marker and the device
+        // grants; neither is a snapshot.
+        assert!(looks_like_snapshot_id("20261007-123456"));
+        assert!(looks_like_snapshot_id("20261007-123456-2"));
+        assert!(!looks_like_snapshot_id("device_grants"));
+        assert!(!looks_like_snapshot_id("pending_transaction"));
+        assert!(!looks_like_snapshot_id("20261007"));
+        assert!(!looks_like_snapshot_id("2026100-123456"));
+        assert!(!looks_like_snapshot_id("20261007-12345"));
+        assert!(!looks_like_snapshot_id("20261007-12345a"));
+        assert!(!looks_like_snapshot_id("20261007-123456-2-3"));
     }
 }

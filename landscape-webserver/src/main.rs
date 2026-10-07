@@ -149,7 +149,7 @@ async fn run_rescue(
     home_path: &Path,
     store: &StoreRuntimeConfig,
 ) -> Result<(), DbError> {
-    use landscape_database::rescue::SnapshotStore;
+    use landscape_database::rescue::{GrantStore as Grants, SnapshotStore};
 
     let snapshots = SnapshotStore::for_config_dir(home_path);
     let database_path = database_file_path(&store.database_path);
@@ -256,6 +256,40 @@ async fn run_rescue(
             }
             None => println!("no provisional change"),
         },
+        RescueAction::Authorize { mac, flow_id, minutes, reason } => {
+            // Only the grant is recorded here. The flow rule is applied by the
+            // service when it starts and by the sweep that removes expired grants,
+            // so this works while the service is down and cannot leave a rule
+            // behind that nothing tracks.
+            let mut grants = Grants::load(snapshots.dir())?;
+            let grant = grants.add(
+                snapshots.dir(),
+                mac.clone(),
+                *flow_id,
+                reason.clone(),
+                minutes.saturating_mul(60),
+            )?;
+            println!("granted {} for {minutes} minute(s)", grant.describe());
+            println!("  it is removed automatically when the time is up");
+            println!("  the service applies it at startup and on its sweep");
+        }
+        RescueAction::Grants { all } => {
+            let grants = Grants::load(snapshots.dir())?;
+            let listed: Vec<_> = if *all { grants.all().to_vec() } else { grants.active() };
+            if listed.is_empty() {
+                println!("no device grants in {}", snapshots.dir().display());
+                return Ok(());
+            }
+            for grant in &listed {
+                println!("{}", grant.describe());
+            }
+        }
+        RescueAction::Revoke { id } => {
+            let mut grants = Grants::load(snapshots.dir())?;
+            let revoked = grants.revoke(snapshots.dir(), id)?;
+            println!("revoked {}", revoked.describe());
+            println!("the service removes its flow rule on the next sweep, or at once if stopped");
+        }
     }
     Ok(())
 }
@@ -309,6 +343,117 @@ async fn rollback_uncommitted_change(
                 "could not roll back the uncommitted configuration change: {e}; it is still \
                  marked provisional"
             );
+        }
+    }
+    Ok(())
+}
+
+/// Put one device into a flow, or take it out.
+///
+/// Used by the time-limited device grants. The flow is one the operator already
+/// trusts; this only adds or removes that device's match rule, so nothing else
+/// about the flow changes and removing the grant restores it exactly.
+///
+/// Lives here rather than on the flow service because it needs nothing private:
+/// reading the rule and writing it back through the controller is the same path
+/// an edit from the UI takes, so the flow matches, route targets and TProxy
+/// mapping are all updated.
+async fn set_device_membership(
+    flow_rule_service: &FlowRuleService,
+    flow_id: u32,
+    mac_addr: landscape_common::net::MacAddr,
+    present: bool,
+) -> Result<bool, DbError> {
+    use landscape_common::flow::{FlowEntryMatchMode, FlowEntryRule};
+    use landscape_common::service::controller::ConfigStoreController;
+
+    let Some(mut config) =
+        flow_rule_service.list().await?.into_iter().find(|rule| rule.flow_id == flow_id)
+    else {
+        return Err(DbError::Internal(format!(
+            "no flow with id {flow_id}; a grant must name a flow that exists"
+        )));
+    };
+
+    let before = config.flow_match_rules.len();
+    config.flow_match_rules.retain(|rule| {
+        !matches!(&rule.mode, FlowEntryMatchMode::Mac { mac_addr: existing } if *existing == mac_addr)
+    });
+    let matched_before = config.flow_match_rules.len() != before;
+
+    if present && !matched_before {
+        config.flow_match_rules.push(FlowEntryRule {
+            qos: None,
+            mode: FlowEntryMatchMode::Mac { mac_addr },
+        });
+    }
+
+    let changed = matched_before != present;
+    if changed {
+        flow_rule_service.checked_set(config).await?;
+    }
+    Ok(changed)
+}
+
+/// Bring the flow rules in line with the device grants.
+///
+/// Runs at startup and on a timer. Each pass:
+///   * drops the grants whose time is up, and takes those devices out of their
+///     flows;
+///   * puts the devices of the grants still in force into their flows.
+///
+/// It is declarative — the grants file is the source of truth and this makes the
+/// dataplane match it — so a grant removed while the service was down, or a rule
+/// lost to a failed write, is corrected by the next pass rather than persisting.
+/// The traffic effect is audited at the moment it changes.
+async fn reconcile_device_grants(
+    home_path: &Path,
+    flow_rule_service: &FlowRuleService,
+) -> Result<(), DbError> {
+    use landscape_database::rescue::{GrantStore, SnapshotStore};
+
+    let dir = SnapshotStore::for_config_dir(home_path);
+    let grants_dir = dir.dir().to_path_buf();
+    let mut store = GrantStore::load(&grants_dir)?;
+
+    for expired in store.take_expired(&grants_dir)? {
+        tracing::error!(
+            grant = %expired.id,
+            mac = %expired.mac,
+            flow_id = expired.flow_id,
+            reason = %expired.reason,
+            "a temporary device authorization expired; the device is leaving the flow"
+        );
+        match expired.mac_addr() {
+            Some(mac) => {
+                if let Err(e) =
+                    set_device_membership(flow_rule_service, expired.flow_id, mac, false).await
+                {
+                    // The grant is gone from the file, so the next pass will try
+                    // again rather than leaving the device authorized.
+                    tracing::error!("cannot remove the expired grant's flow rule: {e}");
+                }
+            }
+            None => tracing::error!(mac = %expired.mac, "grant has an unreadable MAC"),
+        }
+    }
+
+    for grant in store.active() {
+        let Some(mac) = grant.mac_addr() else {
+            tracing::error!(mac = %grant.mac, "grant has an unreadable MAC");
+            continue;
+        };
+        match set_device_membership(flow_rule_service, grant.flow_id, mac, true).await {
+            Ok(true) => tracing::warn!(
+                grant = %grant.id,
+                mac = %grant.mac,
+                flow_id = grant.flow_id,
+                remaining_secs = grant.remaining_secs(),
+                reason = %grant.reason,
+                "a device was authorized into a flow until the grant expires"
+            ),
+            Ok(false) => {}
+            Err(e) => tracing::error!(grant = %grant.id, "cannot apply the grant: {e}"),
         }
     }
     Ok(())
@@ -452,6 +597,31 @@ async fn run_system(
         "dns_redirect_service.new",
         DNSRedirectService::new(db_store_provider.clone(), dns_service_tx.clone()).await
     );
+
+    // Temporary device authorizations: apply what is in force and drop what has
+    // expired, now and then on a timer. This runs after the flow service exists so
+    // the grants take effect through the normal flow path, and again at startup so
+    // a grant that expired while the service was down does not survive it.
+    // A failure here is logged and the service starts anyway: the operator may
+    // need it up to fix things, and the grants file still describes the intent.
+    if let Err(e) = reconcile_device_grants(&home_path, &flow_rule_service).await {
+        tracing::error!("cannot reconcile the device grants at startup: {e}");
+    }
+    {
+        let home = home_path.clone();
+        let service = flow_rule_service.clone();
+        spawn_task("device_grants.sweep", async move {
+            // A minute is far below any grant's duration and cheap: the reconcile
+            // is a file read plus one comparison per grant when nothing changed.
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                ticker.tick().await;
+                if let Err(e) = reconcile_device_grants(&home, &service).await {
+                    tracing::error!("cannot reconcile the device grants: {e}");
+                }
+            }
+        });
+    }
 
     let metric_service = startup_phase!(
         "metric_service.new",
