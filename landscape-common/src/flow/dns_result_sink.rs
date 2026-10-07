@@ -48,25 +48,6 @@ pub trait DnsResultSink: Send + Sync {
         collect: Box<dyn FnOnce() -> Vec<FlowMarkInfo> + Send + 'a>,
     ) -> Result<(), DnsMarkInstallError>;
 
-    /// Install marks only for addresses the table has no entry for.
-    ///
-    /// Called after an answer has become visible in the cache. Installing the
-    /// marks and caching the answer cannot be one atomic step from the DNS side —
-    /// the install takes the datapath write and the cache commit is an `await` —
-    /// so a rebuild can collect the cache in between and publish a table derived
-    /// from an answer it could not see yet, deleting that answer's marks. This
-    /// fills exactly those holes.
-    ///
-    /// It never replaces an entry that exists: a rebuild resolves a shared
-    /// address over the whole cache and may have decided to block it, and one
-    /// answer's marks must not weaken that decision.
-    fn ensure_dns_marks(
-        &self,
-        flow_id: u32,
-        generation: u64,
-        marks: Vec<FlowMarkInfo>,
-    ) -> Result<(), DnsMarkInstallError>;
-
     /// Rebuild the LAN route cache.
     fn rebuild_route_cache(&self);
 }
@@ -91,15 +72,6 @@ impl DnsResultSink for NoopDnsResultSink {
         collect: Box<dyn FnOnce() -> Vec<FlowMarkInfo> + Send + 'a>,
     ) -> Result<(), DnsMarkInstallError> {
         let _ = collect();
-        Ok(())
-    }
-
-    fn ensure_dns_marks(
-        &self,
-        _flow_id: u32,
-        _generation: u64,
-        _marks: Vec<FlowMarkInfo>,
-    ) -> Result<(), DnsMarkInstallError> {
         Ok(())
     }
 

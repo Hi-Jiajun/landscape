@@ -272,12 +272,15 @@ impl CacheHandle {
 
         self.cache.insert((domain_key.clone(), query_type), Arc::new(cache_item)).await;
 
-        // The answer is now part of the cache a rebuild derives its table from,
-        // but it was not when the last rebuild collected. Fill in any address the
-        // table lost in that gap, so an answer the client is being handed always
-        // has its marks in place. Existing entries are left alone: a rebuild may
-        // have blocked this address on purpose.
-        if let Err(e) = self.sink.ensure_dns_marks(
+        // Run the marks through arbitration once more now that the answer is in
+        // the cache. Installing them and caching the answer cannot be one step —
+        // the install takes the datapath write while the cache commit is an
+        // `await` — so a rebuild can collect the cache in between and publish a
+        // table derived from an answer it could not see, deleting these marks.
+        // Re-running the same arbitration covers both that hole and the shared
+        // address now being claimed by two answers, which the first pass could
+        // not see either.
+        if let Err(e) = self.sink.record_dns_answer(
             self.flow_id,
             self.generation,
             update_dns_mark_list.into_iter().collect(),
@@ -285,7 +288,7 @@ impl CacheHandle {
             tracing::error!(
                 flow_id = self.flow_id,
                 domain = %domain_key,
-                "could not confirm the route marks after caching the answer: {e}"
+                "could not re-apply the route marks after caching the answer: {e}"
             );
         }
         Ok(())

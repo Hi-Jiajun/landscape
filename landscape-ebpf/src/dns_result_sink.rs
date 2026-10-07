@@ -56,16 +56,6 @@ impl DnsResultSink for EbpfDnsResultSink {
         Ok(())
     }
 
-    fn ensure_dns_marks(
-        &self,
-        flow_id: u32,
-        generation: u64,
-        marks: Vec<FlowMarkInfo>,
-    ) -> Result<(), DnsMarkInstallError> {
-        flow_dns::ensure_flow_dns_marks(&self.paths, flow_id, generation, marks)
-            .map_err(|e| DnsMarkInstallError::write_failed(flow_id, e.to_string()))
-    }
-
     fn rebuild_route_cache(&self) {
         route::cache::recreate_route_lan_cache_inner_map(&self.paths);
     }
