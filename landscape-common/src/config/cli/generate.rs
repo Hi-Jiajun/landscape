@@ -308,6 +308,10 @@ impl ConfigCliArgs {
             link.mss = WanLinkMssConfig {
                 enable: true,
                 clamp_size: Some(DEFAULT_MSS_CLAMP_SIZE),
+                // No chamber on a generated configuration: it needs the LAN
+                // interface named, and turning a divert on by default is not
+                // something a generator should decide.
+                mtu_chamber: None,
             };
         }
 

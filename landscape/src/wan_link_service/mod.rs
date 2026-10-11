@@ -879,7 +879,15 @@ impl WanLinkServiceManagerService {
             config_channels.clone(),
             status_store.clone(),
         );
-        let service = ServiceManager::init(store.list().await.unwrap(), starter).await;
+        // A transient read error here used to abort start-up: the unwrap panicked
+        // and took the control plane with it. An empty service set still leaves the
+        // reconcile path to repopulate from the store, so failing soft is strictly
+        // better than refusing to boot.
+        let initial_configs = store.list().await.unwrap_or_else(|e| {
+            tracing::error!("failed to load WAN link configs: {e}");
+            Vec::new()
+        });
+        let service = ServiceManager::init(initial_configs, starter).await;
 
         let forward_tx = iface_events.clone();
         spawn_task(task_label::task::WAN_LINK_OBSERVER, async move {

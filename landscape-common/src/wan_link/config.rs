@@ -15,6 +15,7 @@ use crate::service::manager::ServiceKeyProvider;
 use crate::utils::id::gen_database_uuid;
 use crate::utils::time::get_f64_timestamp;
 use crate::wan_service::pppd::{PPPDConfig, PPPoEPlugin};
+use crate::wan_service::mtu_chamber::MtuChamberSettings;
 
 /// Valid chain slots are `1..=LINK_CHAIN_ID_MAX` (`0` means "unassigned").
 pub const LINK_CHAIN_ID_MIN: u16 = 1;
@@ -240,6 +241,18 @@ pub struct WanLinkMssConfig {
     pub enable: bool,
     #[serde(default)]
     pub clamp_size: Option<u16>,
+    /// The IPv6 Packet Too Big chamber for this link, or `None` for no chamber.
+    ///
+    /// The chamber and the clamp answer the same question — what the egress
+    /// cannot carry — and they share the lifecycle of the interface they belong
+    /// to, so it travels in the same section rather than in one of its own. It
+    /// has to be carried explicitly: before the wan_links migration existed the
+    /// value lived in `mss_clamp_service_configs.mtu_chamber`, and dropping it
+    /// during the move would disable the chamber silently, with no error and no
+    /// warning to say the IPv6 error had stopped being produced.
+    #[serde(default)]
+    #[cfg_attr(feature = "openapi", schema(required = false, nullable = true))]
+    pub mtu_chamber: Option<MtuChamberSettings>,
 }
 
 /// Health check section of a link (schema placeholder; fields and runtime
@@ -342,6 +355,15 @@ impl ValidatableConfig for WanLinkConfig {
             return Err(ServiceConfigError::InvalidConfig {
                 reason: format!("clamp_size ({clamp_size}) must be between 536 and 1500"),
             });
+        }
+
+        // The chamber's own checks live with it; surface them in this config's
+        // error type so a bad chamber is rejected at save time rather than when
+        // the dataplane tries to wire it up.
+        if let Some(chamber) = &self.mss.mtu_chamber {
+            chamber.validate().map_err(|reason| ServiceConfigError::InvalidConfig {
+                reason: format!("mtu_chamber: {reason}"),
+            })?;
         }
 
         validate_nat_range("tcp_range", &self.nat.tcp_range)?;

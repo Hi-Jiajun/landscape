@@ -297,6 +297,7 @@ impl MigrationTrait for Migration {
             link.mss = Some(serde_json::json!({
                 "enable": row.enable,
                 "clamp_size": row.clamp_size,
+                "mtu_chamber": row.mtu_chamber,
             }));
             link.bump(row.update_at);
         }
@@ -861,6 +862,14 @@ struct MssRow {
     enable: bool,
     clamp_size: u16,
     update_at: f64,
+    /// The legacy IPv6 Packet Too Big chamber, or NULL for none.
+    ///
+    /// Carried across on purpose: the column was added by the fork's migration
+    /// `m20261007_120000_add_mtu_chamber_to_mss_clamp`, and the new
+    /// `WanLinkMssConfig` is the only place left to keep it. Leaving it behind
+    /// would disable the chamber silently — no error, no warning, just an IPv6
+    /// error that stops being produced.
+    mtu_chamber: Option<serde_json::Value>,
 }
 
 #[derive(FromQueryResult)]
