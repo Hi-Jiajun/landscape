@@ -1,7 +1,4 @@
-pub mod config;
 pub mod dataplane;
-
-pub use config::*;
 
 /// What the WAN egress saw of packets it could not carry.
 ///

@@ -25,7 +25,11 @@ use std::{
 use hickory_proto::rr::RecordType;
 use hickory_resolver::{lookup::Lookup, net::NetError};
 
-use super::LandscapeMarkDNSResolver;
+// The engine handle is `LandscapeResolver`, the enum that upstream introduced to
+// pick between hickory's own pool and the opt-in self-managed ones. Failover
+// needs only its `lookup` surface, which every variant exposes, so it works
+// against the enum rather than pinning itself to one backend.
+use super::LandscapeResolver;
 
 /// Consecutive transport failures before the primary is set aside.
 ///
@@ -101,15 +105,15 @@ impl std::fmt::Debug for FailoverResolver {
 }
 
 pub(crate) struct FailoverResolver {
-    primary: LandscapeMarkDNSResolver,
-    backup: Option<LandscapeMarkDNSResolver>,
+    primary: LandscapeResolver,
+    backup: Option<LandscapeResolver>,
     breaker: Mutex<Breaker>,
 }
 
 impl FailoverResolver {
     pub(crate) fn new(
-        primary: LandscapeMarkDNSResolver,
-        backup: Option<LandscapeMarkDNSResolver>,
+        primary: LandscapeResolver,
+        backup: Option<LandscapeResolver>,
     ) -> Self {
         Self {
             primary,

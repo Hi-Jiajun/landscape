@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 use landscape_common::dns::config::DnsUpstreamConfig;
 use uuid::Uuid;
 
-use crate::connection::{LandscapeResolver, create_resolver};
+use crate::connection::{FailoverResolver, create_failover_resolver};
 
 /// Key under which resolvers are shared: the DNS mark (the SO_MARK applied to
 /// upstream connections, i.e. the flow component plus the always-set reuse
@@ -31,7 +31,7 @@ type ResolverKey = (u32, Uuid);
 /// entries no rule references anymore if this ever becomes a problem.
 #[derive(Debug, Default)]
 pub struct ResolvePool {
-    resolvers: RwLock<HashMap<ResolverKey, Arc<LandscapeResolver>>>,
+    resolvers: RwLock<HashMap<ResolverKey, Arc<FailoverResolver>>>,
 }
 
 impl ResolvePool {
@@ -43,7 +43,7 @@ impl ResolvePool {
         flow_id: u32,
         dns_mark: u32,
         upstream: &DnsUpstreamConfig,
-    ) -> Option<Arc<LandscapeResolver>> {
+    ) -> Option<Arc<FailoverResolver>> {
         let key = (dns_mark, upstream.id);
         if let Some(resolver) = self.resolvers.read().unwrap_or_else(|e| e.into_inner()).get(&key) {
             return Some(resolver.clone());

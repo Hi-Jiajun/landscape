@@ -216,6 +216,10 @@ async fn run_static_v4(
             weight: 1,
             mac: iface.mac,
             is_docker: false,
+            // A WAN route target, not a transparent-proxy delivery target: the
+            // local TProxy slots are only ever filled by the proxy plugin.
+            is_tproxy: false,
+            tproxy_port: 0,
             iface_name: iface_name.clone(),
             iface_ip: IpAddr::V4(ipv4),
             default_route: default_router,

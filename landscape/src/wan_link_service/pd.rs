@@ -30,6 +30,10 @@ pub(super) async fn run(
         weight: 1,
         mac: iface.mac,
         is_docker: false,
+        // A WAN route target, not a transparent-proxy delivery target: the local
+        // TProxy slots are only ever filled by the proxy plugin.
+        is_tproxy: false,
+        tproxy_port: 0,
         iface_name: iface.iface_name.clone(),
         iface_ip: IpAddr::V6(Ipv6Addr::UNSPECIFIED),
         default_route: true,

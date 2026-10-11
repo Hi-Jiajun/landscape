@@ -15,7 +15,7 @@ use landscape_common::{
     flow::DnsRuntimeMarkInfo,
 };
 
-use crate::connection::{LandscapeResolver, pool::ResolvePool};
+use crate::connection::{FailoverResolver, pool::ResolvePool};
 use crate::domain::ParsedDomain;
 use crate::server::matcher::RuntimeRuleMatcher;
 
@@ -133,7 +133,12 @@ pub struct DNSResolveRuntime {
     filter: FilterResult,
     flow_id: u32,
     mark: DnsRuntimeMarkInfo,
-    resolver: Arc<LandscapeResolver>,
+    /// `None` when the upstream is unconfigured. The rule still matches its
+    /// domains — it keeps its place in the order instead of letting the query fall
+    /// through to a different resolver — but every lookup through it fails with a
+    /// reason, so an unfinished configuration is loud rather than silently
+    /// answered by someone else's upstream.
+    resolver: Option<Arc<FailoverResolver>>,
 
     enable_ip_validation: bool,
 }
@@ -183,8 +188,8 @@ impl DNSResolveRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn shared_resolver(&self) -> &Arc<LandscapeResolver> {
-        &self.resolver
+    pub(crate) fn shared_resolver(&self) -> &Arc<FailoverResolver> {
+        self.resolver.as_ref().expect("this rule has a configured upstream")
     }
 
     pub fn filter_mode(&self) -> FilterResult {
@@ -224,8 +229,8 @@ impl DNSResolveRuntime {
                         .answers()
                         .iter()
                         .filter(|ietm| match &ietm.data {
-                            RData::A(A(ipv4)) => is_global_ipv4(ipv4),
-                            RData::AAAA(AAAA(ipv6)) => is_global_ipv6(ipv6),
+                            RData::A(A(ipv4)) => is_global_ipv4(&ipv4),
+                            RData::AAAA(AAAA(ipv6)) => is_global_ipv6(&ipv6),
                             _ => true,
                         })
                         .cloned()

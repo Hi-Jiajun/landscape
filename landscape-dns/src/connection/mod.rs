@@ -17,8 +17,15 @@ use crate::connection::provider::{HickoryMarkProvider, MarkConnectionProvider};
 
 pub(crate) mod pool;
 pub(crate) mod provider;
+pub(crate) mod failover;
 #[cfg(feature = "pool-native")]
 pub(crate) mod upstream;
+
+// Re-exported so the pool and the rules can name the failover wrapper without
+// reaching into the module. It is the type the DNS path hands around: it holds
+// the primary engine, the optional backup, and the breaker that decides when to
+// rest the primary.
+pub(crate) use failover::FailoverResolver;
 
 #[cfg(all(test, feature = "pool-native"))]
 mod integration_tests;
@@ -264,8 +271,8 @@ pub(crate) fn create_resolver(
     flow_id: u32,
     mark_value: u32,
     upstream: DnsUpstreamConfig,
-) -> Option<LandscapeMarkDNSResolver> {
-    build_resolver(flow_id, mark_value, &upstream, &upstream.ips)
+) -> Option<LandscapeResolver> {
+    build_resolver(flow_id, mark_value, upstream)
 }
 
 /// Build a resolver with, when the configuration names one, a backup.
@@ -283,7 +290,12 @@ pub(crate) fn create_failover_resolver(
     let backup = if upstream.backup_ips.is_empty() {
         None
     } else {
-        match build_resolver(flow_id, mark_value, &upstream, &upstream.backup_ips) {
+        // The backup is the same kind of resolver, just a different address: build
+        // it from a copy of the config whose address list is the backup list, so
+        // mode, port and connection options cannot drift between the two.
+        let mut backup_config = upstream.clone();
+        backup_config.ips = backup_config.backup_ips.clone();
+        match build_resolver(flow_id, mark_value, backup_config) {
             Some(resolver) => Some(resolver),
             None => {
                 tracing::error!(
