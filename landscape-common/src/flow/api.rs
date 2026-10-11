@@ -54,6 +54,15 @@ pub enum ApiFlowTarget {
     Netns {
         container_name: String,
     },
+    /// The local TProxy delivery target, named by port.
+    ///
+    /// It has to be in the DTO as well as in the stored config: every flow on the
+    /// real gateway delivers to one of these, so a DTO that could not express it
+    /// would leave the API and the UI unable to read or round-trip the flows that
+    /// exist.
+    LocalTproxy {
+        port: u16,
+    },
 }
 
 impl From<FlowTarget> for ApiFlowTarget {
@@ -61,6 +70,7 @@ impl From<FlowTarget> for ApiFlowTarget {
         match value {
             FlowTarget::Interface { link_id, .. } => ApiFlowTarget::Interface { link_id },
             FlowTarget::Netns { container_name } => ApiFlowTarget::Netns { container_name },
+            FlowTarget::LocalTproxy { port } => ApiFlowTarget::LocalTproxy { port },
         }
     }
 }
@@ -72,6 +82,7 @@ impl From<ApiFlowTarget> for FlowTarget {
                 FlowTarget::Interface { link_id, name: String::new() }
             }
             ApiFlowTarget::Netns { container_name } => FlowTarget::Netns { container_name },
+            ApiFlowTarget::LocalTproxy { port } => FlowTarget::LocalTproxy { port },
         }
     }
 }
