@@ -36,6 +36,12 @@ pub enum StageType {
     Firewall = 1,
     Nat = 2,
     Pppoe = 3,
+    /// The egress MTU stage: counts what the selected egress cannot carry and
+    /// hands the IPv6 case to the exception chamber. It sits between the
+    /// firewall and the egress encapsulation on purpose - after admission, so a
+    /// refusal is never learnt from or answered, and before encapsulation, so the
+    /// packet is still the plain IP packet the client sent.
+    EgressMtu = 4,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -266,6 +272,22 @@ impl TcChainManager {
             pin_and_reuse_map(&mut open_skel.maps.xdp_redirect_able, &paths.xdp_redirect_able),
             "tc_wan_ingress_exit pin xdp_redirect_able"
         )?;
+        // Same reasoning as the ingress/egress intro loaders: this skeleton declares
+        // the policy map, so it needs the shared pin rather than a root one.
+        crate::bpf_ctx!(
+            pin_and_reuse_map(
+                &mut open_skel.maps.route_unclassified_cfg_map,
+                &paths.route_unclassified_cfg
+            ),
+            "tc_wan_ingress_exit pin route_unclassified_cfg_map"
+        )?;
+        crate::bpf_ctx!(
+            pin_and_reuse_map(
+                &mut open_skel.maps.route_unclassified_stats_map,
+                &paths.route_unclassified_stats
+            ),
+            "tc_wan_ingress_exit pin route_unclassified_stats_map"
+        )?;
         let skel = bpf_ctx!(open_skel.load(), "load tc_wan_ingress_exit skeleton")?;
         let exit_fd = skel.progs.tc_wan_ingress_exit_redirect.as_fd().as_raw_fd();
         skel.maps.tc_pipe_exits_wan_ingress.update(
@@ -491,11 +513,20 @@ impl TcChainManager {
         }
         delete_prog_array_fd(root_next_stage_fd, 0);
 
-        let sorted: Vec<&StageEntry> = state
-            .stages
+        let stage_order: &[StageType] = match chain {
+            ChainDir::WanIngress => &[StageType::Mss, StageType::Firewall, StageType::Nat],
+            ChainDir::WanEgress => &[
+                StageType::Mss,
+                StageType::Nat,
+                StageType::Firewall,
+                StageType::EgressMtu,
+                StageType::Pppoe,
+            ],
+        };
+
+        let sorted: Vec<&StageEntry> = stage_order
             .iter()
-            .filter(|(k, _)| !matches!((k, chain), (StageType::Pppoe, ChainDir::WanIngress)))
-            .map(|(_, v)| v)
+            .filter_map(|st| state.stages.get(st))
             .filter(|v| match chain {
                 ChainDir::WanIngress => v.wan_ingress_prog_fd != 0,
                 ChainDir::WanEgress => v.wan_egress_prog_fd != 0,

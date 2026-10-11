@@ -118,7 +118,12 @@ impl fmt::Debug for LandscapeResolver {
     }
 }
 
-pub(crate) fn create_resolver(
+/// Build the resolver for one set of addresses.
+///
+/// Split out of [`create_resolver`] so the backup set is built by exactly the same
+/// code as the primary: the modes (plaintext / TLS / HTTPS / QUIC), the ports and
+/// the connection options cannot drift apart between the two.
+fn build_resolver(
     flow_id: u32,
     mark_value: u32,
     config: DnsUpstreamConfig,
@@ -221,12 +226,22 @@ pub(crate) fn create_resolver(
     options.num_concurrent_reqs = 4;
     options.preserve_intermediates = true;
     // options.use_hosts_file = ResolveHosts::Never;
-    // Keep each attempt short (1s) so the resolver's built-in retry
-    // (attempts = 3) can recover from transient first-packet loss well within
-    // the 5s outer lookup timeout; with the 5s default the second attempt
-    // never gets to run and the client sees a 5s ServFail on the first query.
-    // Normal lookups complete in milliseconds and never hit this timeout.
-    options.timeout = Duration::from_secs(1);
+    // Keep each attempt short so the resolver's built-in retry (attempts = 3)
+    // can still recover from transient first-packet loss within the 5s outer
+    // lookup timeout, but long enough to clear a proxy-relayed upstream.
+    //
+    // 1s was too tight once an upstream began being reached through a relay:
+    // measured 2026-10-12, the AI tier's resolver path costs ~1065ms per query
+    // (home -> relay -> node -> resolver), so every attempt timed out and the
+    // client saw a 4s ServFail *that is not cached*, i.e. the cost was paid
+    // again on every query. The relay leg is inherent to this line (its
+    // international egress is blocked upstream), so the budget has to fit it.
+    //
+    // 2s clears 1065ms with ~2x margin while keeping the worst case
+    // (attempts × timeout = 6s) bounded by the caller's own 5s outer timeout,
+    // and a successful attempt still returns as soon as it lands — the product
+    // only materialises when every attempt genuinely fails.
+    options.timeout = Duration::from_secs(2);
     options.attempts = 3;
     let resolver = match Resolver::builder_with_config(
         resolve,
@@ -243,4 +258,43 @@ pub(crate) fn create_resolver(
     };
 
     Some(LandscapeResolver::Legacy(resolver))
+}
+
+pub(crate) fn create_resolver(
+    flow_id: u32,
+    mark_value: u32,
+    upstream: DnsUpstreamConfig,
+) -> Option<LandscapeMarkDNSResolver> {
+    build_resolver(flow_id, mark_value, &upstream, &upstream.ips)
+}
+
+/// Build a resolver with, when the configuration names one, a backup.
+///
+/// The backup is built from the same mode and port as the primary: it is the same
+/// kind of resolver, just a different address, which is what "domestic ISP primary
+/// with a public backup" means. A backup that cannot be built is reported and
+/// ignored rather than failing the rule - a misconfigured backup must not take the
+/// primary's resolution down with it.
+pub(crate) fn create_failover_resolver(
+    flow_id: u32,
+    mark_value: u32,
+    upstream: DnsUpstreamConfig,
+) -> Option<FailoverResolver> {
+    let backup = if upstream.backup_ips.is_empty() {
+        None
+    } else {
+        match build_resolver(flow_id, mark_value, &upstream, &upstream.backup_ips) {
+            Some(resolver) => Some(resolver),
+            None => {
+                tracing::error!(
+                    upstream_id = %upstream.id,
+                    "[flow: {flow_id}]: the backup DNS upstream could not be built; the rule keeps \
+                     using its primary only"
+                );
+                None
+            }
+        }
+    };
+    let primary = create_resolver(flow_id, mark_value, upstream)?;
+    Some(FailoverResolver::new(primary, backup))
 }

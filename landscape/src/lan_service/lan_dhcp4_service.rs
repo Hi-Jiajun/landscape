@@ -327,21 +327,27 @@ impl DHCPv4ServerManagerService {
             lan_discovery_sender,
             mac_binding,
         );
-        let service =
-            ServiceManager::init(store.list().await.unwrap(), server_starter.clone()).await;
+        let initial_configs = store.list().await.unwrap_or_else(|e| {
+            tracing::error!("failed to load DHCPv4 configs: {e}");
+            Vec::new()
+        });
+        let service = ServiceManager::init(initial_configs, server_starter.clone()).await;
 
         let service_clone = service.clone();
         spawn_task(task_label::task::DHCP_V4_SERVICE_OBSERVER, async move {
-            while let Ok(msg) = dev_observer.recv().await {
+            while let Some(msg) = dev_observer.recv_skipping_lag().await {
                 match msg {
                     IfaceObserverAction::Up(iface_name) => {
-                        tracing::info!("restart {iface_name} Firewall service");
-                        let service_config = if let Some(service_config) =
-                            store.find_by_id(iface_name.clone()).await.unwrap()
-                        {
-                            service_config
-                        } else {
-                            continue;
+                        tracing::info!("restart {iface_name} DHCPv4 service");
+                        let service_config = match store.find_by_id(iface_name.clone()).await {
+                            Ok(Some(cfg)) => cfg,
+                            Ok(None) => continue,
+                            Err(e) => {
+                                tracing::error!(
+                                    "failed to find DHCPv4 config for {iface_name}: {e}"
+                                );
+                                continue;
+                            }
                         };
 
                         let _ = service_clone.update_service(service_config).await;
@@ -369,7 +375,10 @@ impl DHCPv4ServerManagerService {
                         guard.get(&iface).cloned()
                     };
                     if let Some(s) = s {
-                        let mut status = s.lock().unwrap();
+                        let mut status = match s.lock() {
+                            Ok(guard) => guard,
+                            Err(poisoned) => poisoned.into_inner(),
+                        };
                         match &event {
                             EnrolledDeviceEvent::Updated { old, new } => {
                                 if let Some(d) = old.as_ref() {

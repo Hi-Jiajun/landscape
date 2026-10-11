@@ -15,14 +15,21 @@ use landscape_common::{
 
 use super::{IpRouteService, WanRoutesByOwner};
 
-fn find_route_target<'a>(
-    wan_infos: &'a WanRoutesByOwner,
+fn find_route_target(
+    wan_infos: &WanRoutesByOwner,
     target: &FlowTarget,
-) -> Option<&'a RouteTargetInfo> {
+    is_v6: bool,
+) -> Option<RouteTargetInfo> {
     match target {
-        FlowTarget::Interface { link_id, .. } => wan_infos.get(&RouteOwner::Link(*link_id)),
+        FlowTarget::Interface { link_id, .. } => {
+            wan_infos.get(&RouteOwner::Link(*link_id)).cloned()
+        }
         FlowTarget::Netns { container_name } => {
-            wan_infos.get(&RouteOwner::Netns(container_name.clone()))
+            wan_infos.get(&RouteOwner::Netns(container_name.clone())).cloned()
+        }
+        FlowTarget::LocalTproxy { port } => {
+            let (v4, v6) = RouteTargetInfo::tproxy_new(*port);
+            Some(if is_v6 { v6 } else { v4 })
         }
     }
 }
@@ -30,6 +37,7 @@ fn find_route_target<'a>(
 pub(super) fn collect_target_refresh_result(
     flow_configs: &[FlowConfig],
     wan_infos: &WanRoutesByOwner,
+    is_v6: bool,
 ) -> HashMap<FlowId, Vec<(RouteTargetInfo, u32)>> {
     let mut result = HashMap::new();
 
@@ -39,8 +47,7 @@ pub(super) fn collect_target_refresh_result(
                 .flow_targets
                 .iter()
                 .filter_map(|target| {
-                    find_route_target(wan_infos, &target.target)
-                        .cloned()
+                    find_route_target(wan_infos, &target.target, is_v6)
                         .map(|route| (route, target.weight))
                 })
                 .collect()
@@ -110,10 +117,10 @@ impl IpRouteService {
     /// current WAN route state and sync them into the eBPF maps.
     pub async fn sync_flow_wan_targets(&self, flow_configs: &[FlowConfig]) {
         let ipv4_wan_infos = self.clone_ipv4_wan_infos().await;
-        let ipv4_result = collect_target_refresh_result(flow_configs, &ipv4_wan_infos);
+        let ipv4_result = collect_target_refresh_result(flow_configs, &ipv4_wan_infos, false);
 
         let ipv6_wan_infos = self.clone_ipv6_wan_infos().await;
-        let ipv6_result = collect_target_refresh_result(flow_configs, &ipv6_wan_infos);
+        let ipv6_result = collect_target_refresh_result(flow_configs, &ipv6_wan_infos, true);
 
         warn_fully_unresolved_flows(flow_configs, &ipv4_result, &ipv6_result);
 

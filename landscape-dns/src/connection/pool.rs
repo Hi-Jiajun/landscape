@@ -49,7 +49,7 @@ impl ResolvePool {
             return Some(resolver.clone());
         }
 
-        let resolver = Arc::new(create_resolver(flow_id, dns_mark, upstream.clone())?);
+        let resolver = Arc::new(create_failover_resolver(flow_id, dns_mark, upstream.clone())?);
 
         let mut resolvers = self.resolvers.write().unwrap_or_else(|e| e.into_inner());
         Some(resolvers.entry(key).or_insert_with(|| resolver.clone()).clone())

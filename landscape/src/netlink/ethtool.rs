@@ -463,8 +463,15 @@ mod tests {
     async fn test_gro_roundtrip() {
         let ifname = std::env::var("TEST_IFACE").unwrap_or_else(|_| "ens6".to_string());
 
-        // 1. read original via ioctl
-        let was_on = get_gro_ioctl(&ifname).expect("ioctl GET failed");
+        // 1. read original via ioctl (skip if test NIC is not present in environment)
+        let was_on = match get_gro_ioctl(&ifname) {
+            Ok(v) => v,
+            Err(e) if e.raw_os_error() == Some(19) => {
+                eprintln!("[test] skipping test_gro_roundtrip: device {ifname} not found");
+                return;
+            }
+            Err(e) => panic!("ioctl GET failed: {e}"),
+        };
         eprintln!("[test] ioctl GET initial: GRO={was_on} on {ifname}");
 
         // 2. disable via ioctl

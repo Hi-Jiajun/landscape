@@ -31,9 +31,31 @@ pub enum DnsServiceError {
     #[api_error(id = "dns_service.protocol", status = 502)]
     Protocol(ResponseCode),
 
+    /// The upstream answered *negatively*: NXDOMAIN, or NODATA (`NoError` with no
+    /// records). Both are answers rather than failures, and both carry a lifetime
+    /// that belongs to the answer rather than to configuration.
+    ///
+    /// `negative_ttl` is RFC 2308 §5's `min(SOA TTL, SOA.MINIMUM)`, which hickory
+    /// computes and hands over. It is `None` when the answer carried **no SOA** -
+    /// the case that SHOULD NOT be cached, and the common case on this network's
+    /// carrier resolver, so it is a state to decide about rather than an edge.
+    #[error("DNS negative answer: {code:?}")]
+    #[api_error(id = "dns_service.protocol", status = 502)]
+    NegativeAnswer { code: ResponseCode, negative_ttl: Option<u32> },
+
     #[error("Upstream timeout")]
     #[api_error(id = "dns_service.timeout", status = 504)]
     Timeout,
+
+    /// The rule matched, but the upstream it points at has no address to query.
+    ///
+    /// Distinct from a timeout or an upstream error because nothing was ever
+    /// asked: the rule is unconfigured. Reporting it this way keeps the failure
+    /// loud and attributable instead of letting the query silently fall through
+    /// to whatever resolver the next rule happens to use.
+    #[error("DNS upstream for '{0}' is not configured (no address to query)")]
+    #[api_error(id = "dns_service.upstream_not_configured", status = 502)]
+    UpstreamNotConfigured(String),
 
     #[error("Internal error: {0}")]
     #[api_error(id = "dns_service.internal", status = 500)]

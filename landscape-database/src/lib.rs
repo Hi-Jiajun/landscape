@@ -12,6 +12,7 @@ pub mod flow_wan;
 pub mod iface;
 pub mod lan_ipv6_v2;
 pub mod provider;
+pub mod rescue;
 pub mod rollback;
 pub mod wan_link;
 pub mod wifi;

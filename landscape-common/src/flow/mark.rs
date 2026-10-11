@@ -23,6 +23,26 @@ pub struct FlowMark {
 }
 
 impl FlowMark {
+    /// Build a mark from its parts.
+    ///
+    /// The fields are private so the bit layout stays an implementation detail;
+    /// this is the way to construct one outside this module (tests, tooling, the
+    /// audit's suggestions).
+    pub fn new(action: FlowMarkAction, flow_id: u8, allow_reuse_port: bool) -> Self {
+        Self { action, allow_reuse_port, flow_id }
+    }
+
+    /// The routing action this mark selects.
+    pub fn action(&self) -> FlowMarkAction {
+        self.action
+    }
+
+    /// The flow this mark redirects to. Only meaningful for
+    /// [`FlowMarkAction::Redirect`].
+    pub fn flow_id(&self) -> u8 {
+        self.flow_id
+    }
+
     /// Whether a DNS answer carrying this mark should be registered with the
     /// datapath. `KeepGoing` flows only register when reuse-port is allowed;
     /// the addressed action types (Direct/Drop/Redirect) always register.
@@ -31,6 +51,21 @@ impl FlowMark {
             FlowMarkAction::KeepGoing => self.allow_reuse_port,
             _ => true,
         }
+    }
+
+    /// Whether the datapath must have this answer's route association for the
+    /// traffic to stay inside a managed scope.
+    ///
+    /// A device whose own flow is direct sends anything the DNS mark table does
+    /// not know about natively out of the WAN. `Redirect` and `Drop` are exactly
+    /// the actions that contradict that, so their association is load-bearing:
+    /// if it cannot be installed, the answer must not be handed to the client.
+    ///
+    /// `Direct` needs no association to be safe (native egress is what it asks
+    /// for) and `KeepGoing` explicitly defers to the flow's own policy, which is
+    /// the same policy a missing association falls back to.
+    pub fn requires_route_association(&self) -> bool {
+        matches!(self.action, FlowMarkAction::Redirect | FlowMarkAction::Drop)
     }
 
     pub fn get_dns_mark(&self, default_flow_id: u32) -> u32 {

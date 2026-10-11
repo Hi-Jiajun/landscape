@@ -135,6 +135,23 @@ pub fn init_tc_wan_route(
         pin_and_reuse_map(&mut open_skel.maps.xdp_redirect_able, &paths.xdp_redirect_able),
         "tc_wan_egress pin xdp_redirect_able"
     )?;
+    // The unclassified-destination policy. This program declares the map because it
+    // includes the route path headers, so it has to be given the shared pin: with no
+    // path, libbpf would pin a second instance at the bpffs root.
+    crate::bpf_ctx!(
+        pin_and_reuse_map(
+            &mut open_skel.maps.route_unclassified_cfg_map,
+            &paths.route_unclassified_cfg
+        ),
+        "tc_wan_egress pin route_unclassified_cfg_map"
+    )?;
+    crate::bpf_ctx!(
+        pin_and_reuse_map(
+            &mut open_skel.maps.route_unclassified_stats_map,
+            &paths.route_unclassified_stats
+        ),
+        "tc_wan_egress pin route_unclassified_stats_map"
+    )?;
     let egress_intro_skel = bpf_ctx!(open_skel.load(), "load per-if tc_wan_egress_intro")?;
     let mut egress_hook = TcHookProxy::new(
         &egress_intro_skel.progs.tc_wan_egress_intro,

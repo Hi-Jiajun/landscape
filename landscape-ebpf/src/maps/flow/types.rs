@@ -15,7 +15,8 @@ pub(crate) struct FlowMatchKey {
     pub prefixlen: u32,
     pub l3_protocol: u8,
     pub is_match_ip: u8,
-    pub _pad: [u8; 2],
+    pub tos: u8,
+    pub _pad: u8,
     pub addr: [u8; 16],
 }
 
@@ -44,6 +45,7 @@ mod tests {
         assert_field!(FlowMatchKey, share::flow_match_key, prefixlen);
         assert_field!(FlowMatchKey, share::flow_match_key, l3_protocol);
         assert_field!(FlowMatchKey, share::flow_match_key, is_match_ip);
+        assert_field!(FlowMatchKey, share::flow_match_key, tos);
         assert_field_as!(FlowMatchKey, addr, share::flow_match_key, __anon_flow_match_key_1);
     }
 

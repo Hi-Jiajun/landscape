@@ -30,7 +30,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, broadcast};
 
 use super::raw_file::{
-    SealedRawFile, raw_dat_path, remove_raw_dat, stream_to_tmp, write_bytes_to_tmp,
+    SealedRawFile, download_with_proxy_fallback, raw_dat_path, remove_raw_dat, write_bytes_to_tmp,
 };
 
 const A_DAY: u64 = 60 * 60 * 24;
@@ -113,20 +113,64 @@ impl GeoIpService {
                 ticker.tick().await;
             }
         });
+        let service_init = service.clone();
+        spawn_task(task_label::task::GEO_IP_OBSERVER, async move {
+            let configs = service_init.store.list().await.unwrap_or_default();
+            for config in configs {
+                if !service_init.has_cached_name(&config.name).await {
+                    service_init.try_restore_from_raw(&config).await;
+                }
+            }
+        });
+
         service
+    }
+
+    async fn load_geo_ip_entry(
+        &self,
+        name: &str,
+        key: &str,
+    ) -> Option<landscape_common::config_service::geo::GeoIpConfig> {
+        match self.cache.load_entry(name, key).await {
+            Ok(Some(entry)) => Some(entry),
+            Ok(None) => {
+                let upper = key.to_uppercase();
+                if upper != key {
+                    match self.cache.load_entry(name, &upper).await {
+                        Ok(Some(entry)) => return Some(entry),
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::error!("load geo ip cache {}/{} failed: {}", name, upper, e);
+                        }
+                    }
+                }
+                let lower = key.to_lowercase();
+                if lower != key {
+                    match self.cache.load_entry(name, &lower).await {
+                        Ok(Some(entry)) => return Some(entry),
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::error!("load geo ip cache {}/{} failed: {}", name, lower, e);
+                        }
+                    }
+                }
+                None
+            }
+            Err(e) => {
+                tracing::error!("load geo ip cache {}/{} failed: {}", name, key, e);
+                None
+            }
+        }
     }
 
     pub async fn resolve_geo_key_to_ips(
         &self,
         geo_key: &landscape_common::config_service::geo::GeoConfigKey,
     ) -> Vec<landscape_common::flow::ip_mark::IpConfig> {
-        match self.cache.load_entry(&geo_key.name, &geo_key.key).await {
-            Ok(Some(geo_ip_config)) => geo_ip_config.values,
-            Ok(None) => vec![],
-            Err(e) => {
-                tracing::error!("load geo ip cache {}/{} failed: {}", geo_key.name, geo_key.key, e);
-                vec![]
-            }
+        if let Some(geo_ip_config) = self.load_geo_ip_entry(&geo_key.name, &geo_key.key).await {
+            geo_ip_config.values
+        } else {
+            vec![]
         }
     }
 
@@ -148,22 +192,15 @@ impl GeoIpService {
             for each in config.source.into_iter() {
                 match each {
                     WanIPRuleSource::GeoKey(config_key) => {
-                        match self.cache.load_entry(&config_key.name, &config_key.key).await {
-                            Ok(Some(ips)) => {
-                                result.reserve(ips.values.len());
-                                for cidr in ips.values {
-                                    if seen.insert(cidr.clone()) {
-                                        result.push(IpMarkInfo { mark, cidr, priority });
-                                    }
+                        if let Some(ips) =
+                            self.load_geo_ip_entry(&config_key.name, &config_key.key).await
+                        {
+                            result.reserve(ips.values.len());
+                            for cidr in ips.values {
+                                if seen.insert(cidr.clone()) {
+                                    result.push(IpMarkInfo { mark, cidr, priority });
                                 }
                             }
-                            Ok(None) => {}
-                            Err(e) => tracing::error!(
-                                "load geo ip cache {}/{} failed: {}",
-                                config_key.name,
-                                config_key.key,
-                                e
-                            ),
                         }
                     }
                     WanIPRuleSource::Config(c) => {
@@ -190,22 +227,10 @@ impl GeoIpService {
         tracing::debug!("download file: {}", url);
         let time = Instant::now();
 
-        let response = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| GeoError::IpSourceRequestFailed(e.to_string()))?;
-        if !response.status().is_success() {
-            return Err(GeoError::IpSourceRequestFailed(format!(
-                "{} returned HTTP {}",
-                url,
-                response.status()
-            )));
-        }
         let dat_path = raw_dat_path("ip", config.id);
-        let sealed = stream_to_tmp(response.bytes_stream(), &dat_path)
+        let sealed = download_with_proxy_fallback(client, &url, &dat_path)
             .await
-            .map_err(|e| GeoError::IpSourceRequestFailed(format!("stream to {dat_path:?}: {e}")))?;
+            .map_err(GeoError::IpSourceRequestFailed)?;
         let result =
             match self.parse_source_bytes(&config.source, read_back(&sealed, &dat_path)?).await {
                 Ok(result) => result,
@@ -248,6 +273,7 @@ impl GeoIpService {
             Ok(result) if !result.is_empty() => {
                 self.replace_cache_by_name(&config.name, result).await;
                 tracing::info!("restored geo ip cache '{}' from {:?}", config.name, dat_path);
+                self.notify_dst_ip_updated();
             }
             Ok(_) => {}
             Err(e) => {
@@ -290,7 +316,7 @@ impl GeoIpService {
 
     pub async fn refresh(&self, force: bool) {
         // 读取当前规则
-        let configs: Vec<GeoIpSourceConfig> = self.store.list().await.unwrap();
+        let configs: Vec<GeoIpSourceConfig> = self.store.list().await.unwrap_or_default();
 
         let client = Client::new();
         let mut config_names = HashSet::new();
@@ -472,7 +498,7 @@ impl GeoIpService {
     }
 
     pub async fn query_geo_by_name(&self, name: Option<String>) -> Vec<GeoIpSourceConfig> {
-        self.store.query_by_name(name).await.unwrap()
+        self.store.query_by_name(name).await.unwrap_or_default()
     }
 
     pub async fn update_geo_config_by_bytes(

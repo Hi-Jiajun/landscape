@@ -39,7 +39,9 @@ async function refresh() {
 function target_label(target: FlowConfig["flow_targets"][number]["target"]) {
   return target.t === "netns"
     ? target.container_name
-    : link_label(wan_links.value, target.link_id) || t("common.deleted_link");
+    : target.t === "local_tproxy"
+      ? `TProxy :${target.port}`
+      : link_label(wan_links.value, target.link_id) || t("common.deleted_link");
 }
 </script>
 <template>

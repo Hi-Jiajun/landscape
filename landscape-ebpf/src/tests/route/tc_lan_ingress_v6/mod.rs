@@ -131,6 +131,8 @@ fn seed_wan_slots(
             mac,
             default_route: false,
             is_docker,
+            is_tproxy: false,
+            tproxy_port: 0,
             iface_name: "test-wan".to_string(),
             iface_ip: IpAddr::V6(Ipv6Addr::UNSPECIFIED),
             gateway_ip: IpAddr::V6(gateway_addr()),

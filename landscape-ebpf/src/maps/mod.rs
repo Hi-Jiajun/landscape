@@ -110,12 +110,16 @@ macro_rules! assert_field_as {
 }
 
 pub mod dns;
+pub mod dns_guard;
 pub mod firewall;
 pub mod flow;
 pub mod flow_dns;
 pub mod flow_wanip;
 pub mod mac;
+pub mod mtu_chamber;
+pub mod mtu_guard;
 pub mod nat;
+mod pin_coverage;
 pub mod redirect_able;
 pub mod route;
 pub mod wan;
@@ -548,6 +552,31 @@ pub(crate) fn init_path(paths: &LandscapeMapPath) {
         .expect("init firewall_block_ip6_map failed");
     firewall::init_firewall_conn_metric_events(&paths.firewall_conn_metric_events)
         .expect("init firewall_conn_metric_events failed");
+    firewall::init_firewall_config_map(&paths.firewall_config)
+        .expect("init firewall_config_map failed");
+    firewall::init_firewall_allow_ports_map(&paths.firewall_allow_ports)
+        .expect("init firewall_allow_ports_map failed");
+    firewall::init_firewall_state4_map(&paths.firewall_state4)
+        .expect("init firewall_state4_map failed");
+    firewall::init_firewall_state6_map(&paths.firewall_state6)
+        .expect("init firewall_state6_map failed");
+    firewall::init_firewall_ratelimit4_map(&paths.firewall_ratelimit4)
+        .expect("init firewall_ratelimit4_map failed");
+    firewall::init_firewall_ratelimit6_map(&paths.firewall_ratelimit6)
+        .expect("init firewall_ratelimit6_map failed");
+
+    // Managed-DNS guard. The switch and the counters survive a restart; the
+    // content maps are reconciled from configuration on every apply.
+    dns_guard::init_dns_guard_config_map(&paths.dns_guard_config)
+        .expect("init dns_guard_config_map failed");
+    dns_guard::init_dns_guard_doh4_map(&paths.dns_guard_doh4)
+        .expect("init dns_guard_doh4_map failed");
+    dns_guard::init_dns_guard_doh6_map(&paths.dns_guard_doh6)
+        .expect("init dns_guard_doh6_map failed");
+    dns_guard::init_dns_guard_exempt_map(&paths.dns_guard_exempt)
+        .expect("init dns_guard_exempt_map failed");
+    dns_guard::init_dns_guard_stats_map(&paths.dns_guard_stats)
+        .expect("init dns_guard_stats_map failed");
 
     // flow match / dns socket map
     flow::init_flow_match_map(&paths.flow_match_map).expect("init flow_match_map failed");
@@ -569,6 +598,26 @@ pub(crate) fn init_path(paths: &LandscapeMapPath) {
     // 每次启动重建 cache 外层 map（含内层 map），避免结构体变更后大小不匹配。
     route::init_rt4_cache_map(&paths.rt4_cache_map, &paths.rt6_cache_map)
         .expect("init rt4/6 cache maps failed");
+
+    // The unclassified-destination policy. Created here rather than left to
+    // name-based pinning, for the same reason as every other shared map.
+    route::init_route_unclassified_map(&paths.route_unclassified_cfg)
+        .expect("init route_unclassified_cfg_map failed");
+    route::init_route_unclassified_stats_map(&paths.route_unclassified_stats)
+        .expect("init route_unclassified_stats_map failed");
+    mtu_guard::init_mtu_guard_stats_map(&paths.mtu_guard_stats)
+        .expect("init mtu_guard_stats_map failed");
+    // The IPv6 Packet Too Big chamber: its wiring (left zeroed here, so the
+    // divert starts off and only a fully set-up chamber turns it on), the
+    // admission table, the per-source budget, and the counters.
+    mtu_chamber::init_mtu_chamber_cfg_map(&paths.mtu_chamber_cfg)
+        .expect("init mtu_chamber_cfg_map failed");
+    mtu_chamber::init_mtu_chamber_stats_map(&paths.mtu_chamber_stats)
+        .expect("init mtu_chamber_stats_map failed");
+    mtu_chamber::init_mtu_chamber_state_map(&paths.mtu_chamber_state)
+        .expect("init mtu_chamber_state_map failed");
+    mtu_chamber::init_mtu_chamber_budget_map(&paths.mtu_chamber_budget)
+        .expect("init mtu_chamber_budget_map failed");
 
     // IP <-> MAC + DAD NS events
     mac::init_ip_mac_v4(&paths.ip_mac_v4).expect("init ip_mac_v4 failed");
@@ -600,6 +649,26 @@ pub(crate) fn init_maps_for_test(paths: &LandscapeMapPath) {
         .expect("test init firewall_block_ip6_map");
     firewall::init_firewall_conn_metric_events(&paths.firewall_conn_metric_events)
         .expect("test init firewall_conn_metric_events");
+    firewall::init_firewall_config_map(&paths.firewall_config)
+        .expect("test init firewall_config_map");
+    firewall::init_firewall_allow_ports_map(&paths.firewall_allow_ports)
+        .expect("test init firewall_allow_ports_map");
+    firewall::init_firewall_state4_map(&paths.firewall_state4)
+        .expect("test init firewall_state4_map");
+    firewall::init_firewall_state6_map(&paths.firewall_state6)
+        .expect("test init firewall_state6_map");
+    firewall::init_firewall_ratelimit4_map(&paths.firewall_ratelimit4)
+        .expect("test init firewall_ratelimit4_map");
+    firewall::init_firewall_ratelimit6_map(&paths.firewall_ratelimit6)
+        .expect("test init firewall_ratelimit6_map");
+    dns_guard::init_dns_guard_config_map(&paths.dns_guard_config)
+        .expect("test init dns_guard_config_map");
+    dns_guard::init_dns_guard_doh4_map(&paths.dns_guard_doh4).expect("test init dns_guard_doh4");
+    dns_guard::init_dns_guard_doh6_map(&paths.dns_guard_doh6).expect("test init dns_guard_doh6");
+    dns_guard::init_dns_guard_exempt_map(&paths.dns_guard_exempt)
+        .expect("test init dns_guard_exempt_map");
+    dns_guard::init_dns_guard_stats_map(&paths.dns_guard_stats)
+        .expect("test init dns_guard_stats_map");
     flow::init_flow_match_map(&paths.flow_match_map).expect("test init flow_match_map");
     dns::init_dns_flow_socks(&paths.dns_flow_socks).expect("test init dns_flow_socks");
 
@@ -614,6 +683,20 @@ pub(crate) fn init_maps_for_test(paths: &LandscapeMapPath) {
 
     route::init_rt4_cache_map(&paths.rt4_cache_map, &paths.rt6_cache_map)
         .expect("test init rt4/6 cache maps");
+    route::init_route_unclassified_map(&paths.route_unclassified_cfg)
+        .expect("test init route_unclassified_cfg_map");
+    route::init_route_unclassified_stats_map(&paths.route_unclassified_stats)
+        .expect("test init route_unclassified_stats_map");
+    mtu_guard::init_mtu_guard_stats_map(&paths.mtu_guard_stats)
+        .expect("test init mtu_guard_stats_map");
+    mtu_chamber::init_mtu_chamber_cfg_map(&paths.mtu_chamber_cfg)
+        .expect("test init mtu_chamber_cfg_map");
+    mtu_chamber::init_mtu_chamber_stats_map(&paths.mtu_chamber_stats)
+        .expect("test init mtu_chamber_stats_map");
+    mtu_chamber::init_mtu_chamber_state_map(&paths.mtu_chamber_state)
+        .expect("test init mtu_chamber_state_map");
+    mtu_chamber::init_mtu_chamber_budget_map(&paths.mtu_chamber_budget)
+        .expect("test init mtu_chamber_budget_map");
 
     mac::init_ip_mac_v4(&paths.ip_mac_v4).expect("test init ip_mac_v4");
     mac::init_ip_mac_v6(&paths.ip_mac_v6).expect("test init ip_mac_v6");
@@ -1082,6 +1165,8 @@ mod tests {
                 nat::NAT6_STATIC_MAP_PIN,
                 firewall::FIREWALL_BLOCK_IP4_MAP_PIN,
                 firewall::FIREWALL_BLOCK_IP6_MAP_PIN,
+                firewall::FIREWALL_CONFIG_PIN,
+                firewall::FIREWALL_ALLOW_PORTS_PIN,
                 flow::FLOW_MATCH_MAP_PIN,
                 dns::DNS_FLOW_SOCKS_PIN,
                 nat::NAT_METRIC_EVENTS_PIN,

@@ -156,6 +156,11 @@ pub struct LandscapeDnsConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "openapi", schema(required = false, nullable = false))]
     pub negative_cache_ttl: Option<u32>,
+    /// Lifetime for a negative answer that arrived with no SOA. `0` = do not cache,
+    /// which is what RFC 2308 §5 asks for; unset keeps the built-in short default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(required = false, nullable = false))]
+    pub negative_cache_ttl_without_soa: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "openapi", schema(required = false, nullable = false))]
     pub doh_listen_port: Option<u16>,

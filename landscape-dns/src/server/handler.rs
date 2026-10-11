@@ -39,6 +39,9 @@ pub struct DnsRequestHandler {
     snapshot: Arc<SnapshotStore>,
     pub flow_id: u32,
     pub msg_tx: MetricSenderState,
+    /// When this handler's rule set was published, so the audit can say how long
+    /// the match counts cover instead of implying they cover forever.
+    started_at: Option<std::time::Instant>,
 }
 
 impl DnsRequestHandler {
@@ -62,6 +65,7 @@ impl DnsRequestHandler {
             )),
             flow_id,
             msg_tx,
+            started_at: Some(std::time::Instant::now()),
         }
     }
 
@@ -126,10 +130,28 @@ impl DnsRequestHandler {
         self.chain(&runtime).check(domain, query_type, apply_filter).await
     }
 
+    /// Match counts per rule index for this flow, for the configuration audit.
+    ///
+    /// Zero for a rule means it has not matched since the process started; the
+    /// audit decides what that is worth.
+    pub fn rule_match_counts(&self) -> std::collections::BTreeMap<u32, u64> {
+        self.snapshot.load_full().resolve_engine.match_counts()
+    }
+
+    /// How long this handler has been running, in seconds. `None` when it has
+    /// just started, since an observation of zero seconds says nothing.
+    pub fn observation_secs(&self) -> Option<u64> {
+        self.started_at.map(|start| start.elapsed().as_secs())
+    }
+
     pub async fn invalidate_cache_entry(&self, domain: &ParsedDomain, query_type: RecordType) {
         let runtime = self.snapshot.load_full();
         runtime.cache.invalidate(domain, query_type).await;
-        self.snapshot.refresh_maps_from_cache(&runtime.cache);
+        // An administrative cache invalidation: the snapshot is unchanged, so a
+        // failure is only reported, not acted on.
+        if let Err(e) = self.snapshot.refresh_maps_from_cache(&runtime.cache) {
+            tracing::error!("refreshing the DNS mark table failed: {e}");
+        }
     }
 
     pub async fn refresh_cache_entry(

@@ -54,6 +54,8 @@ async fn main() {
             weight: 1,
             mac: iface.mac,
             is_docker: false,
+            is_tproxy: false,
+            tproxy_port: 0,
             iface_name: "test".to_string(),
             iface_ip: IpAddr::V6(Ipv6Addr::UNSPECIFIED),
             default_route: true,

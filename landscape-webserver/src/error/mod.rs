@@ -82,6 +82,8 @@ pub enum LandscapeApiError {
     #[error(transparent)]
     Database(#[from] DbError),
 
+    #[error("Proxy service error: {0}")]
+    Proxy(String),
     // Generic errors
     #[error("Invalid JSON: {0}")]
     JsonError(#[from] serde_json::Error),
@@ -115,6 +117,7 @@ impl LandscapeApiError {
             Self::LanHostname(e) => e.error_id(),
             Self::InitConfig(e) => e.error_id(),
             Self::Database(e) => e.error_id(),
+            Self::Proxy(_) => "proxy.error",
             Self::GatewayUnsupportedTarget => "gateway.unsupported_target",
             Self::JsonError(_) => "request.invalid_json",
             Self::JsonRejection(_) => "request.invalid_body",
@@ -146,6 +149,7 @@ impl LandscapeApiError {
             Self::LanHostname(e) => StatusCode::from_u16(e.http_status_code()).unwrap(),
             Self::InitConfig(e) => StatusCode::from_u16(e.http_status_code()).unwrap(),
             Self::Database(e) => StatusCode::from_u16(e.http_status_code()).unwrap(),
+            Self::Proxy(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::GatewayUnsupportedTarget => StatusCode::NOT_IMPLEMENTED,
             Self::JsonError(_) => StatusCode::BAD_REQUEST,
             Self::JsonRejection(r) => r.status(),
@@ -177,6 +181,7 @@ impl LandscapeApiError {
             Self::LanHostname(e) => e.error_args(),
             Self::InitConfig(e) => e.error_args(),
             Self::Database(e) => e.error_args(),
+            Self::Proxy(msg) => serde_json::json!({ "reason": msg }),
             Self::GatewayUnsupportedTarget | Self::JsonError(_) | Self::JsonRejection(_) => {
                 serde_json::json!({})
             }
@@ -211,6 +216,7 @@ impl LandscapeApiError {
             Self::LanHostname(e) => e.to_public_message(),
             Self::InitConfig(e) => e.to_public_message(),
             Self::Database(e) => e.to_public_message(),
+            Self::Proxy(msg) => msg.clone(),
             Self::GatewayUnsupportedTarget | Self::JsonError(_) | Self::JsonRejection(_) => {
                 self.to_string()
             }

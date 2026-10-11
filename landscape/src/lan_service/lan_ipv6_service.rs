@@ -435,21 +435,27 @@ impl LanIPv6ManagerService {
                 supervise_dad_dispatcher(source, dao_event_senders),
             );
         }
-        let service =
-            ServiceManager::init(store.list().await.unwrap(), server_starter.clone()).await;
+        let initial_configs = store.list().await.unwrap_or_else(|e| {
+            tracing::error!("failed to load LAN IPv6 configs: {e}");
+            Vec::new()
+        });
+        let service = ServiceManager::init(initial_configs, server_starter.clone()).await;
 
         let service_clone = service.clone();
         spawn_task(task_label::task::LAN_IPV6_SERVICE_OBSERVER, async move {
-            while let Ok(msg) = dev_observer.recv().await {
+            while let Some(msg) = dev_observer.recv_skipping_lag().await {
                 match msg {
                     IfaceObserverAction::Up(iface_name) => {
                         tracing::info!("restart {iface_name} LAN IPv6 service");
-                        let service_config = if let Some(service_config) =
-                            store.find_by_id(iface_name.clone()).await.unwrap()
-                        {
-                            service_config
-                        } else {
-                            continue;
+                        let service_config = match store.find_by_id(iface_name.clone()).await {
+                            Ok(Some(cfg)) => cfg,
+                            Ok(None) => continue,
+                            Err(e) => {
+                                tracing::error!(
+                                    "failed to find LAN IPv6 config for {iface_name}: {e}"
+                                );
+                                continue;
+                            }
                         };
 
                         let _ = service_clone.update_service(service_config).await;

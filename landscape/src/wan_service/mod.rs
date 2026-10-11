@@ -7,6 +7,8 @@ use landscape_common::{
 
 pub mod dhcpv4_client;
 pub mod ipv6pd_client;
+pub mod mss_clamp_service;
+pub mod mtu_chamber_env;
 pub mod pppd_service;
 pub mod pppoe_client;
 pub mod wan_route_service;

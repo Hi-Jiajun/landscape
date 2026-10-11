@@ -1,5 +1,6 @@
 use axum::extract::{Query, State};
 use landscape_common::api_response::LandscapeApiResp as CommonApiResp;
+use landscape_common::audit::{AuditInput, AuditLimits, AuditReport, audit};
 use landscape_common::dns::check::{CheckChainDnsResult, CheckDnsReq};
 use landscape_common::service::ServiceStatus;
 use utoipa_axum::router::OpenApiRouter;
@@ -13,6 +14,43 @@ pub fn get_dns_service_paths() -> OpenApiRouter<LandscapeApp> {
     OpenApiRouter::new()
         .routes(routes!(get_dns_service_status, start_dns_service, stop_dns_service))
         .routes(routes!(check_domain, invalidate_domain_cache, refresh_domain_cache))
+        .routes(routes!(audit_dns_rules))
+}
+
+#[utoipa::path(
+    get,
+    path = "/service/audit",
+    tag = "DNS Service",
+    operation_id = "audit_dns_rules",
+    summary = "Static checks and runtime statistics over the DNS rules",
+    description = "Reports what looks wrong in the DNS rule set, with the evidence behind each \
+                   finding, a confidence grade (C0-C3), and a suggestion where there is one. \
+                   Nothing is applied: every finding says whether it needs confirmation, and \
+                   anything that would widen direct access is marked as doing so. First phase of \
+                   the self-improving loop: no inference, no automatic rule changes.",
+    responses((
+        status = 200,
+        description = "The findings, what was inspected, and the confidence grades",
+        body = CommonApiResp<AuditReport>
+    ))
+)]
+async fn audit_dns_rules(State(state): State<LandscapeApp>) -> LandscapeApiResult<AuditReport> {
+    use landscape_common::service::controller::ConfigStoreController;
+
+    let rules = state.dns_rule_service.list().await?;
+    // The statistics are per flow; the audit is about the rules, which the seeded
+    // and default flows own, so flow 0 is the one whose counters are read.
+    let (hits, observed) = state.dns_service.rule_match_counts(0).await;
+    let hits_available = hits.is_some();
+
+    let report = audit(AuditInput {
+        rules: &rules,
+        hits: hits.unwrap_or_default().into_iter().collect(),
+        observed_secs: observed,
+        hits_available,
+        limits: AuditLimits::default(),
+    });
+    LandscapeApiResp::success(report)
 }
 
 #[utoipa::path(
