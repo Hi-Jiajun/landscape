@@ -374,17 +374,19 @@ fn lan_ingress_flow_match_ip_entry_overrides_mac_entry() {
 fn lan_ingress_dns_rule_redirects_when_no_ip_rule() {
     // DNS rule row: with an empty ip-trie, the dns mark alone drives the
     // verdict (and gets cached like a normal redirect).
-    load_skel!("tc-lan-flow-dns-only", skel);
+    load_skel!("tc-lan-flow-dns-only", skel, paths);
     create_route4_cache_inner_map(&skel.maps.rt4_cache_map, LAN_CACHE);
     create_flow_dns_inner_map_v4(
         &skel.maps.flow4_dns_map,
+        &paths,
         0,
         &[FlowMarkInfo {
             ip: IpAddr::V4(remote_wan_addr()),
             mark: FLOW_REDIRECT_MARK,
             priority: 100,
         }],
-    );
+    )
+    .expect("seed the flow4_dns inner map");
     seed_wan_slots(&skel, 5, TARGET_IFINDEX, false, None);
 
     let pkt = simple_ipv4_tcp(client_addr(), remote_wan_addr());
@@ -406,18 +408,20 @@ fn lan_ingress_dns_rule_redirects_when_no_ip_rule() {
 fn lan_ingress_dns_rule_lower_or_equal_priority_wins() {
     // The dns comparison is `dns.priority <= priority`: with equal
     // priorities the dns rule overrides the ip rule.
-    load_skel!("tc-lan-flow-dns-wins", skel);
+    load_skel!("tc-lan-flow-dns-wins", skel, paths);
     create_route4_cache_inner_map(&skel.maps.rt4_cache_map, LAN_CACHE);
     seed_flow_rule_under(&skel, 0, remote_wan_addr(), FLOW_REDIRECT_MARK); // ip priority 100
     create_flow_dns_inner_map_v4(
         &skel.maps.flow4_dns_map,
+        &paths,
         0,
         &[FlowMarkInfo {
             ip: IpAddr::V4(remote_wan_addr()),
             mark: FLOW_DROP_MARK,
             priority: 100, // equal → dns wins
         }],
-    );
+    )
+    .expect("seed the flow4_dns inner map");
 
     let pkt = simple_ipv4_tcp(client_addr(), remote_wan_addr());
     let (ret, _out, mark, _forwarded) = run_lan_ingress(&skel, &pkt, &mut lan_ctx());
@@ -428,18 +432,20 @@ fn lan_ingress_dns_rule_lower_or_equal_priority_wins() {
 
 #[test]
 fn lan_ingress_dns_rule_higher_priority_loses_to_ip_rule() {
-    load_skel!("tc-lan-flow-dns-loses", skel);
+    load_skel!("tc-lan-flow-dns-loses", skel, paths);
     create_route4_cache_inner_map(&skel.maps.rt4_cache_map, LAN_CACHE);
     seed_flow_rule_under(&skel, 0, remote_wan_addr(), FLOW_REDIRECT_MARK); // ip priority 100
     create_flow_dns_inner_map_v4(
         &skel.maps.flow4_dns_map,
+        &paths,
         0,
         &[FlowMarkInfo {
             ip: IpAddr::V4(remote_wan_addr()),
             mark: FLOW_DROP_MARK,
             priority: 200, // higher → ip rule wins
         }],
-    );
+    )
+    .expect("seed the flow4_dns inner map");
     seed_wan_slots(&skel, 5, TARGET_IFINDEX, false, None);
 
     let pkt = simple_ipv4_tcp(client_addr(), remote_wan_addr());
