@@ -247,7 +247,10 @@ mod tests {
             flow(
                 11,
                 true,
-                vec![WeightedFlowTarget::new(FlowTarget::Interface { name: "wan".to_string() }, 1)],
+                vec![WeightedFlowTarget::new(
+                    FlowTarget::Interface { link_id: Uuid::new_v4(), name: "wan".to_string() },
+                    1,
+                )],
             ),
             flow(12, false, vec![tproxy(7894, 1)]),
             flow(13, true, vec![tproxy(7895, 0)]),

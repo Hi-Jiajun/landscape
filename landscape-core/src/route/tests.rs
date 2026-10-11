@@ -666,7 +666,7 @@ fn collect_refresh_resolves_by_link_id_with_stale_name() {
     );
     let configs = vec![flow_config(7, true, vec![stale_target])];
 
-    let result = collect_target_refresh_result(&configs, &wan_infos);
+    let result = collect_target_refresh_result(&configs, &wan_infos, false);
 
     let targets = result.get(&7).expect("flow_id 7 should be present");
     assert_eq!(targets.len(), 1, "a correct link_id must resolve regardless of its stale name");
@@ -686,7 +686,7 @@ fn collect_refresh_netns_owner_does_not_satisfy_interface_target() {
 
     let configs = vec![flow_config(9, true, vec![iface_target("wan0", 1)])];
 
-    let result = collect_target_refresh_result(&configs, &wan_infos);
+    let result = collect_target_refresh_result(&configs, &wan_infos, false);
 
     let targets = result.get(&9).expect("flow_id 9 should be present");
     assert!(

@@ -662,7 +662,9 @@ mod tests {
         }
     }
 
-    fn first_resolver(engine: &ResolveEngine) -> Arc<crate::connection::LandscapeResolver> {
+    // The rule hands out the failover wrapper, so that is what the identity
+    // assertions below have to compare.
+    fn first_resolver(engine: &ResolveEngine) -> Arc<crate::connection::FailoverResolver> {
         engine.iter().next().expect("expected a resolve rule").1.shared_resolver().clone()
     }
 
