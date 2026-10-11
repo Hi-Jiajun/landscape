@@ -106,6 +106,14 @@ macro_rules! load_skel {
         let mut open_object = std::mem::MaybeUninit::uninit();
         let $skel = builder.open(&mut open_object).unwrap().load().unwrap();
     };
+    ($pin:expr, $skel:ident, $paths:ident) => {
+        let pin_root = isolated_pin_root($pin);
+        let $paths = crate::LandscapeMapPath::from_root(&pin_root);
+        let mut builder = tc_wan_egress_intro::TcWanEgressIntroSkelBuilder::default();
+        builder.object_builder_mut().pin_root_path(&pin_root).unwrap();
+        let mut open_object = std::mem::MaybeUninit::uninit();
+        let $skel = builder.open(&mut open_object).unwrap().load().unwrap();
+    };
 }
 
 fn run_wan_egress(
@@ -537,17 +545,19 @@ fn wan_egress_flow_direct_resets_flow_id_to_default() {
 fn wan_egress_dns_rule_redirects_when_no_ip_rule() {
     // DNS rule row: with an empty ip-trie, the dns mark alone drives the
     // verdict.
-    load_skel!("tc-wan-eg-dns-only", skel);
+    load_skel!("tc-wan-eg-dns-only", skel, paths);
     assert_no_route_cache(&skel);
     create_flow_dns_inner_map_v4(
         &skel.maps.flow4_dns_map,
+        &paths,
         0,
         &[FlowMarkInfo {
             ip: IpAddr::V4(remote_wan_addr()),
             mark: FLOW_REDIRECT_MARK,
             priority: 100,
         }],
-    );
+    )
+    .expect("seed the flow4_dns inner map");
     seed_wan_slots(&skel, 5, TARGET_IFINDEX, false, None);
 
     let pkt = simple_ipv4_tcp(local_addr(), remote_wan_addr());
@@ -562,17 +572,19 @@ fn wan_egress_dns_rule_redirects_when_no_ip_rule() {
 fn wan_egress_dns_rule_lower_or_equal_priority_wins() {
     // The dns comparison is `dns.priority <= priority`: with equal
     // priorities the dns rule overrides the ip rule.
-    load_skel!("tc-wan-eg-dns-wins", skel);
+    load_skel!("tc-wan-eg-dns-wins", skel, paths);
     seed_flow_rule(&skel, remote_wan_addr(), FLOW_REDIRECT_MARK); // ip priority 100
     create_flow_dns_inner_map_v4(
         &skel.maps.flow4_dns_map,
+        &paths,
         0,
         &[FlowMarkInfo {
             ip: IpAddr::V4(remote_wan_addr()),
             mark: FLOW_DROP_MARK,
             priority: 100, // equal → dns wins
         }],
-    );
+    )
+    .expect("seed the flow4_dns inner map");
 
     let pkt = simple_ipv4_tcp(local_addr(), remote_wan_addr());
     let (ret, _out, mark, _forwarded) = run_wan_egress(&skel, &pkt, &mut egress_ctx());
@@ -583,17 +595,19 @@ fn wan_egress_dns_rule_lower_or_equal_priority_wins() {
 
 #[test]
 fn wan_egress_dns_rule_higher_priority_loses_to_ip_rule() {
-    load_skel!("tc-wan-eg-dns-loses", skel);
+    load_skel!("tc-wan-eg-dns-loses", skel, paths);
     seed_flow_rule(&skel, remote_wan_addr(), FLOW_REDIRECT_MARK); // ip priority 100
     create_flow_dns_inner_map_v4(
         &skel.maps.flow4_dns_map,
+        &paths,
         0,
         &[FlowMarkInfo {
             ip: IpAddr::V4(remote_wan_addr()),
             mark: FLOW_DROP_MARK,
             priority: 200, // higher → ip rule wins
         }],
-    );
+    )
+    .expect("seed the flow4_dns inner map");
     seed_wan_slots(&skel, 5, TARGET_IFINDEX, false, None);
 
     let pkt = simple_ipv4_tcp(local_addr(), remote_wan_addr());

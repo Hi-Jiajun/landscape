@@ -82,7 +82,7 @@ fn passthrough_keeps_the_previous_behaviour_and_the_cache_says_flow_zero() {
         unclassified_dst(),
     )
     .expect("the verdict is cached");
-    assert_eq!(cache & 0xffff, 0, "an unclassified destination caches as flow 0");
+    assert_eq!(cache.mark_value & 0xffff, 0, "an unclassified destination caches as flow 0");
 }
 
 #[test]
@@ -131,7 +131,7 @@ fn the_fallback_tier_is_what_gets_cached() {
         unclassified_dst(),
     )
     .expect("the verdict is cached");
-    assert_eq!(cache & 0xff, 14, "the cache must hold the tier, not flow 0");
+    assert_eq!(cache.mark_value & 0xff, 14, "the cache must hold the tier, not flow 0");
 }
 
 #[test]

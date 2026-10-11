@@ -68,6 +68,14 @@ macro_rules! load_skel {
         let mut open_object = std::mem::MaybeUninit::uninit();
         let $skel = builder.open(&mut open_object).unwrap().load().unwrap();
     };
+    ($pin:expr, $skel:ident, $paths:ident) => {
+        let pin_root = isolated_pin_root($pin);
+        let $paths = crate::LandscapeMapPath::from_root(&pin_root);
+        let mut builder = tc_wan_egress_intro::TcWanEgressIntroSkelBuilder::default();
+        builder.object_builder_mut().pin_root_path(&pin_root).unwrap();
+        let mut open_object = std::mem::MaybeUninit::uninit();
+        let $skel = builder.open(&mut open_object).unwrap().load().unwrap();
+    };
 }
 
 fn run_wan6_egress(
@@ -487,17 +495,19 @@ fn wan6_egress_dns_rule_redirects_when_no_ip_rule() {
     // DNS rule row: with an empty ip-trie, the dns mark alone drives the
     // verdict (the priority-comparison rows are locked by the v4 egress and
     // v6 lan-ingress twins — same inlined route6_flow_verdict).
-    load_skel!("tc-wan6-eg-dns-only", skel);
+    load_skel!("tc-wan6-eg-dns-only", skel, paths);
     assert_no_route_cache(&skel);
     create_flow_dns_inner_map_v6(
         &skel.maps.flow6_dns_map,
+        &paths,
         0,
         &[FlowMarkInfo {
             ip: IpAddr::V6(remote_addr()),
             mark: FLOW_REDIRECT_MARK,
             priority: 100,
         }],
-    );
+    )
+    .expect("seed the flow6_dns inner map");
     seed_wan_slots(&skel, 5, TARGET_IFINDEX, false, None);
 
     let pkt = simple_ipv6_tcp_syn(local_addr(), remote_addr());

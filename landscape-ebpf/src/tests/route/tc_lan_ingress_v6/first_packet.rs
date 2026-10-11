@@ -413,17 +413,19 @@ fn lan6_ingress_flow_match_ip_entry_overrides_mac_entry() {
 
 #[test]
 fn lan6_ingress_dns_rule_redirects_when_no_ip_rule() {
-    load_skel!("tc-lan6-dns-only", skel);
+    load_skel!("tc-lan6-dns-only", skel, paths);
     create_route6_cache_inner_map(&skel.maps.rt6_cache_map, LAN_CACHE);
     create_flow_dns_inner_map_v6(
         &skel.maps.flow6_dns_map,
+        &paths,
         0,
         &[FlowMarkInfo {
             ip: IpAddr::V6(remote_addr()),
             mark: FLOW_REDIRECT_MARK,
             priority: 100,
         }],
-    );
+    )
+    .expect("seed the flow6_dns inner map");
     seed_wan_slots(&skel, 5, TARGET_IFINDEX, false, None);
 
     let pkt = simple_ipv6_tcp_syn(local_addr(), remote_addr());
@@ -439,18 +441,20 @@ fn lan6_ingress_dns_rule_redirects_when_no_ip_rule() {
 
 #[test]
 fn lan6_ingress_dns_rule_lower_or_equal_priority_wins() {
-    load_skel!("tc-lan6-dns-wins", skel);
+    load_skel!("tc-lan6-dns-wins", skel, paths);
     create_route6_cache_inner_map(&skel.maps.rt6_cache_map, LAN_CACHE);
     seed_flow_rule_under(&skel, 0, remote_addr(), FLOW_REDIRECT_MARK);
     create_flow_dns_inner_map_v6(
         &skel.maps.flow6_dns_map,
+        &paths,
         0,
         &[FlowMarkInfo {
             ip: IpAddr::V6(remote_addr()),
             mark: FLOW_DROP_MARK,
             priority: 100, // equal → dns wins (`dns.priority <= priority`)
         }],
-    );
+    )
+    .expect("seed the flow6_dns inner map");
 
     let pkt = simple_ipv6_tcp_syn(local_addr(), remote_addr());
     let (ret, _out, mark, _forwarded) = run_lan6_ingress(&skel, &pkt, &mut lan_ctx());
@@ -461,18 +465,20 @@ fn lan6_ingress_dns_rule_lower_or_equal_priority_wins() {
 
 #[test]
 fn lan6_ingress_dns_rule_higher_priority_loses_to_ip_rule() {
-    load_skel!("tc-lan6-dns-loses", skel);
+    load_skel!("tc-lan6-dns-loses", skel, paths);
     create_route6_cache_inner_map(&skel.maps.rt6_cache_map, LAN_CACHE);
     seed_flow_rule_under(&skel, 0, remote_addr(), FLOW_REDIRECT_MARK);
     create_flow_dns_inner_map_v6(
         &skel.maps.flow6_dns_map,
+        &paths,
         0,
         &[FlowMarkInfo {
             ip: IpAddr::V6(remote_addr()),
             mark: FLOW_DROP_MARK,
             priority: 200, // higher → ip rule wins
         }],
-    );
+    )
+    .expect("seed the flow6_dns inner map");
     seed_wan_slots(&skel, 5, TARGET_IFINDEX, false, None);
 
     let pkt = simple_ipv6_tcp_syn(local_addr(), remote_addr());

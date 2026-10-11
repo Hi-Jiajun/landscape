@@ -111,6 +111,14 @@ macro_rules! load_skel {
         let mut open_object = std::mem::MaybeUninit::uninit();
         let $skel = builder.open(&mut open_object).unwrap().load().unwrap();
     };
+    ($pin:expr, $skel:ident, $paths:ident) => {
+        let pin_root = isolated_pin_root($pin);
+        let $paths = crate::LandscapeMapPath::from_root(&pin_root);
+        let mut builder = tc_lan_ingress_intro::TcLanIngressIntroSkelBuilder::default();
+        builder.object_builder_mut().pin_root_path(&pin_root).unwrap();
+        let mut open_object = std::mem::MaybeUninit::uninit();
+        let $skel = builder.open(&mut open_object).unwrap().load().unwrap();
+    };
 }
 
 fn run_lan_ingress(
