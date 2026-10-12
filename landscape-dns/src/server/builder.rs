@@ -312,8 +312,7 @@ mod tests {
         assert_eq!(drift, changed);
 
         let rebuilt = builder.registry.get_or_build(&geo_key(None)).await.unwrap();
-        let rebuilt_tagged =
-            builder.registry.get_or_build(&geo_key(Some("tagged"))).await.unwrap();
+        let rebuilt_tagged = builder.registry.get_or_build(&geo_key(Some("tagged"))).await.unwrap();
         assert!(!Arc::ptr_eq(&first, &rebuilt));
         assert!(!Arc::ptr_eq(&tagged, &rebuilt_tagged));
     }

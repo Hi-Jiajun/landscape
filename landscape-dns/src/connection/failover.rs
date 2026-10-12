@@ -111,10 +111,7 @@ pub(crate) struct FailoverResolver {
 }
 
 impl FailoverResolver {
-    pub(crate) fn new(
-        primary: LandscapeResolver,
-        backup: Option<LandscapeResolver>,
-    ) -> Self {
+    pub(crate) fn new(primary: LandscapeResolver, backup: Option<LandscapeResolver>) -> Self {
         Self {
             primary,
             backup,

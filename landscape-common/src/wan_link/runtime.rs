@@ -4,8 +4,8 @@ use uuid::Uuid;
 
 use crate::net::MacAddr;
 use crate::wan_service::ipv6_pd::config::DEFAULT_EXPECTED_PD_LEN;
-use crate::wan_service::pppd::PPPoEPlugin;
 use crate::wan_service::mtu_chamber::MtuChamberSettings;
+use crate::wan_service::pppd::PPPoEPlugin;
 
 use super::{WanLinkConfig, WanLinkKind, WanLinkV4Model};
 

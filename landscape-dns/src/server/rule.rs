@@ -229,8 +229,10 @@ impl DNSResolveRuntime {
                         .answers()
                         .iter()
                         .filter(|ietm| match &ietm.data {
-                            RData::A(A(ipv4)) => is_global_ipv4(&ipv4),
-                            RData::AAAA(AAAA(ipv6)) => is_global_ipv6(&ipv6),
+                            // Matched through `&ietm.data`, so match ergonomics already
+                            // hand these over as references.
+                            RData::A(A(ipv4)) => is_global_ipv4(ipv4),
+                            RData::AAAA(AAAA(ipv6)) => is_global_ipv6(ipv6),
                             _ => true,
                         })
                         .cloned()

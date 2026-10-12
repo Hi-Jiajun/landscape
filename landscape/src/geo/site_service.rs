@@ -315,8 +315,7 @@ impl GeoSiteService {
             tracing::warn!("persist raw geo site file {:?} failed: {}", dat_path, e);
         }
 
-        let apply_result =
-            self.apply_geo_values(&config.name, vec![(key.clone(), domains)]).await;
+        let apply_result = self.apply_geo_values(&config.name, vec![(key.clone(), domains)]).await;
 
         if let GeoSiteSource::AdguardHome { next_update_at, key, .. } = &mut config.source {
             *next_update_at = get_f64_timestamp() + MILL_A_DAY as f64;

@@ -173,7 +173,9 @@ pub enum FlowTarget {
     Netns {
         container_name: String,
     },
-    LocalTproxy { port: u16 },
+    LocalTproxy {
+        port: u16,
+    },
 }
 
 fn default_flow_target_weight() -> u32 {

@@ -15,9 +15,9 @@ use landscape_common::dns::upstream::DnsUpstreamMode;
 
 use crate::connection::provider::{HickoryMarkProvider, MarkConnectionProvider};
 
+pub(crate) mod failover;
 pub(crate) mod pool;
 pub(crate) mod provider;
-pub(crate) mod failover;
 #[cfg(feature = "pool-native")]
 pub(crate) mod upstream;
 

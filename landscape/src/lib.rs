@@ -22,8 +22,8 @@ pub mod geo;
 pub mod metric;
 pub mod netlink;
 pub use crate::netlink::observer;
-pub mod wan_link_service;
 pub mod proxy;
+pub mod wan_link_service;
 pub mod wan_service;
 pub mod wifi;
 

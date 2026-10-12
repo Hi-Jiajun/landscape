@@ -14,8 +14,8 @@ use crate::service::ServiceConfigError;
 use crate::service::manager::ServiceKeyProvider;
 use crate::utils::id::gen_database_uuid;
 use crate::utils::time::get_f64_timestamp;
-use crate::wan_service::pppd::{PPPDConfig, PPPoEPlugin};
 use crate::wan_service::mtu_chamber::MtuChamberSettings;
+use crate::wan_service::pppd::{PPPDConfig, PPPoEPlugin};
 
 /// Valid chain slots are `1..=LINK_CHAIN_ID_MAX` (`0` means "unassigned").
 pub const LINK_CHAIN_ID_MIN: u16 = 1;

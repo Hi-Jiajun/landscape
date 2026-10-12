@@ -158,21 +158,26 @@ pub(super) async fn run(
         // that counts what the egress cannot carry is the evidence for whether the
         // remedy is worth having, so switching the remedy off must not switch the
         // measurement off with it.
-        let desired =
-            match probe_mtu_chamber(&iface.iface_name, config.mtu_chamber.as_ref(), config.clamp_size).await {
-                Ok(probe) => Some(probe),
-                Err(e) => {
-                    if last_error.as_deref() != Some(e.as_str()) {
-                        tracing::error!(
-                            "cannot derive the MTU stage's shape for {}: {e}; the \
+        let desired = match probe_mtu_chamber(
+            &iface.iface_name,
+            config.mtu_chamber.as_ref(),
+            config.clamp_size,
+        )
+        .await
+        {
+            Ok(probe) => Some(probe),
+            Err(e) => {
+                if last_error.as_deref() != Some(e.as_str()) {
+                    tracing::error!(
+                        "cannot derive the MTU stage's shape for {}: {e}; the \
                              oversize counters are blind and nothing is diverted",
-                            iface.iface_name
-                        );
-                        last_error = Some(e);
-                    }
-                    None
+                        iface.iface_name
+                    );
+                    last_error = Some(e);
                 }
-            };
+                None
+            }
+        };
         if desired.is_some() && last_error.take().is_some() {
             tracing::info!("the MTU chamber's shape is readable again for {}", iface.iface_name);
         }

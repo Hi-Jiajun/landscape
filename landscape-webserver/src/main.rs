@@ -849,7 +849,6 @@ async fn run_system(
     )
     .await;
 
-
     startup_phase!(
         "docker_service.start_to_listen_event",
         docker_service.start_to_listen_event().await
