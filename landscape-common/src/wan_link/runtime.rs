@@ -5,6 +5,7 @@ use uuid::Uuid;
 use crate::net::MacAddr;
 use crate::wan_service::ipv6_pd::config::DEFAULT_EXPECTED_PD_LEN;
 use crate::wan_service::pppd::PPPoEPlugin;
+use crate::wan_service::mtu_chamber::MtuChamberSettings;
 
 use super::{WanLinkConfig, WanLinkKind, WanLinkV4Model};
 
@@ -99,6 +100,7 @@ impl RuntimeWanLinkConfig {
             mss: RuntimeWanLinkMssConfig {
                 enable: config.mss.enable,
                 clamp_size: config.mss.clamp_size.unwrap_or(DEFAULT_CLAMP_SIZE),
+                mtu_chamber: config.mss.mtu_chamber.clone(),
             },
         }
     }
@@ -164,10 +166,11 @@ pub struct RuntimeWanLinkFirewallConfig {
     pub enable: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeWanLinkMssConfig {
     pub enable: bool,
     pub clamp_size: u16,
+    pub mtu_chamber: Option<MtuChamberSettings>,
 }
 
 #[cfg(test)]
