@@ -3,12 +3,14 @@ use std::sync::Arc;
 use landscape_common::service::{ServiceHandle, ServiceStatus};
 use landscape_common::wan_link::{RuntimeWanLinkMssConfig, SessionIface};
 use landscape_common::wan_service::mss_clamp::dataplane::MssClampDataplane;
+use landscape_common::wan_service::mtu_chamber::MtuChamberDataplane;
 
 pub(super) async fn run(
     iface: SessionIface,
     config: RuntimeWanLinkMssConfig,
     service_status: ServiceHandle,
     dataplane: Arc<dyn MssClampDataplane>,
+    mtu_chamber_dataplane: Arc<dyn MtuChamberDataplane>,
 ) {
     let mss_clamp = match dataplane.attach(iface.ifindex, config.clamp_size, iface.has_mac()) {
         Ok(handle) => handle,

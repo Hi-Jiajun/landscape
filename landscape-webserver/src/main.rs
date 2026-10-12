@@ -823,6 +823,7 @@ async fn run_system(
         ebpf_rt.clone().pppoe_dataplane(),
         ebpf_rt.clone().nat(),
         ebpf_rt.clone().mss_clamp(),
+        ebpf_rt.clone().mtu_chamber(),
         ebpf_rt.clone().firewall(),
         prefix_map.clone(),
         ipv6_prefix_sender.clone(),

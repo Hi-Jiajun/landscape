@@ -33,6 +33,7 @@ use landscape_common::wan_service::firewall::dataplane::FirewallDataplane;
 use landscape_common::wan_service::ipv6_pd::config::DEFAULT_EXPECTED_PD_LEN;
 use landscape_common::wan_service::ipv6_pd::{IPV6PDPrefixStatus, LDIAPrefix};
 use landscape_common::wan_service::mss_clamp::dataplane::MssClampDataplane;
+use landscape_common::wan_service::mtu_chamber::MtuChamberDataplane;
 use landscape_common::wan_service::nat::dataplane::NatDataplane;
 use landscape_common::wan_service::pppoe::PppoeDataplane;
 use landscape_core::pd_prefix::IAPrefixMap;
@@ -79,6 +80,7 @@ pub struct WanLinkService {
     pppoe_dataplane: Arc<dyn PppoeDataplane>,
     nat_dataplane: Arc<dyn NatDataplane>,
     mss_dataplane: Arc<dyn MssClampDataplane>,
+    mtu_chamber_dataplane: Arc<dyn MtuChamberDataplane>,
     firewall_dataplane: Arc<dyn FirewallDataplane>,
     prefix_map: IAPrefixMap,
     prefix_sender: IAPrefixEventSender,
@@ -96,6 +98,7 @@ impl WanLinkService {
         pppoe_dataplane: Arc<dyn PppoeDataplane>,
         nat_dataplane: Arc<dyn NatDataplane>,
         mss_dataplane: Arc<dyn MssClampDataplane>,
+        mtu_chamber_dataplane: Arc<dyn MtuChamberDataplane>,
         firewall_dataplane: Arc<dyn FirewallDataplane>,
         prefix_map: IAPrefixMap,
         prefix_sender: IAPrefixEventSender,
@@ -110,6 +113,7 @@ impl WanLinkService {
             pppoe_dataplane,
             nat_dataplane,
             mss_dataplane,
+            mtu_chamber_dataplane,
             firewall_dataplane,
             prefix_map,
             prefix_sender,
@@ -260,14 +264,17 @@ impl ServiceStarterTrait for WanLinkService {
             |state| state.is_up(),
             {
                 let dataplane = self.mss_dataplane.clone();
+                let mtu_chamber_dataplane = self.mtu_chamber_dataplane.clone();
                 Arc::new(move |iface, cfg, status| {
                     let dataplane = dataplane.clone();
+                    let mtu_chamber_dataplane = mtu_chamber_dataplane.clone();
                     Box::pin(async move {
                         mss::run(
                             iface,
                             RuntimeWanLinkConfig::from_config(&cfg).mss,
                             status,
                             dataplane,
+                            mtu_chamber_dataplane.clone(),
                         )
                         .await;
                     })
@@ -853,6 +860,7 @@ impl WanLinkServiceManagerService {
         pppoe_dataplane: Arc<dyn PppoeDataplane>,
         nat_dataplane: Arc<dyn NatDataplane>,
         mss_dataplane: Arc<dyn MssClampDataplane>,
+        mtu_chamber_dataplane: Arc<dyn MtuChamberDataplane>,
         firewall_dataplane: Arc<dyn FirewallDataplane>,
         prefix_map: IAPrefixMap,
         prefix_sender: IAPrefixEventSender,
@@ -871,6 +879,7 @@ impl WanLinkServiceManagerService {
             pppoe_dataplane,
             nat_dataplane,
             mss_dataplane,
+            mtu_chamber_dataplane,
             firewall_dataplane,
             prefix_map.clone(),
             prefix_sender,
