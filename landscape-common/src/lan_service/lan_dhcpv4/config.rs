@@ -56,6 +56,7 @@ fn option_code_name(code: u8) -> &'static str {
         6 => "Domain Name Server",
         12 => "Host Name",
         15 => "Domain Name",
+        26 => "Interface MTU",
         28 => "Broadcast Address",
         43 => "Vendor Extensions",
         51 => "Address Lease Time",
@@ -96,6 +97,8 @@ pub struct RelayAgentInfo(pub dhcproto::v4::relay::RelayAgentInformation);
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum CustomDhcpOption {
+    /// Option 26 — Interface MTU (RFC 2132 §5.1, u16 >= 68)
+    InterfaceMtu(u16),
     /// Option 66 — TFTP server name (iPXE, string)
     TFTPServerName(String),
     /// Option 67 — Boot file name (iPXE, string)
@@ -131,6 +134,7 @@ impl CustomDhcpOption {
     /// DHCP option code for this custom option.
     pub fn code(&self) -> u8 {
         match self {
+            CustomDhcpOption::InterfaceMtu(_) => 26,
             CustomDhcpOption::TFTPServerName(_) => 66,
             CustomDhcpOption::BootfileName(_) => 67,
             CustomDhcpOption::VendorExtensions(_) => 43,
@@ -142,6 +146,7 @@ impl CustomDhcpOption {
     /// Convert to dhcproto [`DhcpV4Option`].
     pub fn to_dhcp_option(&self) -> DhcpV4Option {
         match self {
+            CustomDhcpOption::InterfaceMtu(mtu) => DhcpV4Option::InterfaceMtu(*mtu),
             CustomDhcpOption::TFTPServerName(s) => {
                 DhcpV4Option::TFTPServerName(s.as_bytes().to_vec())
             }
@@ -207,6 +212,11 @@ impl CustomDhcpOption {
     /// - Binary options (VendorExtensions) must be non-empty and <= 255 bytes.
     pub fn validate(&self) -> Result<(), String> {
         match self {
+            CustomDhcpOption::InterfaceMtu(mtu) => {
+                if *mtu < 68 {
+                    return Err(format!("InterfaceMtu must be >= 68 (RFC 2132), got {}", mtu));
+                }
+            }
             CustomDhcpOption::TFTPServerName(s) => {
                 if s.is_empty() {
                     return Err("TFTPServerName must not be empty".into());
@@ -584,6 +594,23 @@ mod tests {
     use super::*;
 
     // ── CustomDhcpOption serde ────────────────────────────────────
+
+    #[test]
+    fn serde_interface_mtu() {
+        let json = r#"{"InterfaceMtu":1492}"#;
+        let opt: CustomDhcpOption = serde_json::from_str(json).unwrap();
+        assert_eq!(opt.code(), 26);
+        assert!(opt.validate().is_ok());
+        assert_eq!(opt.to_raw().unwrap(), (26, vec![0x05, 0xd4]));
+        assert_eq!(serde_json::to_string(&opt).unwrap(), json);
+    }
+
+    #[test]
+    fn validate_interface_mtu_rejects_below_68() {
+        assert!(CustomDhcpOption::InterfaceMtu(67).validate().is_err());
+        assert!(CustomDhcpOption::InterfaceMtu(68).validate().is_ok());
+        assert!(CustomDhcpOption::InterfaceMtu(1492).validate().is_ok());
+    }
 
     #[test]
     fn serde_tftp_server_name() {

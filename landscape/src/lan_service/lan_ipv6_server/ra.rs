@@ -48,7 +48,7 @@ pub fn build_deprecation_ra_from_subnets(
     }
 
     opts.insert(IcmpV6Option::recursive_dns_server(600, mac_addr.to_ipv6_link_local()));
-    opts.insert(IcmpV6Option::mtu(1500));
+    opts.insert(IcmpV6Option::mtu(1492));
 
     Icmpv6Message::RouterAdvertisement(RouterAdvertisement::new(ra_flags, opts))
 }

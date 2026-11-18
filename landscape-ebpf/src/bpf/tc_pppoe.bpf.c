@@ -38,21 +38,75 @@ const volatile struct pppoe_egress_tmpl pppoe_tmpl = {};
 // Requires the bpf_skb_pppoe_encap() kfunc.
 extern int bpf_skb_pppoe_encap(struct __sk_buff *skb, __be16 sid, __u64 flags) __ksym;
 
+#define PPPOE_INNER_MTU 1492U
+#define PPPOE_MAX_INNER_ETH_LEN (14U + PPPOE_INNER_MTU)
+
+static __always_inline int tc_pppoe_inner_l4_proto(struct __sk_buff *skb, bool is_v6,
+                                                   __u8 *l4_proto) {
+    char *data = (char *)(long)skb->data;
+    char *data_end = (char *)(long)skb->data_end;
+
+    if (!is_v6) {
+        struct iphdr *iph = (struct iphdr *)(data + sizeof(struct ethhdr));
+        if (likely((char *)(iph + 1) <= data_end)) {
+            *l4_proto = iph->protocol;
+            return 0;
+        }
+        if (skb->len < sizeof(struct ethhdr) + sizeof(struct iphdr)) return -1;
+        if (bpf_skb_load_bytes(skb, sizeof(struct ethhdr) + __builtin_offsetof(struct iphdr, protocol),
+                               l4_proto, sizeof(*l4_proto)) < 0)
+            return -1;
+        return 0;
+    }
+
+    struct ipv6hdr *ip6h = (struct ipv6hdr *)(data + sizeof(struct ethhdr));
+    __u8 nexthdr = 0;
+    if (likely((char *)(ip6h + 1) <= data_end)) {
+        nexthdr = ip6h->nexthdr;
+    } else {
+        if (skb->len < sizeof(struct ethhdr) + sizeof(struct ipv6hdr)) return -1;
+        if (bpf_skb_load_bytes(skb,
+                               sizeof(struct ethhdr) + __builtin_offsetof(struct ipv6hdr, nexthdr),
+                               &nexthdr, sizeof(nexthdr)) < 0)
+            return -1;
+    }
+
+    __u32 ext_off = sizeof(struct ethhdr) + sizeof(struct ipv6hdr);
+    for (int i = 0; i < 6; i++) {
+        if (nexthdr == 0 || nexthdr == 43 || nexthdr == 60) {
+            __u8 hdr[2];
+            if (bpf_skb_load_bytes(skb, ext_off, hdr, sizeof(hdr)) < 0) return -1;
+            nexthdr = hdr[0];
+            ext_off += ((__u32)hdr[1] + 1U) * 8U;
+        } else if (nexthdr == 44) {
+            if (bpf_skb_load_bytes(skb, ext_off, &nexthdr, sizeof(nexthdr)) < 0) return -1;
+            ext_off += 8U;
+        } else {
+            break;
+        }
+    }
+
+    *l4_proto = nexthdr;
+    return 0;
+}
+
 // Family-agnostic PPPoE encap: the per-family entry program passes the
 // family flag (the chain root already forked on the L3 protocol), and
 // the hop slot likewise comes from the entry.
-static __always_inline void tc_pppoe_encap(struct __sk_buff *skb, bool is_v6) {
-    void *data_end = (void *)(long)skb->data_end;
-    void *data = (void *)(long)skb->data;
-    struct ethhdr *eth = data;
+static __always_inline int tc_pppoe_encap(struct __sk_buff *skb, bool is_v6) {
+    if (skb->gso_segs <= 1 && skb->len > PPPOE_MAX_INNER_ETH_LEN) return TC_ACT_SHOT;
 
-    if ((void *)(eth + 1) > data_end) return;
+    __u8 l4_proto = 0;
+    if (tc_pppoe_inner_l4_proto(skb, is_v6, &l4_proto) < 0) return TC_ACT_SHOT;
 
-    (void)is_v6;
+    // TCP GSO requires flags == 0 so skb_decrease_gso_size() shrinks gso_size by 8B.
+    // Non-TCP GSO (SKB_GSO_UDP_L4) requires BPF_F_ADJ_ROOM_FIXED_GSO (otherwise -ENOTSUPP),
+    // and BPF_F_ADJ_ROOM_FIXED_GSO is a no-op on non-GSO packets.
+    __u64 flags = (l4_proto == IPPROTO_TCP) ? 0ULL : (__u64)BPF_F_ADJ_ROOM_FIXED_GSO;
 
     // kfunc: insert the 8 byte PPPoE session header, derive the PPP
     // protocol from the inner IP version, set skb->protocol.
-    if (bpf_skb_pppoe_encap(skb, pppoe_tmpl.session_id, 0) < 0) return;
+    if (bpf_skb_pppoe_encap(skb, pppoe_tmpl.session_id, flags) < 0) return TC_ACT_SHOT;
 
     struct pppoe_l2_tmpl l2 = {
         .dmac = {pppoe_tmpl.dmac[0], pppoe_tmpl.dmac[1], pppoe_tmpl.dmac[2], pppoe_tmpl.dmac[3],
@@ -62,14 +116,16 @@ static __always_inline void tc_pppoe_encap(struct __sk_buff *skb, bool is_v6) {
         .eth_proto = pppoe_tmpl.eth_proto,
     };
 
-    bpf_skb_store_bytes(skb, 0, &l2, sizeof(l2), 0);
+    if (bpf_skb_store_bytes(skb, 0, &l2, sizeof(l2), 0) < 0) return TC_ACT_SHOT;
+
+    return TC_ACT_OK;
 }
 
 // Terminal per-link egress stage: encapsulates only the packets that
 // traversed this link's chain, with this link's session template.
 SEC("tc/egress")
 int tc_pppoe_wan_egress_v4(struct __sk_buff *skb) {
-    tc_pppoe_encap(skb, false);
+    if (tc_pppoe_encap(skb, false) != TC_ACT_OK) return TC_ACT_SHOT;
 
     TC_FROM_LAN_CHAIN_NEXT(skb, TC_SLOT_V4);
     TC_FROM_LAN_CHAIN_EXIT(skb);
@@ -78,7 +134,7 @@ int tc_pppoe_wan_egress_v4(struct __sk_buff *skb) {
 
 SEC("tc/egress")
 int tc_pppoe_wan_egress_v6(struct __sk_buff *skb) {
-    tc_pppoe_encap(skb, true);
+    if (tc_pppoe_encap(skb, true) != TC_ACT_OK) return TC_ACT_SHOT;
 
     TC_FROM_LAN_CHAIN_NEXT(skb, TC_SLOT_V6);
     TC_FROM_LAN_CHAIN_EXIT(skb);

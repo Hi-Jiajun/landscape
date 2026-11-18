@@ -99,7 +99,7 @@ pub fn build_ra(
         opts.insert(IcmpV6Option::recursive_dns_server(600, ip));
     }
 
-    opts.insert(IcmpV6Option::mtu(1500));
+    opts.insert(IcmpV6Option::mtu(1492));
     opts.insert(IcmpV6Option::advertisement_interval(icmp_ad_interval_ms));
 
     Icmpv6Message::RouterAdvertisement(RouterAdvertisement::new(params.ra_flags, opts))
@@ -219,7 +219,7 @@ pub fn build_deprecation_ra(
     }
 
     opts.insert(IcmpV6Option::recursive_dns_server(600, mac_addr.to_ipv6_link_local()));
-    opts.insert(IcmpV6Option::mtu(1500));
+    opts.insert(IcmpV6Option::mtu(1492));
 
     Icmpv6Message::RouterAdvertisement(RouterAdvertisement::new(ra_flags, opts))
 }
@@ -393,5 +393,27 @@ mod tests {
             handle_na(&bytes, SocketAddr::new(ip.into(), 0), &mut status),
             SlaacActionResult::VerificationCandidate { ip: candidate } if candidate == ip
         ));
+    }
+
+    #[test]
+    fn build_ra_advertises_pppoe_safe_mtu_1492() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let status = Ipv6ServerStatus::new(None, None, vec![], tx);
+        let mac = MacAddr::from([0x02, 0x00, 0x00, 0x12, 0x34, 0x56]);
+        let params = Ipv6LanReplyParams {
+            preferred_lifetime: 300,
+            valid_lifetime: 600,
+            ra_flags: 0,
+            ra_autonomous: true,
+        };
+        let msg = build_ra(&status, &params, &mac, 30_000);
+        let Icmpv6Message::RouterAdvertisement(ra) = msg else {
+            panic!("expected RouterAdvertisement");
+        };
+        assert!(
+            matches!(ra.opts.get(5), Some(IcmpV6Option::MTU { mtu: 1492, .. })),
+            "RA option 5 (MTU) must be 1492, got {:?}",
+            ra.opts.get(5)
+        );
     }
 }
