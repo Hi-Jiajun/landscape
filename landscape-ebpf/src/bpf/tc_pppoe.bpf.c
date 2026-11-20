@@ -42,20 +42,26 @@ extern int bpf_skb_pppoe_encap(struct __sk_buff *skb, __be16 sid, __u64 flags) _
 #define PPPOE_MAX_INNER_ETH_LEN (14U + PPPOE_INNER_MTU)
 
 static __always_inline int tc_pppoe_inner_l4_proto(struct __sk_buff *skb, bool is_v6,
-                                                   __u8 *l4_proto) {
+                                                   __u8 *l4_proto, __u32 *l4_off) {
     char *data = (char *)(long)skb->data;
     char *data_end = (char *)(long)skb->data_end;
 
     if (!is_v6) {
         struct iphdr *iph = (struct iphdr *)(data + sizeof(struct ethhdr));
+        __u8 ihl = 0;
         if (likely((char *)(iph + 1) <= data_end)) {
+            ihl = iph->ihl;
             *l4_proto = iph->protocol;
-            return 0;
+        } else {
+            if (skb->len < sizeof(struct ethhdr) + sizeof(struct iphdr)) return -1;
+            struct iphdr iph_copy;
+            if (bpf_skb_load_bytes(skb, sizeof(struct ethhdr), &iph_copy, sizeof(iph_copy)) < 0)
+                return -1;
+            ihl = iph_copy.ihl;
+            *l4_proto = iph_copy.protocol;
         }
-        if (skb->len < sizeof(struct ethhdr) + sizeof(struct iphdr)) return -1;
-        if (bpf_skb_load_bytes(skb, sizeof(struct ethhdr) + __builtin_offsetof(struct iphdr, protocol),
-                               l4_proto, sizeof(*l4_proto)) < 0)
-            return -1;
+        if (ihl < 5) return -1;
+        *l4_off = sizeof(struct ethhdr) + ((__u32)ihl * 4U);
         return 0;
     }
 
@@ -87,6 +93,7 @@ static __always_inline int tc_pppoe_inner_l4_proto(struct __sk_buff *skb, bool i
     }
 
     *l4_proto = nexthdr;
+    *l4_off = ext_off;
     return 0;
 }
 
@@ -97,11 +104,22 @@ static __always_inline int tc_pppoe_encap(struct __sk_buff *skb, bool is_v6) {
     if (skb->gso_segs <= 1 && skb->len > PPPOE_MAX_INNER_ETH_LEN) return TC_ACT_SHOT;
 
     __u8 l4_proto = 0;
-    if (tc_pppoe_inner_l4_proto(skb, is_v6, &l4_proto) < 0) return TC_ACT_SHOT;
+    __u32 l4_off = 0;
+    if (tc_pppoe_inner_l4_proto(skb, is_v6, &l4_proto, &l4_off) < 0) return TC_ACT_SHOT;
 
     // TCP GSO requires flags == 0 so skb_decrease_gso_size() shrinks gso_size by 8B.
     // Non-TCP GSO (SKB_GSO_UDP_L4) requires BPF_F_ADJ_ROOM_FIXED_GSO (otherwise -ENOTSUPP),
-    // and BPF_F_ADJ_ROOM_FIXED_GSO is a no-op on non-GSO packets.
+    // which keeps gso_size unchanged; reject superpackets whose per-segment size would
+    // exceed the 1492B PPPoE inner MTU after adding the 8B PPPoE header.
+    if (skb->gso_segs > 1 && l4_proto != IPPROTO_TCP) {
+        __u32 l4_hdr_len = (l4_proto == IPPROTO_UDP) ? (__u32)sizeof(struct udphdr) : 0U;
+        if (l4_off > PPPOE_MAX_INNER_ETH_LEN || l4_hdr_len > PPPOE_MAX_INNER_ETH_LEN - l4_off)
+            return TC_ACT_SHOT;
+        __u32 seg_hdr_len = l4_off + l4_hdr_len;
+        if (skb->gso_size == 0 || skb->gso_size > PPPOE_MAX_INNER_ETH_LEN - seg_hdr_len)
+            return TC_ACT_SHOT;
+    }
+
     __u64 flags = (l4_proto == IPPROTO_TCP) ? 0ULL : (__u64)BPF_F_ADJ_ROOM_FIXED_GSO;
 
     // kfunc: insert the 8 byte PPPoE session header, derive the PPP

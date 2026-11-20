@@ -92,6 +92,7 @@ impl DstIpRuleService {
         };
         update_flow_dst_ip_map(self.geo_ip_service.clone(), self.dataplane.clone(), flow_id, rules)
             .await;
+        self.dataplane.invalidate_lan_cache();
     }
 
     async fn apply_configs(&self, configs: Vec<WanIpRuleConfig>) {
@@ -141,8 +142,13 @@ impl ConfigStoreController for DstIpRuleService {
 
     async fn notify_changed(&self, changes: Vec<Change<Self::Config>>) {
         if changes.len() == 1 {
-            let flow_id = changes[0].new.flow_id;
-            self.refresh_flow(flow_id).await;
+            let new_flow_id = changes[0].new.flow_id;
+            if let Some(old) = &changes[0].old
+                && old.flow_id != new_flow_id
+            {
+                self.refresh_flow(old.flow_id).await;
+            }
+            self.refresh_flow(new_flow_id).await;
         } else {
             self.apply_configs(changes.into_iter().map(|c| c.new).collect()).await;
         }
@@ -244,5 +250,72 @@ mod tests {
             HashSet::from([GeoFileCacheKey { name: "geoip".to_string(), key: "cn".to_string() }]);
 
         assert_eq!(affected_flow_ids(&configs, &changed), HashSet::from([1]));
+    }
+
+    #[tokio::test]
+    async fn single_rule_upsert_and_delete_invalidate_lan_cache() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        use landscape_common::{
+            database::store::Change,
+            flow::{RuntimeFlowConfig, dataplane::FlowRuleDataplane, ip_mark::IpMarkInfo},
+            service::controller::ConfigStoreController,
+        };
+        use landscape_database::provider::LandscapeDBServiceProvider;
+        use tokio::sync::broadcast;
+
+        use super::DstIpRuleService;
+        use crate::geo::ip_service::GeoIpService;
+
+        struct RecordingDataplane {
+            invalidations: AtomicUsize,
+            updated_flows: Mutex<Vec<u32>>,
+        }
+
+        impl FlowRuleDataplane for RecordingDataplane {
+            fn sync_flow_matches(&self, _configs: &[RuntimeFlowConfig]) {}
+            fn set_dst_ip_marks(&self, flow_id: u32, _ips: Vec<IpMarkInfo>) {
+                self.updated_flows.lock().unwrap().push(flow_id);
+            }
+            fn invalidate_lan_cache(&self) {
+                self.invalidations.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let db = LandscapeDBServiceProvider::mem_test_db().await;
+        let (tx, _rx) = broadcast::channel(4);
+        let geo = GeoIpService::new_in_memory(db.clone(), tx).await;
+        let dp = Arc::new(RecordingDataplane {
+            invalidations: AtomicUsize::new(0),
+            updated_flows: Mutex::new(Vec::new()),
+        });
+        let svc = DstIpRuleService {
+            store: db.dst_ip_rule_store(),
+            geo_ip_service: geo,
+            dataplane: dp.clone(),
+        };
+
+        let r1 = rule(
+            1,
+            true,
+            vec![WanIPRuleSource::Config(IpConfig {
+                ip: "198.51.100.0".parse().unwrap(),
+                prefix: 24,
+            })],
+        );
+        svc.notify_changed(vec![Change { old: None, new: r1.clone() }]).await;
+        assert_eq!(dp.invalidations.load(Ordering::SeqCst), 1);
+        assert_eq!(*dp.updated_flows.lock().unwrap(), vec![1]);
+
+        let mut r1_moved = r1.clone();
+        r1_moved.flow_id = 2;
+        svc.notify_changed(vec![Change { old: Some(r1.clone()), new: r1_moved.clone() }]).await;
+        assert_eq!(dp.invalidations.load(Ordering::SeqCst), 3);
+        assert_eq!(*dp.updated_flows.lock().unwrap(), vec![1, 1, 2]);
+
+        svc.notify_deleted(r1_moved).await;
+        assert_eq!(dp.invalidations.load(Ordering::SeqCst), 4);
+        assert_eq!(*dp.updated_flows.lock().unwrap(), vec![1, 1, 2, 2]);
     }
 }

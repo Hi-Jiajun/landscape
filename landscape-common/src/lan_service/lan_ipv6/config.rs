@@ -160,10 +160,20 @@ pub struct LanIPv6ConfigV2 {
     #[serde(default)]
     #[cfg_attr(feature = "openapi", schema(required = false, nullable = false))]
     pub dhcpv6: Option<DHCPv6ServerConfig>,
+    /// When true (default), RA RDNSS and DHCPv6 DNS options advertise only the
+    /// interface's stable link-local address instead of dynamic PD / static GUA
+    /// subnet router addresses.
+    #[serde(default = "default_rdnss_link_local_only")]
+    #[cfg_attr(feature = "openapi", schema(required = false))]
+    pub rdnss_link_local_only: bool,
 }
 
 fn default_lifetime() -> u32 {
     300
+}
+
+pub fn default_rdnss_link_local_only() -> bool {
+    true
 }
 
 impl LanIPv6ConfigV2 {
@@ -175,8 +185,14 @@ impl LanIPv6ConfigV2 {
         self.preferred_lifetime() * 2
     }
 
+    /// Periodic unsolicited RA interval in seconds.
+    ///
+    /// Derived as `preferred_lifetime / 3` clamped to `[20, 600]` so that
+    /// clients (including Wi-Fi DTIM power-saving stations) receive ~3 RAs per
+    /// preferred lifetime (e.g. 100s for lifetime=300s) and ~6 RAs per valid
+    /// lifetime, avoiding spurious deprecation/loss on a single missed frame.
     pub fn icmp_ad_interval(&self) -> u32 {
-        self.preferred_lifetime().clamp(60, 600)
+        (self.preferred_lifetime() / 3).clamp(20, 600)
     }
 }
 
@@ -227,3 +243,71 @@ impl ZoneAwareConfig for LanIPv6ServiceConfigV2 {
 }
 
 crate::impl_trivial_validatable!(LanIPv6ServiceConfigV2);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_json_without_rdnss_link_local_only_deserializes_with_default_true() {
+        let legacy_json = r#"{
+            "ad_interval": 30,
+            "dhcpv6": {"enable": false, "ia_na": null, "ia_pd": null},
+            "lifetime": 300,
+            "mode": "slaac",
+            "prefix_groups": [{
+                "group_id": "lan-v6",
+                "na": null,
+                "parent": {
+                    "depend_iface": "enp1s0.105",
+                    "expected_pd_len_snapshot": 60,
+                    "link_id": "40f2a84b-070b-4de6-8d82-9aae8f9c148c",
+                    "t": "pd"
+                },
+                "pd": null,
+                "ra": {"pool_index": 1, "preferred_lifetime": 300, "valid_lifetime": 600}
+            }],
+            "ra_flag": {
+                "home_agent": false,
+                "managed_address_config": false,
+                "nd_proxy": false,
+                "other_config": false,
+                "prf": 0,
+                "reserved": 0
+            }
+        }"#;
+
+        let cfg: LanIPv6ConfigV2 = serde_json::from_str(legacy_json).expect("legacy json parses");
+        assert!(cfg.rdnss_link_local_only);
+        assert_eq!(cfg.preferred_lifetime(), 300);
+        assert_eq!(cfg.valid_lifetime(), 600);
+        assert_eq!(cfg.icmp_ad_interval(), 100);
+    }
+
+    #[test]
+    fn explicit_rdnss_link_local_only_false_is_preserved() {
+        let json = r#"{"mode": "slaac", "lifetime": 300, "rdnss_link_local_only": false}"#;
+        let cfg: LanIPv6ConfigV2 = serde_json::from_str(json).expect("json parses");
+        assert!(!cfg.rdnss_link_local_only);
+    }
+
+    #[test]
+    fn icmp_ad_interval_tracks_one_third_preferred_lifetime_clamped() {
+        let make = |lifetime| LanIPv6ConfigV2 {
+            mode: IPv6ServiceMode::Slaac,
+            ad_interval: 30,
+            lifetime,
+            ra_flag: ra_flag_default(),
+            prefix_groups: vec![],
+            dhcpv6: None,
+            rdnss_link_local_only: true,
+        };
+
+        assert_eq!(make(60).icmp_ad_interval(), 20);
+        assert_eq!(make(90).icmp_ad_interval(), 30);
+        assert_eq!(make(300).icmp_ad_interval(), 100);
+        assert_eq!(make(900).icmp_ad_interval(), 300);
+        assert_eq!(make(1800).icmp_ad_interval(), 600);
+        assert_eq!(make(3600).icmp_ad_interval(), 600);
+    }
+}

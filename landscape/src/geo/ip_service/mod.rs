@@ -51,6 +51,21 @@ pub struct GeoIpService {
 }
 
 impl GeoIpService {
+    #[cfg(test)]
+    pub(crate) async fn new_in_memory(
+        store: LandscapeDBServiceProvider,
+        dst_ip_events_tx: broadcast::Sender<DstIpEvent>,
+    ) -> Self {
+        Self {
+            store: store.geo_ip_rule_store(),
+            cache: IpCacheRepository::new(GeoCacheDatabase::ip_mem().await),
+            dst_ip_events_tx,
+            tasks: GeoTaskRegistry::default(),
+            stop_token: CancellationToken::new(),
+            tracker: TaskTracker::new(),
+        }
+    }
+
     pub async fn new(
         store: LandscapeDBServiceProvider,
         dst_ip_events_tx: broadcast::Sender<DstIpEvent>,

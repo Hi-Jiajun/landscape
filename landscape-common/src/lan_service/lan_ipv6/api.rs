@@ -4,7 +4,7 @@ use std::net::Ipv6Addr;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::config::ra_flag_default;
+use super::config::{default_rdnss_link_local_only, ra_flag_default};
 use super::{
     DHCPv6ServerConfig, IPv6ServiceMode, LanIPv6ConfigV2, LanIPv6ServiceConfigV2,
     LanPrefixGroupConfig, NaPrefixConfig, PdPrefixRangeConfig, PrefixParentSource, RaPrefixConfig,
@@ -126,6 +126,9 @@ pub struct ApiLanIPv6ConfigV2 {
     #[serde(default)]
     #[cfg_attr(feature = "openapi", schema(required = false, nullable = false))]
     pub dhcpv6: Option<DHCPv6ServerConfig>,
+    #[serde(default = "default_rdnss_link_local_only")]
+    #[cfg_attr(feature = "openapi", schema(required = false))]
+    pub rdnss_link_local_only: bool,
 }
 
 impl From<LanIPv6ConfigV2> for ApiLanIPv6ConfigV2 {
@@ -137,6 +140,7 @@ impl From<LanIPv6ConfigV2> for ApiLanIPv6ConfigV2 {
             ra_flag: value.ra_flag,
             prefix_groups: value.prefix_groups.into_iter().map(Into::into).collect(),
             dhcpv6: value.dhcpv6,
+            rdnss_link_local_only: value.rdnss_link_local_only,
         }
     }
 }
@@ -150,6 +154,7 @@ impl From<ApiLanIPv6ConfigV2> for LanIPv6ConfigV2 {
             ra_flag: value.ra_flag,
             prefix_groups: value.prefix_groups.into_iter().map(Into::into).collect(),
             dhcpv6: value.dhcpv6,
+            rdnss_link_local_only: value.rdnss_link_local_only,
         }
     }
 }
