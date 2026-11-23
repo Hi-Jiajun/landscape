@@ -100,6 +100,18 @@ impl WanLinkConfig {
             WanLinkKind::Ethernet | WanLinkKind::PppoeNative { .. } => &self.attach_iface_name,
         }
     }
+
+    /// Effective IPv6 PD default-route flag for this link.
+    ///
+    /// When `pd.default_router` is explicitly set, that value wins. Otherwise
+    /// it inherits the link's IPv4 `default_router` intent whenever IPv4
+    /// acquisition is active, and falls back to `true` on IPv6-only links so
+    /// legacy single-WAN IPv6-only configs keep installing a default IPv6 route.
+    pub fn resolved_pd_default_router(&self) -> bool {
+        self.pd
+            .default_router
+            .unwrap_or_else(|| self.v4.configured_default_router(&self.kind).unwrap_or(true))
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -140,6 +152,27 @@ pub struct WanLinkV4Config {
     pub enable: bool,
     #[serde(default)]
     pub model: WanLinkV4Model,
+}
+
+impl WanLinkV4Config {
+    /// Whether IPv4 acquisition on this link requests a default route, or
+    /// `None` when IPv4 acquisition is disabled or uses a lease-less model
+    /// that never installs an IPv4 route.
+    pub fn configured_default_router(&self, kind: &WanLinkKind) -> Option<bool> {
+        if !self.enable {
+            return None;
+        }
+        match (kind, &self.model) {
+            (WanLinkKind::Ethernet, WanLinkV4Model::Static { default_router, .. })
+            | (WanLinkKind::Ethernet, WanLinkV4Model::DhcpClient { default_router, .. })
+            | (
+                WanLinkKind::Pppd { .. } | WanLinkKind::PppoeNative { .. },
+                WanLinkV4Model::Ipcp { default_router },
+            ) => Some(*default_router),
+            (WanLinkKind::Pppd { .. } | WanLinkKind::PppoeNative { .. }, _) => Some(false),
+            (WanLinkKind::Ethernet, WanLinkV4Model::Nothing | WanLinkV4Model::Ipcp { .. }) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -198,6 +231,12 @@ pub struct WanLinkPdConfig {
     pub mac: MacAddr,
     #[serde(default)]
     pub expected_pd_len: Option<u8>,
+    /// Whether this link's IPv6 PD route is eligible as the Flow 0 default
+    /// IPv6 route. `None` inherits the link's IPv4 `default_router` setting
+    /// when IPv4 acquisition is active, or defaults to `true` on IPv6-only
+    /// links.
+    #[serde(default)]
+    pub default_router: Option<bool>,
 }
 
 /// NAT section of a link.

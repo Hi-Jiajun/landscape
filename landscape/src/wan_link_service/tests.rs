@@ -145,6 +145,32 @@ fn normalized_nat_defaults_do_not_restart() {
     assert!(!tags.contains(&SectionTag::V4));
 }
 
+#[test]
+fn pd_default_router_change_restarts_only_pd_when_resolved_value_changes() {
+    let base: WanLinkConfig = serde_json::from_value(serde_json::json!({
+        "id": "0b6e4e88-0a85-4e1f-8e15-7d1d3d0d0000",
+        "attach_iface_name": "enp1s0.101",
+        "kind": { "t": "pppoe_native", "username": "u", "password": "p", "requested_mru": 1492 },
+        "v4": { "enable": true, "model": { "t": "ipcp", "default_router": false } },
+        "pd": { "enable": true, "mac": "02:00:00:00:00:02", "expected_pd_len": 60 }
+    }))
+    .unwrap();
+
+    // Explicit `false` matches the inherited `false` from v4: must not restart PD or V4.
+    let mut explicit_same = base.clone();
+    explicit_same.pd.default_router = Some(false);
+    let tags = config_change_tags(&base, &explicit_same);
+    assert!(!tags.contains(&SectionTag::Pd));
+    assert!(!tags.contains(&SectionTag::V4));
+
+    // Flipping pd.default_router to `true` restarts only PD, keeping the PPPoE v4 session intact.
+    let mut explicit_true = base.clone();
+    explicit_true.pd.default_router = Some(true);
+    let tags = config_change_tags(&base, &explicit_true);
+    assert!(tags.contains(&SectionTag::Pd));
+    assert!(!tags.contains(&SectionTag::V4));
+}
+
 fn board() -> WanLinkStatusHandle {
     WanLinkStatusHandle::new(Uuid::new_v4(), Arc::default(), true)
 }

@@ -37,7 +37,7 @@ pub(super) async fn run(
         iface.mac,
         Ipv6Addr::UNSPECIFIED,
         Ipv6Addr::UNSPECIFIED,
-        true,
+        config.default_router,
     );
 
     crate::wan_service::ipv6pd_client::v6::dhcp_v6_pd_client(

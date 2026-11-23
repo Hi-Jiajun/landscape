@@ -102,6 +102,7 @@ impl RuntimeWanLinkConfig {
                 enable: config.pd.enable,
                 mac: config.pd.mac,
                 expected_pd_len: config.pd.expected_pd_len.unwrap_or(DEFAULT_EXPECTED_PD_LEN),
+                default_router: config.resolved_pd_default_router(),
             },
             nat: RuntimeWanLinkNatConfig {
                 enable: config.nat.enable,
@@ -168,6 +169,7 @@ pub struct RuntimeWanLinkPdConfig {
     pub enable: bool,
     pub mac: MacAddr,
     pub expected_pd_len: u8,
+    pub default_router: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -374,5 +376,60 @@ mod tests {
         .unwrap();
         let pppd = RuntimeWanLinkConfig::from_config(&config);
         assert_eq!(pppd.section_iface_name(), "ppp0");
+    }
+
+    #[test]
+    fn pd_default_router_inherits_v4_or_falls_back_for_ipv6_only() {
+        // Legacy IPv6-only ethernet link (v4 disabled, pd.default_router omitted): defaults to true.
+        let v6_only: WanLinkConfig = serde_json::from_value(json!({
+            "id": "0b6e4e88-0a85-4e1f-8e15-7d1d3d0d0000",
+            "attach_iface_name": "eth0",
+            "v4": { "enable": false, "model": { "t": "nothing" } },
+            "pd": { "enable": true, "mac": "02:00:00:00:00:01", "expected_pd_len": 60 }
+        }))
+        .unwrap();
+        assert_eq!(v6_only.pd.default_router, None);
+        assert!(RuntimeWanLinkConfig::from_config(&v6_only).pd.default_router);
+
+        // Dual-stack PPPoE primary (v4 default_router=true, pd.default_router omitted): inherits true.
+        let pppoe_primary: WanLinkConfig = serde_json::from_value(json!({
+            "id": "0b6e4e88-0a85-4e1f-8e15-7d1d3d0d0001",
+            "attach_iface_name": "enp1s0.105",
+            "kind": { "t": "pppoe_native", "username": "u", "password": "p", "requested_mru": 1492 },
+            "v4": { "enable": true, "model": { "t": "ipcp", "default_router": true } },
+            "pd": { "enable": true, "mac": "02:00:00:00:00:01", "expected_pd_len": 60 }
+        }))
+        .unwrap();
+        assert!(RuntimeWanLinkConfig::from_config(&pppoe_primary).pd.default_router);
+
+        // Dual-stack PPPoE secondary (v4 default_router=false, pd.default_router omitted): inherits false.
+        let pppoe_secondary: WanLinkConfig = serde_json::from_value(json!({
+            "id": "0b6e4e88-0a85-4e1f-8e15-7d1d3d0d0002",
+            "attach_iface_name": "enp1s0.101",
+            "kind": { "t": "pppoe_native", "username": "u", "password": "p", "requested_mru": 1492 },
+            "v4": { "enable": true, "model": { "t": "ipcp", "default_router": false } },
+            "pd": { "enable": true, "mac": "02:00:00:00:00:02", "expected_pd_len": 60 }
+        }))
+        .unwrap();
+        assert!(!RuntimeWanLinkConfig::from_config(&pppoe_secondary).pd.default_router);
+
+        // Explicit pd.default_router overrides v4 inheritance in both directions.
+        let mut override_true = pppoe_secondary.clone();
+        override_true.pd.default_router = Some(true);
+        assert!(RuntimeWanLinkConfig::from_config(&override_true).pd.default_router);
+
+        let mut override_false = pppoe_primary.clone();
+        override_false.pd.default_router = Some(false);
+        assert!(!RuntimeWanLinkConfig::from_config(&override_false).pd.default_router);
+
+        // Ethernet DHCP secondary inherits v4 default_router=false.
+        let dhcp_secondary: WanLinkConfig = serde_json::from_value(json!({
+            "id": "0b6e4e88-0a85-4e1f-8e15-7d1d3d0d0003",
+            "attach_iface_name": "eth1",
+            "v4": { "enable": true, "model": { "t": "dhcp_client", "default_router": false } },
+            "pd": { "enable": true, "mac": "02:00:00:00:00:03", "expected_pd_len": 60 }
+        }))
+        .unwrap();
+        assert!(!RuntimeWanLinkConfig::from_config(&dhcp_secondary).pd.default_router);
     }
 }
