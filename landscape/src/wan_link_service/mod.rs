@@ -224,6 +224,11 @@ impl ServiceStarterTrait for WanLinkService {
         board.set_section(SectionKind::Mss, ServiceStatus::Stop).await;
         board.set_section(SectionKind::HealthCheck, ServiceStatus::Stop).await;
 
+        let (initial_v4_default, initial_v6_default) = link_default_intents(&config);
+        self.route_service
+            .set_link_default_intent(config.id, initial_v4_default, initial_v6_default)
+            .await;
+
         {
             let status = link_status.clone();
             let task_status = status.clone();
@@ -234,6 +239,7 @@ impl ServiceStarterTrait for WanLinkService {
             let attach_iface = config.attach_iface_name.clone();
             let env_config = config.clone();
             let board = board.clone();
+            let route_service = self.route_service.clone();
             status.spawn_task_with_resource(
                 task_label::task::WAN_LINK_ENV,
                 attach_iface.clone(),
@@ -245,6 +251,7 @@ impl ServiceStarterTrait for WanLinkService {
                         env_cfg_rx,
                         reconfig_tx,
                         board,
+                        route_service,
                         env_config,
                     )
                     .await;
@@ -574,7 +581,17 @@ async fn refresh_carrier(link_state: &LinkStateHandle, attach_iface: &str) {
     }
 }
 
+fn link_default_intents(cfg: &WanLinkConfig) -> (bool, bool) {
+    if !cfg.active() {
+        return (false, false);
+    }
+    let v4_default = cfg.v4.configured_default_router(&cfg.kind).unwrap_or(false);
+    let v6_default = cfg.pd.enable && cfg.resolved_pd_default_router();
+    (v4_default, v6_default)
+}
+
 /// Maintains the link's carrier and broadcasts `SectionTag`s on config change.
+#[allow(clippy::too_many_arguments)]
 async fn run_environment(
     link_status: ServiceHandle,
     link_state: LinkStateHandle,
@@ -582,9 +599,11 @@ async fn run_environment(
     mut cfg_rx: watch::Receiver<WanLinkConfig>,
     reconfig_tx: broadcast::Sender<SectionTag>,
     board: WanLinkStatusHandle,
+    route_service: IpRouteService,
     initial_config: WanLinkConfig,
 ) {
     let stop = link_status.stop_token();
+    let link_id = initial_config.id;
     let mut applied = initial_config.clone();
     let mut attach_iface = initial_config.attach_iface_name.clone();
 
@@ -635,6 +654,9 @@ async fn run_environment(
                     board.set_active(new.active()).await;
                 }
 
+                let (v4_default, v6_default) = link_default_intents(&new);
+                route_service.set_link_default_intent(link_id, v4_default, v6_default).await;
+
                 for tag in config_change_tags(&applied, &new) {
                     let _ = reconfig_tx.send(tag);
                 }
@@ -642,6 +664,8 @@ async fn run_environment(
             }
         }
     }
+
+    route_service.clear_link_default_intent(link_id).await;
 }
 
 /// Section tags a config change requires.
