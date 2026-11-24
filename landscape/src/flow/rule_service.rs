@@ -167,6 +167,17 @@ impl FlowRuleService {
 
 impl ConfigStoreFlowController for FlowRuleService {}
 
+fn should_flush_conn_cache(changes: &[Change<FlowConfig>]) -> bool {
+    changes.iter().any(|change| match &change.old {
+        Some(old) => {
+            old.balance_mode != change.new.balance_mode
+                || old.enable != change.new.enable
+                || old.flow_id != change.new.flow_id
+        }
+        None => true,
+    })
+}
+
 #[async_trait::async_trait]
 impl ConfigStoreController for FlowRuleService {
     type Id = Uuid;
@@ -178,14 +189,19 @@ impl ConfigStoreController for FlowRuleService {
     }
 
     async fn notify_changed(&self, changes: Vec<Change<Self::Config>>) {
+        let flush_conn_cache = should_flush_conn_cache(&changes);
         self.refresh_flow_matches().await;
         let configs: Vec<FlowConfig> = changes.into_iter().map(|change| change.new).collect();
         self.route_service.sync_flow_wan_targets(&configs).await;
+        if flush_conn_cache {
+            self.dataplane.invalidate_lan_cache();
+        }
     }
 
     async fn notify_deleted(&self, old: Self::Config) {
         self.refresh_flow_matches().await;
         self.route_service.clear_flow_wan_targets(old.flow_id);
+        self.dataplane.invalidate_lan_cache();
     }
 }
 
@@ -198,7 +214,7 @@ mod tests {
 
     use landscape_common::config::FlowId;
     use landscape_common::database::store::ConfigStore;
-    use landscape_common::flow::config::FlowConfig;
+    use landscape_common::flow::config::{FlowBalanceMode, FlowConfig};
     use landscape_common::flow::dataplane::NoopFlowRuleDataplane;
     use landscape_common::flow::{FlowTarget, WeightedFlowTarget};
     use landscape_common::sys_service::route_service::dataplane::RouteTableDataplane;
@@ -211,6 +227,43 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+
+    fn sample_flow(flow_id: u32, enable: bool, balance_mode: FlowBalanceMode) -> FlowConfig {
+        FlowConfig {
+            id: Uuid::new_v4(),
+            enable,
+            flow_id,
+            flow_match_rules: vec![],
+            flow_targets: vec![],
+            balance_mode,
+            name: format!("flow-{flow_id}"),
+            remark: String::new(),
+            update_at: 0.0,
+        }
+    }
+
+    #[test]
+    fn flush_conn_cache_triggers_on_create_balance_mode_enable_or_flow_id_change() {
+        let base = sample_flow(2, true, FlowBalanceMode::DstIp);
+
+        assert!(should_flush_conn_cache(&[Change { old: None, new: base.clone() }]));
+
+        let mut same_mode = base.clone();
+        same_mode.remark = "rename only".to_string();
+        assert!(!should_flush_conn_cache(&[Change { old: Some(base.clone()), new: same_mode }]));
+
+        let mut toggled_mode = base.clone();
+        toggled_mode.balance_mode = FlowBalanceMode::FiveTuple;
+        assert!(should_flush_conn_cache(&[Change { old: Some(base.clone()), new: toggled_mode }]));
+
+        let mut disabled = base.clone();
+        disabled.enable = false;
+        assert!(should_flush_conn_cache(&[Change { old: Some(base.clone()), new: disabled }]));
+
+        let mut moved_id = base.clone();
+        moved_id.flow_id = 5;
+        assert!(should_flush_conn_cache(&[Change { old: Some(base), new: moved_id }]));
+    }
 
     #[derive(Default)]
     struct RecordingRouteDataplane {
@@ -337,6 +390,7 @@ mod tests {
                     flow_id,
                     flow_match_rules: Vec::new(),
                     flow_targets: targets,
+                    balance_mode: Default::default(),
                     name: format!("flow-{flow_id}"),
                     remark: String::new(),
                     update_at: 0.0,

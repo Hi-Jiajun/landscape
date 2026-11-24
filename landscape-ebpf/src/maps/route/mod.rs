@@ -31,7 +31,7 @@ mod tests {
     use libbpf_rs::{MapCore, MapFlags, MapHandle, MapType, libbpf_sys};
     use zerocopy::{FromBytes, IntoBytes};
 
-    use super::types::{Route6SlotKey, Route6TargetInfo};
+    use super::types::{Route6SlotKey, Route6TargetInfo, RouteFlowTargetKey};
     use super::*;
 
     fn dummy_v6(ifindex: u32) -> RouteTargetInfo {
@@ -49,10 +49,27 @@ mod tests {
             None::<&str>,
             std::mem::size_of::<Route6SlotKey>() as u32,
             std::mem::size_of::<Route6TargetInfo>() as u32,
-            256,
+            1024,
             &opts,
         )
         .expect("create test slot map v6")
+    }
+
+    fn create_test_flow_targets_v6() -> MapHandle {
+        #[allow(clippy::needless_update)]
+        let opts = libbpf_sys::bpf_map_create_opts {
+            sz: std::mem::size_of::<libbpf_sys::bpf_map_create_opts>() as libbpf_sys::size_t,
+            ..Default::default()
+        };
+        MapHandle::create(
+            MapType::Hash,
+            None::<&str>,
+            std::mem::size_of::<RouteFlowTargetKey>() as u32,
+            std::mem::size_of::<Route6TargetInfo>() as u32,
+            64,
+            &opts,
+        )
+        .expect("create test flow targets map v6")
     }
 
     #[allow(clippy::field_reassign_with_default)]
@@ -79,32 +96,47 @@ mod tests {
     #[test]
     fn replace_slots_with_all_zero_weights_clears_existing_entries() {
         let map = create_test_slot_map_v6();
+        let flow_targets = create_test_flow_targets_v6();
 
-        // Pre-populate some slots for flow_id 5
+        // Pre-populate some slots and flow_targets for flow_id 5
         insert_v6_slot(&map, 5, 0, 11);
         insert_v6_slot(&map, 5, 1, 11);
+        flow_targets
+            .update(
+                RouteFlowTargetKey { flow_id: 5, ifindex: 11 }.as_bytes(),
+                Route6TargetInfo { ifindex: 11, ..Default::default() }.as_bytes(),
+                MapFlags::ANY,
+            )
+            .unwrap();
         assert!(lookup_v6_slot(&map, 5, 0));
         assert!(lookup_v6_slot(&map, 5, 1));
 
         // Call replace with all-zero weights
         let zero_weight_target = (WanRouteTarget::link(0, dummy_v6(11)), 0);
-        replace_wan_route_slots_v6_with_map(&map, 5, &[zero_weight_target]);
+        replace_wan_route_slots_v6_with_map(&map, &flow_targets, 5, &[zero_weight_target]);
 
-        // Slots should be cleared
+        // Slots and flow_targets should be cleared
         assert!(!lookup_v6_slot(&map, 5, 0));
         assert!(!lookup_v6_slot(&map, 5, 1));
+        assert!(
+            flow_targets
+                .lookup(RouteFlowTargetKey { flow_id: 5, ifindex: 11 }.as_bytes(), MapFlags::ANY)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
     fn replace_slots_store_chain_in_values() {
         let map = create_test_slot_map_v6();
+        let flow_targets = create_test_flow_targets_v6();
 
         let target = (WanRouteTarget::link(7, dummy_v6(11)), 3);
-        replace_wan_route_slots_v6_with_map(&map, 5, &[target]);
+        replace_wan_route_slots_v6_with_map(&map, &flow_targets, 5, &[target]);
 
         // Every slot of flow 5 carries the target's chain for the WAN
         // egress chain dispatch.
-        for slot in 0..16u32 {
+        for slot in 0..256u32 {
             let key = Route6SlotKey { flow_id: 5, slot };
             let bytes = map
                 .lookup(key.as_bytes(), MapFlags::ANY)
@@ -114,6 +146,14 @@ mod tests {
             assert_eq!(value.ifindex, 11);
             assert_eq!(value.link_chain_id, 7);
         }
+
+        let ft_bytes = flow_targets
+            .lookup(RouteFlowTargetKey { flow_id: 5, ifindex: 11 }.as_bytes(), MapFlags::ANY)
+            .expect("lookup flow target")
+            .expect("flow target populated");
+        let ft_val = Route6TargetInfo::read_from_bytes(&ft_bytes).expect("decode flow target");
+        assert_eq!(ft_val.ifindex, 11);
+        assert_eq!(ft_val.link_chain_id, 7);
     }
 
     #[test]

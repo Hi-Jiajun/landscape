@@ -136,6 +136,21 @@ DEFINE_SKB_CTX_POINTER(data)
 DEFINE_SKB_CTX_POINTER(data_end)
 #undef DEFINE_SKB_CTX_POINTER
 
+#ifndef __LD_XDP_CTX_DATA_PTR__
+#define __LD_XDP_CTX_DATA_PTR__
+#define DEFINE_XDP_DATA_POINTER(FIELD)                                                             \
+    static __always_inline void *ctx_##FIELD(const struct xdp_md *ctx) {                           \
+        void *ptr;                                                                                 \
+        __asm__ __volatile__("%0 = *(u32 *)(%1 + %2)"                                              \
+                             : "=r"(ptr)                                                           \
+                             : "r"(ctx), "i"(__builtin_offsetof(struct xdp_md, FIELD)));           \
+        return ptr;                                                                                \
+    }
+DEFINE_XDP_DATA_POINTER(data)
+DEFINE_XDP_DATA_POINTER(data_end)
+#undef DEFINE_XDP_DATA_POINTER
+#endif /* __LD_XDP_CTX_DATA_PTR__ */
+
 static __always_inline int is_broadcast_mac(struct __sk_buff *skb) {
     void *data = skb_data(skb);
     void *data_end = skb_data_end(skb);

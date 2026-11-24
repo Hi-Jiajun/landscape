@@ -6,13 +6,15 @@ use zerocopy::IntoBytes;
 
 use crate::maps::LandscapeMapPath;
 use crate::maps::route::types::{
-    Route4CacheKey, Route4CacheValue, Route6CacheKey, Route6CacheValue,
+    Route4CacheKey, Route4CacheValue, Route4ConnKey, Route6CacheKey, Route6CacheValue,
+    Route6ConnKey, RouteConnValue,
 };
 
 /// WAN verdict cache lives at outer slot 0, LAN at slot 1
 /// (`rt4/6_cache_map` is an ARRAY_OF_MAPS indexed by cache type).
 pub(crate) const WAN_CACHE: u32 = 0;
 pub(crate) const LAN_CACHE: u32 = 1;
+pub(crate) const CONN_CACHE_SLOT: u32 = 0;
 
 const DNS_MATCH_MAX_ENTRIES: u32 = 65536;
 
@@ -140,4 +142,22 @@ pub fn recreate_route_lan_cache_inner_map(paths: &LandscapeMapPath) {
     };
 
     recreate_route_lan_cache_inner_map_impl(&rt4_cache_map, &rt6_cache_map);
+}
+
+/// Recreate the 5-tuple connection-pinning inner maps at slot 0.
+///
+/// Called ONLY when flow/IP/DNS/port policy rules change (or on explicit
+/// manual cache reset), NEVER on WAN target/weight changes or failbacks so
+/// in-flight connections remain pinned to their healthy WAN.
+pub fn recreate_route_conn_inner_map(paths: &LandscapeMapPath) {
+    create_inner_map_generic::<_, Route4ConnKey, RouteConnValue>(
+        &paths.rt4_conn_map,
+        "rt4_conn_lru".into(),
+        CONN_CACHE_SLOT,
+    );
+    create_inner_map_generic::<_, Route6ConnKey, RouteConnValue>(
+        &paths.rt6_conn_map,
+        "rt6_conn_lru".into(),
+        CONN_CACHE_SLOT,
+    );
 }

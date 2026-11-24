@@ -380,30 +380,72 @@ keep_going:
     return TC_ACT_OK;
 }
 
-static __always_inline int route6_pick_wan_and_send_by_flow_id(struct __sk_buff *skb,
-                                                               u32 current_l3_offset,
-                                                               const struct route6_context *context,
-                                                               const u32 flow_id) {
-    int ret;
-    const u32 resolved_flow_id = get_flow_id(flow_id);
+static __always_inline struct route6_target_info *
+route6_pick_wan_target_tc(struct __sk_buff *skb, u32 current_l3_offset,
+                          struct route6_context *context, u32 flow_mark) {
+    const u32 resolved_flow_id = get_flow_id(flow_mark);
+
+    if (likely(!route_flow_is_five_tuple(resolved_flow_id))) {
+        struct route6_slot_key slot_key = {
+            .flow_id = resolved_flow_id,
+            .slot = route6_target_slot(&context->daddr),
+        };
+        return bpf_map_lookup_elem(&rt6_slot_map, &slot_key);
+    }
+
+    route6_ensure_l4_ports_tc(skb, current_l3_offset, context);
+    if (context->has_ports) {
+        struct route6_conn_key conn_key = {
+            .saddr = context->saddr,
+            .daddr = context->daddr,
+            .sport = context->sport,
+            .dport = context->dport,
+            .l4_proto = context->l4_protocol,
+        };
+        u32 zero = 0;
+        void *conn_inner = bpf_map_lookup_elem(&rt6_conn_map, &zero);
+        if (conn_inner != NULL) {
+            struct route_conn_value *conn_val = bpf_map_lookup_elem(conn_inner, &conn_key);
+            if (conn_val != NULL) {
+                struct route_flow_target_key ft_key = {
+                    .flow_id = resolved_flow_id,
+                    .ifindex = conn_val->ifindex,
+                };
+                struct route6_target_info *pinned = bpf_map_lookup_elem(&rt6_flow_targets, &ft_key);
+                if (pinned != NULL) {
+                    return pinned;
+                }
+            }
+        }
+
+        struct route6_slot_key slot_key = {
+            .flow_id = resolved_flow_id,
+            .slot = route6_five_tuple_slot(&context->saddr, &context->daddr, context->sport,
+                                           context->dport, context->l4_protocol),
+        };
+        struct route6_target_info *target_info = bpf_map_lookup_elem(&rt6_slot_map, &slot_key);
+        if (target_info != NULL && conn_inner != NULL) {
+            struct route_conn_value new_conn = {
+                .mark_value = flow_mark,
+                .ifindex = target_info->ifindex,
+            };
+            bpf_map_update_elem(conn_inner, &conn_key, &new_conn, BPF_ANY);
+        }
+        return target_info;
+    }
 
     struct route6_slot_key slot_key = {
         .flow_id = resolved_flow_id,
         .slot = route6_target_slot(&context->daddr),
     };
-    struct route6_target_info *target_info = bpf_map_lookup_elem(&rt6_slot_map, &slot_key);
+    return bpf_map_lookup_elem(&rt6_slot_map, &slot_key);
+}
 
-    // 找不到转发的 target 按照原有计划进行处理
-    if (target_info == NULL) {
-        if (resolved_flow_id == 0) {
-            // Default flow PASS
-            return TC_ACT_UNSPEC;
-        } else {
-            ld_from_lan_log("DROP flow_id v6: %d", resolved_flow_id);
-            // Other DROP
-            return TC_ACT_SHOT;
-        }
-    }
+static __always_inline int route6_send_to_target_info(struct __sk_buff *skb, u32 current_l3_offset,
+                                                      const struct route6_target_info *target_info,
+                                                      const u32 flow_mark) {
+    int ret;
+    const u32 resolved_flow_id = get_flow_id(flow_mark);
 
     if (target_info->ifindex == skb->ifindex) {
         // Belongs to the current ifindex No redirection required
@@ -434,9 +476,6 @@ static __always_inline int route6_pick_wan_and_send_by_flow_id(struct __sk_buff 
         return ret;
     }
 
-    // ld_from_lan_log("wan_route_info ip: %pI4 ", target_info->gate_addr.in6_u.u6_addr8);
-    // ld_from_lan_log("wan_route_info target_info->ifindex: %d ",target_info->ifindex);
-
     bool target_has_mac = target_info->has_mac;
 
     if (!target_has_mac) {
@@ -444,7 +483,7 @@ static __always_inline int route6_pick_wan_and_send_by_flow_id(struct __sk_buff 
     } else {
         struct mac_value_v6 *mac_value = bpf_map_lookup_elem(&ip_mac_v6, &target_info->gate_addr);
         if (mac_value) {
-            ret = store_mac_v6(skb, mac_value->mac, target_info->mac);
+            ret = store_mac_v6(skb, mac_value->mac, (u8 *)target_info->mac);
             if (!ret) {
                 return bpf_redirect(target_info->ifindex, 0);
             }
@@ -462,6 +501,29 @@ static __always_inline int route6_pick_wan_and_send_by_flow_id(struct __sk_buff 
         ld_from_lan_log("bpf_redirect_neigh error: %d", ret);
     }
     return ret;
+}
+
+static __always_inline int route6_pick_wan_and_send_by_flow_id(struct __sk_buff *skb,
+                                                               u32 current_l3_offset,
+                                                               struct route6_context *context,
+                                                               const u32 flow_id) {
+    const u32 resolved_flow_id = get_flow_id(flow_id);
+    struct route6_target_info *target_info =
+        route6_pick_wan_target_tc(skb, current_l3_offset, context, flow_id);
+
+    // 找不到转发的 target 按照原有计划进行处理
+    if (target_info == NULL) {
+        if (resolved_flow_id == 0) {
+            // Default flow PASS
+            return TC_ACT_UNSPEC;
+        } else {
+            ld_from_lan_log("DROP flow_id v6: %d", resolved_flow_id);
+            // Other DROP
+            return TC_ACT_SHOT;
+        }
+    }
+
+    return route6_send_to_target_info(skb, current_l3_offset, target_info, flow_id);
 }
 
 static __always_inline int route6_is_current_wan_packet(struct __sk_buff *skb,
@@ -530,7 +592,7 @@ static __always_inline int route6_redirect_by_cached_target(struct __sk_buff *sk
 
 static __always_inline int route6_search_cache_in_lan(struct __sk_buff *skb,
                                                       const u32 current_l3_offset,
-                                                      const struct route6_context *context,
+                                                      struct route6_context *context,
                                                       u32 *flow_mark) {
     int ret = 0;
     u32 key = WAN_CACHE;
@@ -690,19 +752,17 @@ static __always_inline int route6_set_cache_in_lan(const struct route6_context *
     key = LAN_CACHE;
     void *lan_cache = bpf_map_lookup_elem(&rt6_cache_map, &key);
     if (lan_cache) {
-        target = bpf_map_lookup_elem(lan_cache, &search_key);
-        if (target) {
-            target->mark_value = flow_mark;
-        } else {
-            const u32 resolved_flow_id = get_flow_id(flow_mark);
+        const u32 resolved_flow_id = get_flow_id(flow_mark);
+        const bool is_five_tuple = route_flow_is_five_tuple(resolved_flow_id);
+
+        struct route6_cache_value new_target_cache = {0};
+        new_target_cache.mark_value = flow_mark;
+        if (!is_five_tuple) {
             struct route6_slot_key slot_key = {
                 .flow_id = resolved_flow_id,
                 .slot = route6_target_slot(&context->daddr),
             };
             struct route6_target_info *slot_target = bpf_map_lookup_elem(&rt6_slot_map, &slot_key);
-
-            struct route6_cache_value new_target_cache = {0};
-            new_target_cache.mark_value = flow_mark;
             if (slot_target != NULL) {
                 new_target_cache.ifindex = slot_target->ifindex;
                 new_target_cache.has_mac = slot_target->has_mac;
@@ -714,8 +774,8 @@ static __always_inline int route6_set_cache_in_lan(const struct route6_context *
             }
             new_target_cache.xdp_redirect_able =
                 xdp_redirect_target_able(new_target_cache.ifindex) ? 1 : 0;
-            bpf_map_update_elem(lan_cache, &search_key, &new_target_cache, BPF_ANY);
         }
+        bpf_map_update_elem(lan_cache, &search_key, &new_target_cache, BPF_ANY);
     }
 
     return TC_ACT_OK;

@@ -120,6 +120,42 @@ pub(crate) struct Route6TargetInfo {
     pub _pad_tail: [u8; 2],
 }
 
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, FromBytes, IntoBytes, Immutable, PartialEq, Eq)]
+pub(crate) struct RouteFlowTargetKey {
+    pub flow_id: u32,
+    pub ifindex: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, FromBytes, IntoBytes, Immutable, PartialEq, Eq)]
+pub(crate) struct Route4ConnKey {
+    pub saddr: u32,
+    pub daddr: u32,
+    pub sport: u16,
+    pub dport: u16,
+    pub l4_proto: u8,
+    pub _pad: [u8; 3],
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, FromBytes, IntoBytes, Immutable, PartialEq, Eq)]
+pub(crate) struct Route6ConnKey {
+    pub saddr: [u8; 16],
+    pub daddr: [u8; 16],
+    pub sport: u16,
+    pub dport: u16,
+    pub l4_proto: u8,
+    pub _pad: [u8; 3],
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, FromBytes, IntoBytes, Immutable, PartialEq, Eq)]
+pub(crate) struct RouteConnValue {
+    pub mark_value: u32,
+    pub ifindex: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,5 +237,27 @@ mod tests {
         assert_field!(Route6TargetInfo, share::route6_target_info, is_docker);
         assert_field!(Route6TargetInfo, share::route6_target_info, mac);
         assert_field!(Route6TargetInfo, share::route6_target_info, link_chain_id);
+
+        assert_size!(RouteFlowTargetKey, share::route_flow_target_key);
+        assert_field!(RouteFlowTargetKey, share::route_flow_target_key, flow_id);
+        assert_field!(RouteFlowTargetKey, share::route_flow_target_key, ifindex);
+
+        assert_size!(Route4ConnKey, share::route4_conn_key);
+        assert_field!(Route4ConnKey, share::route4_conn_key, saddr);
+        assert_field!(Route4ConnKey, share::route4_conn_key, daddr);
+        assert_field!(Route4ConnKey, share::route4_conn_key, sport);
+        assert_field!(Route4ConnKey, share::route4_conn_key, dport);
+        assert_field!(Route4ConnKey, share::route4_conn_key, l4_proto);
+
+        assert_size!(Route6ConnKey, share::route6_conn_key);
+        assert_field!(Route6ConnKey, share::route6_conn_key, saddr);
+        assert_field!(Route6ConnKey, share::route6_conn_key, daddr);
+        assert_field!(Route6ConnKey, share::route6_conn_key, sport);
+        assert_field!(Route6ConnKey, share::route6_conn_key, dport);
+        assert_field!(Route6ConnKey, share::route6_conn_key, l4_proto);
+
+        assert_size!(RouteConnValue, share::route_conn_value);
+        assert_field!(RouteConnValue, share::route_conn_value, mark_value);
+        assert_field!(RouteConnValue, share::route_conn_value, ifindex);
     }
 }
