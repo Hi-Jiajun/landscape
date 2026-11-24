@@ -77,7 +77,10 @@ fn reconcile_wan_route(
     }
 }
 
-fn owner_sort_key(owner: &RouteOwner) -> (u8, [u8; 16], &str) {
+type OwnerSortKey<'a> = (u8, [u8; 16], &'a str);
+type CandidateSortKey<'a> = (&'a str, u16, OwnerSortKey<'a>);
+
+fn owner_sort_key(owner: &RouteOwner) -> OwnerSortKey<'_> {
     match owner {
         RouteOwner::Link(id) => (0, *id.as_bytes(), ""),
         RouteOwner::Netns(name) => (1, [0; 16], name.as_str()),
@@ -87,7 +90,7 @@ fn owner_sort_key(owner: &RouteOwner) -> (u8, [u8; 16], &str) {
 fn default_candidate_sort_key<'a>(
     owner: &'a RouteOwner,
     target: &'a WanRouteTarget,
-) -> (&'a str, u16, (u8, [u8; 16], &'a str)) {
+) -> CandidateSortKey<'a> {
     (target.info.iface_name.as_str(), target.link_chain_id, owner_sort_key(owner))
 }
 
@@ -95,7 +98,7 @@ fn backup_candidate_sort_key<'a>(
     healths: &LinkHealths,
     owner: &'a RouteOwner,
     target: &'a WanRouteTarget,
-) -> (bool, (&'a str, u16, (u8, [u8; 16], &'a str))) {
+) -> (bool, CandidateSortKey<'a>) {
     // Verified-healthy backups take precedence over unmonitored `Unknown` backups,
     // while `Unknown` backups remain eligible whenever no verified-healthy backup exists.
     (!is_owner_verified_healthy(healths, owner), default_candidate_sort_key(owner, target))

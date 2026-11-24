@@ -1105,7 +1105,7 @@ mod tests {
             config: LanIPv6ConfigV2 {
                 mode: IPv6ServiceMode::Slaac,
                 ad_interval: 300,
-            rdnss_link_local_only: true,
+                rdnss_link_local_only: true,
                 lifetime: 300,
                 ra_flag: ra_flag_default(),
                 prefix_groups: vec![LanPrefixGroupConfig {
@@ -1134,7 +1134,7 @@ mod tests {
             config: LanIPv6ConfigV2 {
                 mode: IPv6ServiceMode::Stateful,
                 ad_interval: 300,
-            rdnss_link_local_only: true,
+                rdnss_link_local_only: true,
                 lifetime: 300,
                 ra_flag: RouterFlags::from(0xc0u8),
                 prefix_groups: vec![LanPrefixGroupConfig {
@@ -1221,7 +1221,7 @@ mod tests {
             config: LanIPv6ConfigV2 {
                 mode: IPv6ServiceMode::Slaac,
                 ad_interval: 300,
-            rdnss_link_local_only: true,
+                rdnss_link_local_only: true,
                 lifetime: 300,
                 ra_flag: ra_flag_default(),
                 prefix_groups: vec![LanPrefixGroupConfig {
@@ -1249,7 +1249,7 @@ mod tests {
             config: LanIPv6ConfigV2 {
                 mode: IPv6ServiceMode::Stateful,
                 ad_interval: 300,
-            rdnss_link_local_only: true,
+                rdnss_link_local_only: true,
                 lifetime: 300,
                 ra_flag: RouterFlags::from(0xc0u8),
                 prefix_groups: vec![LanPrefixGroupConfig {
@@ -1294,7 +1294,7 @@ mod tests {
             config: LanIPv6ConfigV2 {
                 mode: IPv6ServiceMode::Slaac,
                 ad_interval: 300,
-            rdnss_link_local_only: true,
+                rdnss_link_local_only: true,
                 lifetime: 300,
                 ra_flag: ra_flag_default(),
                 prefix_groups: vec![LanPrefixGroupConfig {
@@ -1331,7 +1331,7 @@ mod tests {
             config: LanIPv6ConfigV2 {
                 mode: IPv6ServiceMode::Stateful,
                 ad_interval: 300,
-            rdnss_link_local_only: true,
+                rdnss_link_local_only: true,
                 lifetime: 300,
                 ra_flag: RouterFlags::from(0xc0u8),
                 prefix_groups: vec![LanPrefixGroupConfig {
@@ -1385,7 +1385,7 @@ mod tests {
             config: LanIPv6ConfigV2 {
                 mode: IPv6ServiceMode::SlaacDhcpv6,
                 ad_interval: 300,
-            rdnss_link_local_only: true,
+                rdnss_link_local_only: true,
                 lifetime: 300,
                 ra_flag: RouterFlags::from(0xc0u8),
                 prefix_groups: vec![LanPrefixGroupConfig {
@@ -1436,7 +1436,7 @@ mod tests {
             config: LanIPv6ConfigV2 {
                 mode: IPv6ServiceMode::Slaac,
                 ad_interval: 300,
-            rdnss_link_local_only: true,
+                rdnss_link_local_only: true,
                 lifetime: 300,
                 ra_flag: ra_flag_default(),
                 prefix_groups: vec![LanPrefixGroupConfig {
@@ -1464,7 +1464,7 @@ mod tests {
             config: LanIPv6ConfigV2 {
                 mode: IPv6ServiceMode::Slaac,
                 ad_interval: 300,
-            rdnss_link_local_only: true,
+                rdnss_link_local_only: true,
                 lifetime: 300,
                 ra_flag: ra_flag_default(),
                 prefix_groups: vec![LanPrefixGroupConfig {
@@ -1513,7 +1513,7 @@ mod tests {
             config: LanIPv6ConfigV2 {
                 mode: IPv6ServiceMode::Slaac,
                 ad_interval: 300,
-            rdnss_link_local_only: true,
+                rdnss_link_local_only: true,
                 lifetime: 300,
                 ra_flag: ra_flag_default(),
                 prefix_groups: vec![LanPrefixGroupConfig {
@@ -1541,7 +1541,7 @@ mod tests {
             config: LanIPv6ConfigV2 {
                 mode: IPv6ServiceMode::Stateful,
                 ad_interval: 300,
-            rdnss_link_local_only: true,
+                rdnss_link_local_only: true,
                 lifetime: 300,
                 ra_flag: RouterFlags::from(0xc0u8),
                 prefix_groups: vec![LanPrefixGroupConfig {
@@ -1586,7 +1586,7 @@ mod tests {
             config: LanIPv6ConfigV2 {
                 mode: IPv6ServiceMode::Slaac,
                 ad_interval: 300,
-            rdnss_link_local_only: true,
+                rdnss_link_local_only: true,
                 lifetime: 300,
                 ra_flag: ra_flag_default(),
                 prefix_groups: vec![LanPrefixGroupConfig {
@@ -1686,7 +1686,7 @@ mod tests {
             config: LanIPv6ConfigV2 {
                 mode: IPv6ServiceMode::SlaacDhcpv6,
                 ad_interval: 300,
-            rdnss_link_local_only: true,
+                rdnss_link_local_only: true,
                 lifetime: 300,
                 ra_flag: RouterFlags::from(0xc0u8),
                 prefix_groups: vec![
@@ -1741,7 +1741,7 @@ mod tests {
             config: LanIPv6ConfigV2 {
                 mode: IPv6ServiceMode::SlaacDhcpv6,
                 ad_interval: 300,
-            rdnss_link_local_only: true,
+                rdnss_link_local_only: true,
                 lifetime: 300,
                 ra_flag: RouterFlags::from(0xc0u8),
                 prefix_groups: vec![
