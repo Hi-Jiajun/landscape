@@ -57,6 +57,27 @@ static __always_inline int napt_broadcast_mac(struct __sk_buff *skb, __u32 l3_of
 
 const volatile u32 current_l3_offset = 14;
 
+/*
+ * HostDirect packets normally bypass egress NAT so host control plane traffic
+ * (DHCPv4/PPPoE/etc.) leaves untouched. Local WAN health-check ICMP probes are
+ * the one exception: they carry HostDirect to pin egress to a specific WAN
+ * chain, while their replies return through WAN ingress where NAT4 drops
+ * untracked ICMP addressed to `land_nat_external_addr`. Track only
+ * non-fragmented ICMP echo requests sourced from this link's external IPv4.
+ */
+static __always_inline bool tc_nat4_track_host_direct(struct __sk_buff *skb, __u32 l3_offset) {
+    if (land_nat_external_addr == 0) return false;
+
+    __u8 next = 0;
+    __u8 frag = 0;
+    __u32 packet_end = 0;
+    __be32 src_addr = 0;
+    int ihl = tc_ip4_hdrlen(skb, l3_offset, &next, &frag, &packet_end, 0, 0, 0, &src_addr, 0);
+    if (ihl < 0) return false;
+
+    return next == IPV4_PROTO_ICMP && frag == LAND_FRAG_NONE && src_addr == land_nat_external_addr;
+}
+
 SEC("tc/egress")
 int tc_v4_from_lan(struct __sk_buff *skb) {
     struct tc_nat_view view = {};
@@ -66,7 +87,9 @@ int tc_v4_from_lan(struct __sk_buff *skb) {
     __be16 new_port = 0;
     int rc = TC_ACT_OK;
 
-    if (!not_host_direct(skb_mark(skb))) goto chain;
+    u32 mark = skb_mark(skb);
+    bool host_direct = is_host_direct(mark);
+    if (host_direct && !tc_nat4_track_host_direct(skb, current_l3_offset)) goto chain;
 
     if (!tc_nat_read4(skb, &view, &src_addr, &dst_addr, current_l3_offset, LAND_FRAG_FROM_LAN))
         goto chain;
@@ -75,6 +98,8 @@ int tc_v4_from_lan(struct __sk_buff *skb) {
     if (napt_is_broadcast_ip4(src_addr) || napt_is_broadcast_ip4(dst_addr)) goto chain;
 
     if (land_nat_external_addr == 0) goto chain;
+
+    if (host_direct && (napt_is_icmp_error(&view) || !view.ports_valid)) goto chain;
 
     if (view.l4_protocol != IPV4_PROTO_ICMP && view.l4_protocol != IPV4_PROTO_TCP &&
         view.l4_protocol != IPV4_PROTO_UDP)

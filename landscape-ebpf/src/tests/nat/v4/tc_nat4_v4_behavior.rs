@@ -10,8 +10,11 @@ use libbpf_rs::{
     MapCore, MapFlags, ProgramInput, ProgramMut,
     skel::{OpenSkel, SkelBuilder as _},
 };
+use zerocopy::IntoBytes;
 
-use crate::tests::tc_nat4_v4_skel::{TcNat4V4Skel, TcNat4V4SkelBuilder};
+use crate::tests::TestSkb;
+use crate::tests::helper::map::host_direct_mark;
+use crate::tests::tc_nat4_v4_skel::{TcNat4V4Skel, TcNat4V4SkelBuilder, types};
 
 const TC_ACT_OK: i32 = 0;
 const TC_ACT_SHOT: i32 = 2;
@@ -98,6 +101,19 @@ fn run(prog: &ProgramMut<'_>, pkt: &[u8]) -> (i32, Vec<u8>) {
     let mut out = vec![0u8; pkt.len()];
     let input = ProgramInput {
         data_in: Some(pkt),
+        data_out: Some(&mut out),
+        ..Default::default()
+    };
+    let ret = prog.test_run(input).expect("test_run failed").return_value as i32;
+    (ret, out)
+}
+
+fn run_with_mark(prog: &ProgramMut<'_>, pkt: &[u8], mark: u32) -> (i32, Vec<u8>) {
+    let mut out = vec![0u8; pkt.len()];
+    let mut ctx = TestSkb { mark, ..Default::default() };
+    let input = ProgramInput {
+        data_in: Some(pkt),
+        context_in: Some(ctx.as_mut_bytes()),
         data_out: Some(&mut out),
         ..Default::default()
     };
@@ -701,5 +717,80 @@ fn lan_broadcast_mac_is_not_natted() {
         let key = from_wan_index(PROTO_UDP, UDP_NAT_PORT).to_ne_bytes();
         let wan = skel.maps.napt_from_wan.lookup(&key, MapFlags::ANY).unwrap().unwrap();
         assert_eq!(wan[6], KIND_FREE);
+    });
+}
+
+#[test]
+fn host_direct_wan_icmp_probe_is_tracked_with_strict_reuse_and_reply_restores_id() {
+    with_skel(&[], &[], &[ICMP_EXTERNAL_ID], |skel| {
+        // Set bit 15 in chain_id (0x8003) to prove NAT4 never misreads HostDirect
+        // bits as FlowMark allow_reuse_port or flow_id.
+        let mark = host_direct_mark(0x8003);
+        let (ret, out) = run_with_mark(
+            &skel.progs.tc_v4_from_lan,
+            &icmp_pkt(WAN_IP, REMOTE_IP, ICMP_INTERNAL_ID, true),
+            mark,
+        );
+        assert_eq!(ret, TC_ACT_UNSPEC);
+        let (dst, id) = parse_icmp_dst_id(&out);
+        assert_eq!(dst, REMOTE_IP);
+        assert_eq!(id, ICMP_EXTERNAL_ID);
+
+        let wan_key = from_wan_index(PROTO_ICMP, ICMP_EXTERNAL_ID).to_ne_bytes();
+        let wan_raw = skel.maps.napt_from_wan.lookup(&wan_key, MapFlags::ANY).unwrap().unwrap();
+        assert_eq!(wan_raw[6], KIND_DYNAMIC);
+        assert_eq!(wan_raw[7], 0, "HostDirect ICMP mapping must force allow_reuse = 0");
+
+        let ct_k = ct_key(WAN_IP, ICMP_INTERNAL_ID, REMOTE_IP, 0, PROTO_ICMP);
+        let ct_raw = skel.maps.napt_ct.lookup(&ct_k, MapFlags::ANY).unwrap().unwrap();
+        assert_eq!(ct_raw.len(), std::mem::size_of::<types::napt_ct_value>());
+        let ct_val =
+            unsafe { std::ptr::read_unaligned(ct_raw.as_ptr().cast::<types::napt_ct_value>()) };
+        assert_eq!(ct_val.flow_id, 0, "HostDirect ICMP CT must not leak chain_id into flow_id");
+
+        let (ret, out) =
+            run(&skel.progs.tc_v4_from_wan, &icmp_pkt(REMOTE_IP, WAN_IP, ICMP_EXTERNAL_ID, false));
+        assert_eq!(ret, TC_ACT_OK);
+        let (dst, id) = parse_icmp_dst_id(&out);
+        assert_eq!(dst, WAN_IP);
+        assert_eq!(id, ICMP_INTERNAL_ID);
+    });
+}
+
+#[test]
+fn host_direct_non_icmp_and_foreign_source_bypass_nat4() {
+    with_skel(&[UDP_NAT_PORT], &[], &[ICMP_EXTERNAL_ID], |skel| {
+        let mark = host_direct_mark(3);
+
+        // HostDirect UDP control plane from WAN IP must stay bypassed.
+        let (ret, out) = run_with_mark(
+            &skel.progs.tc_v4_from_lan,
+            &udp_pkt(WAN_IP, REMOTE_IP, LAN_PORT, REMOTE_PORT),
+            mark,
+        );
+        assert_eq!(ret, TC_ACT_UNSPEC);
+        assert_eq!(parse_udp(&out).sport, LAN_PORT);
+        let udp_wan_key = from_wan_index(PROTO_UDP, UDP_NAT_PORT).to_ne_bytes();
+        let udp_wan = skel.maps.napt_from_wan.lookup(&udp_wan_key, MapFlags::ANY).unwrap().unwrap();
+        assert_eq!(udp_wan[6], KIND_FREE);
+
+        // HostDirect ICMP from a non-WAN source IP must stay bypassed.
+        let (ret, out) = run_with_mark(
+            &skel.progs.tc_v4_from_lan,
+            &icmp_pkt(LAN_HOST, REMOTE_IP, ICMP_INTERNAL_ID, true),
+            mark,
+        );
+        assert_eq!(ret, TC_ACT_UNSPEC);
+        assert_eq!(parse_icmp_dst_id(&out).1, ICMP_INTERNAL_ID);
+
+        // HostDirect ICMP error from WAN IP must bypass (never drop).
+        let icmp_err = icmp_error_wan(REMOTE_IP, WAN_IP, REMOTE_PORT, LAN_PORT, WAN_IP, REMOTE_IP);
+        let (ret, _) = run_with_mark(&skel.progs.tc_v4_from_lan, &icmp_err, mark);
+        assert_eq!(ret, TC_ACT_UNSPEC);
+
+        let icmp_wan_key = from_wan_index(PROTO_ICMP, ICMP_EXTERNAL_ID).to_ne_bytes();
+        let icmp_wan =
+            skel.maps.napt_from_wan.lookup(&icmp_wan_key, MapFlags::ANY).unwrap().unwrap();
+        assert_eq!(icmp_wan[6], KIND_FREE);
     });
 }

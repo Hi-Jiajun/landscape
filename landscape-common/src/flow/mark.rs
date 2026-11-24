@@ -50,6 +50,23 @@ impl SocketMark {
         SocketMark { mark_type, trace_mark }
     }
 
+    /// Encode a `HostDirect` socket mark targeting `chain_id` with `trace_mark = 0`.
+    pub const fn host_direct(chain_id: u16) -> u32 {
+        (MARK_TYPE_HOST_DIRECT << 24) | (chain_id as u32)
+    }
+
+    /// Extract the target `chain_id` when this mark uses the `HostDirect` layout
+    /// with `trace_mark == 0`.
+    pub const fn host_direct_chain_id(self) -> Option<u16> {
+        match self {
+            SocketMark {
+                mark_type: MarkType::HostDirect { chain_id },
+                trace_mark: 0,
+            } => Some(chain_id),
+            _ => None,
+        }
+    }
+
     /// Compute the SO_MARK for a DNS upstream socket: always the Normal
     /// layout with the action bits left empty; upstream selection is carried
     /// only by the flow_id bits, and the NAT port-reuse bit is always set.
@@ -291,6 +308,12 @@ mod tests {
         let raw = u32::from(sm);
         assert_eq!(raw, (1 << 24) | (7 << 16) | 0xBEEF);
         assert_eq!(SocketMark::from(raw), sm);
+        assert_eq!(sm.host_direct_chain_id(), None, "non-zero trace_mark is excluded");
+
+        let direct_raw = SocketMark::host_direct(0x0003);
+        assert_eq!(direct_raw, u32::from(SocketMark::new(MarkType::HostDirect { chain_id: 3 }, 0)));
+        assert_eq!(SocketMark::from(direct_raw).host_direct_chain_id(), Some(3));
+        assert_eq!(SocketMark::from(0x0000_0003).host_direct_chain_id(), None);
     }
 
     #[test]

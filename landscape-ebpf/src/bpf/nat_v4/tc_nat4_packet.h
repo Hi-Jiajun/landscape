@@ -41,6 +41,9 @@ static __always_inline int napt_lan_state(struct __sk_buff *skb, const struct tc
     __u32 gen = 0;
     __u8 kind = NAPT_MAPPING_FREE;
     int mapping_new = 0;
+    u32 raw_mark = skb_mark(skb);
+    /* HostDirect low 16 bits carry chain_id, never FlowMark flags/flow_id. */
+    u32 ct_mark = is_host_direct(raw_mark) ? 0 : raw_mark;
 
     struct napt_from_lan_value *lan = napt_lan_lookup(src_addr, internal_port, proto);
 
@@ -50,7 +53,7 @@ static __always_inline int napt_lan_state(struct __sk_buff *skb, const struct tc
         kind = lan->kind;
     } else {
         if (!allow_create || !view->ports_valid) return TC_ACT_SHOT;
-        __u8 allow_reuse = get_flow_allow_reuse_port(skb_mark(skb)) ? 1 : 0;
+        __u8 allow_reuse = get_flow_allow_reuse_port(ct_mark) ? 1 : 0;
         if (napt_queue_pop(proto, &external_port, &gen) != 0) return TC_ACT_SHOT;
         if (napt_create_dynamic_mapping(proto, src_addr, internal_port, dst_addr, remote_port,
                                         external_port, gen, allow_reuse) != 0) {
@@ -87,7 +90,7 @@ static __always_inline int napt_lan_state(struct __sk_buff *skb, const struct tc
 
     if (!mapping_new && mapping->kind == NAPT_MAPPING_DYNAMIC &&
         mapping->trigger_addr == dst_addr && mapping->trigger_port == remote_port) {
-        __u8 allow_reuse = get_flow_allow_reuse_port(skb_mark(skb)) ? 1 : 0;
+        __u8 allow_reuse = get_flow_allow_reuse_port(ct_mark) ? 1 : 0;
         mapping->allow_reuse = allow_reuse;
         if (lan && lan->kind == NAPT_MAPPING_DYNAMIC) lan->allow_reuse = allow_reuse;
     }
@@ -105,7 +108,7 @@ static __always_inline int napt_lan_state(struct __sk_buff *skb, const struct tc
             return TC_ACT_SHOT;
         }
 
-        ct = napt_ct_create(skb->ifindex, skb_mark(skb), &key, external_port, gen,
+        ct = napt_ct_create(skb->ifindex, ct_mark, &key, external_port, gen,
                             kind == NAPT_MAPPING_STATIC, NAPT_GRESS_LAN, mapping);
         if (!ct) {
             if (mapping_new)
