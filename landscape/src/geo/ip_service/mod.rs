@@ -194,6 +194,7 @@ impl GeoIpService {
                     WanIPRuleSource::Config(cidr) => {
                         result.push(IpMarkInfo { mark, cidr, priority });
                     }
+                    WanIPRuleSource::Port(_) => {}
                 }
             }
         }

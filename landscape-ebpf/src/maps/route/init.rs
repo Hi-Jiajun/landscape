@@ -32,7 +32,9 @@ const FLOW_TARGETS_MAX_ENTRIES: u32 = 4096;
 const ROUTE_CACHE_MAX_ENTRIES: u32 = 65536;
 /// Outer ARRAY_OF_MAPS capacity (indexed by cache type WAN/LAN).
 const ROUTE_CACHE_OUTER_ENTRIES: u32 = 4;
-const ROUTE_CONN_OUTER_ENTRIES: u32 = 1;
+/// Outer ARRAY_OF_MAPS capacity for `rt4/6_conn_map`:
+/// slot 0 (`CONN_PIN_CACHE`) + slot 1 (`L4_VERDICT_CACHE`).
+const ROUTE_CONN_OUTER_ENTRIES: u32 = 2;
 
 /// Pin 文件名 = C map 符号名（见 `route4_lan.h` / `route4_slot.h` 等）。
 pub(crate) const RT_FLOW_MODE_MAP_PIN: &str = "rt_flow_mode_map";
@@ -197,8 +199,8 @@ pub(crate) const EACH_V6_CONN: InnerMapSpec = InnerMapSpec {
     map_flags: 0,
 };
 
-/// `rt4_conn_map`: `BPF_MAP_TYPE_ARRAY_OF_MAPS`, key `u32`, 1 entry, inner
-/// `rt4_each_conn`.
+/// `rt4_conn_map`: `BPF_MAP_TYPE_ARRAY_OF_MAPS`, key `u32`, 2 entries
+/// (`CONN_PIN_CACHE` slot 0, `L4_VERDICT_CACHE` slot 1), inner `rt4_each_conn`.
 pub(crate) const RT4_CONN_MAP_SPEC: MapCreateSpec = MapCreateSpec {
     map_type: MapType::ArrayOfMaps,
     name: RT4_CONN_MAP_PIN,
@@ -209,8 +211,8 @@ pub(crate) const RT4_CONN_MAP_SPEC: MapCreateSpec = MapCreateSpec {
     inner: Some(EACH_V4_CONN),
 };
 
-/// `rt6_conn_map`: `BPF_MAP_TYPE_ARRAY_OF_MAPS`, key `u32`, 1 entry, inner
-/// `rt6_each_conn`.
+/// `rt6_conn_map`: `BPF_MAP_TYPE_ARRAY_OF_MAPS`, key `u32`, 2 entries
+/// (`CONN_PIN_CACHE` slot 0, `L4_VERDICT_CACHE` slot 1), inner `rt6_each_conn`.
 pub(crate) const RT6_CONN_MAP_SPEC: MapCreateSpec = MapCreateSpec {
     map_type: MapType::ArrayOfMaps,
     name: RT6_CONN_MAP_PIN,
@@ -312,17 +314,28 @@ pub fn init_route_lan_cache_inner_map(rt4_cache_path: &Path, rt6_cache_path: &Pa
     );
 }
 
-/// Startup population of the 5-tuple connection-pinning inner maps at slot 0.
+/// Startup population of the 5-tuple connection-pinning (`CONN_PIN_CACHE`, slot 0)
+/// and L4 verdict (`L4_VERDICT_CACHE`, slot 1) inner maps.
 pub fn init_route_conn_inner_map(rt4_conn_path: &Path, rt6_conn_path: &Path) {
     cache::create_inner_map_generic::<_, Route4ConnKey, RouteConnValue>(
         rt4_conn_path,
         "rt4_conn_lru".into(),
-        cache::CONN_CACHE_SLOT,
+        cache::CONN_PIN_CACHE,
     );
     cache::create_inner_map_generic::<_, Route6ConnKey, RouteConnValue>(
         rt6_conn_path,
         "rt6_conn_lru".into(),
-        cache::CONN_CACHE_SLOT,
+        cache::CONN_PIN_CACHE,
+    );
+    cache::create_inner_map_generic::<_, Route4ConnKey, RouteConnValue>(
+        rt4_conn_path,
+        "rt4_l4_verdict".into(),
+        cache::L4_VERDICT_CACHE,
+    );
+    cache::create_inner_map_generic::<_, Route6ConnKey, RouteConnValue>(
+        rt6_conn_path,
+        "rt6_l4_verdict".into(),
+        cache::L4_VERDICT_CACHE,
     );
 }
 

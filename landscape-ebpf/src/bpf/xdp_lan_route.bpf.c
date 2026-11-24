@@ -102,15 +102,15 @@ static __always_inline int xdp_match_flow_id_v6(struct xdp_md *ctx, const struct
 
 // ── XDP-adapted flow_verdict ──
 
-static __always_inline int xdp_route4_flow_verdict(struct xdp_md *ctx,
-                                                   const struct route4_context *context,
-                                                   u32 *init_flow_id_) {
+static __always_inline int
+xdp_route4_flow_verdict(struct xdp_md *ctx, struct route4_context *context, u32 *init_flow_id_) {
     volatile u32 flow_id = *init_flow_id_ & 0xff;
     u8 flow_action;
 
     if (xdp_match_flow_id_v4(ctx, context->saddr, (u32 *)&flow_id)) {
         return XDP_DROP;
     }
+    const u32 src_flow_id = flow_id;
 
     volatile u32 flow_mark_action = *init_flow_id_;
     volatile u16 priority = 0xFFFF;
@@ -137,6 +137,32 @@ static __always_inline int xdp_route4_flow_verdict(struct xdp_md *ctx,
         }
     }
 
+    if (unlikely(flow_has_l4_rules(src_flow_id))) {
+        const struct flow_l4_rule_set *l4_set =
+            bpf_map_lookup_elem(&flow_l4_rule_map, &src_flow_id);
+        u16 best_prio = priority;
+        if (l4_set != NULL && l4_set->count > 0 && best_prio >= l4_set->entries[0].priority) {
+            context->skip_2tuple_cache = 1;
+            route4_ensure_l4_ports_xdp(ctx, sizeof(struct ethhdr), context);
+            if (context->has_ports) {
+                u16 host_dport = bpf_ntohs(context->dport);
+                u32 cnt = l4_set->count;
+                if (cnt > FLOW_L4_MAX_RULES_PER_FLOW) cnt = FLOW_L4_MAX_RULES_PER_FLOW;
+                for (u32 i = 0; i < FLOW_L4_MAX_RULES_PER_FLOW; i++) {
+                    if (i >= cnt) break;
+                    const struct flow_l4_rule_entry *e = &l4_set->entries[i];
+                    if (e->priority > best_prio) break;
+                    if ((e->l4_proto == 0 || e->l4_proto == context->l4_protocol) &&
+                        host_dport >= e->start_port && host_dport <= e->end_port) {
+                        flow_mark_action = e->mark;
+                        priority = e->priority;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     flow_action = get_flow_action(flow_mark_action);
     if (flow_action == FLOW_KEEP_GOING) {
         flow_mark_action = replace_flow_id(flow_mark_action, flow_id & 0xFF);
@@ -152,15 +178,15 @@ keep_going:
     return 0;
 }
 
-static __always_inline int xdp_route6_flow_verdict(struct xdp_md *ctx,
-                                                   const struct route6_context *context,
-                                                   u32 *init_flow_id_) {
+static __always_inline int
+xdp_route6_flow_verdict(struct xdp_md *ctx, struct route6_context *context, u32 *init_flow_id_) {
     volatile u32 flow_id = *init_flow_id_ & 0xff;
     u8 flow_action;
 
     if (xdp_match_flow_id_v6(ctx, &context->saddr, (u32 *)&flow_id)) {
         return XDP_DROP;
     }
+    const u32 src_flow_id = flow_id;
 
     volatile u32 flow_mark_action = *init_flow_id_;
     volatile u16 priority = 0xFFFF;
@@ -186,6 +212,32 @@ static __always_inline int xdp_route6_flow_verdict(struct xdp_md *ctx,
         if (dns_rule_value != NULL && dns_rule_value->priority <= priority) {
             flow_mark_action = dns_rule_value->mark;
             priority = dns_rule_value->priority;
+        }
+    }
+
+    if (unlikely(flow_has_l4_rules(src_flow_id))) {
+        const struct flow_l4_rule_set *l4_set =
+            bpf_map_lookup_elem(&flow_l4_rule_map, &src_flow_id);
+        u16 best_prio = priority;
+        if (l4_set != NULL && l4_set->count > 0 && best_prio >= l4_set->entries[0].priority) {
+            context->skip_2tuple_cache = 1;
+            route6_ensure_l4_ports_xdp(ctx, sizeof(struct ethhdr), context);
+            if (context->has_ports) {
+                u16 host_dport = bpf_ntohs(context->dport);
+                u32 cnt = l4_set->count;
+                if (cnt > FLOW_L4_MAX_RULES_PER_FLOW) cnt = FLOW_L4_MAX_RULES_PER_FLOW;
+                for (u32 i = 0; i < FLOW_L4_MAX_RULES_PER_FLOW; i++) {
+                    if (i >= cnt) break;
+                    const struct flow_l4_rule_entry *e = &l4_set->entries[i];
+                    if (e->priority > best_prio) break;
+                    if ((e->l4_proto == 0 || e->l4_proto == context->l4_protocol) &&
+                        host_dport >= e->start_port && host_dport <= e->end_port) {
+                        flow_mark_action = e->mark;
+                        priority = e->priority;
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -227,8 +279,8 @@ xdp_route4_pick_wan_target(struct xdp_md *ctx, struct route4_context *context, u
             .dport = context->dport,
             .l4_proto = context->l4_protocol,
         };
-        u32 zero = 0;
-        void *conn_inner = bpf_map_lookup_elem(&rt4_conn_map, &zero);
+        u32 conn_slot = CONN_PIN_CACHE;
+        void *conn_inner = bpf_map_lookup_elem(&rt4_conn_map, &conn_slot);
         if (conn_inner != NULL) {
             struct route_conn_value *conn_val = bpf_map_lookup_elem(conn_inner, &conn_key);
             if (conn_val != NULL) {
@@ -329,21 +381,43 @@ static __always_inline int xdp_route4_cache_pick_wan(struct xdp_md *ctx,
 
         if (!already_cached) {
             const bool is_five_tuple = route_flow_is_five_tuple(resolved_flow_id);
-            u32 lan_key = LAN_CACHE;
-            void *lan_cache = bpf_map_lookup_elem(&rt4_cache_map, &lan_key);
-            if (lan_cache) {
-                struct route4_cache_value new_entry = {};
-                new_entry.mark_value = flow_id;
-                if (!is_five_tuple) {
-                    new_entry.ifindex = info->ifindex;
-                    new_entry.has_mac = info->has_mac;
-                    new_entry.is_docker = info->is_docker;
-                    new_entry.xdp_redirect_able = xdp_redirect_target_able(info->ifindex) ? 1 : 0;
-                    new_entry.gate_addr = info->gate_addr;
-                    __builtin_memcpy(new_entry.mac, info->mac, 6);
-                    new_entry.link_chain_id = info->link_chain_id;
+            if (unlikely(context->skip_2tuple_cache)) {
+                if (!is_five_tuple && context->has_ports) {
+                    u32 l4_slot = L4_VERDICT_CACHE;
+                    void *conn_inner = bpf_map_lookup_elem(&rt4_conn_map, &l4_slot);
+                    if (conn_inner != NULL) {
+                        struct route4_conn_key conn_key = {
+                            .saddr = context->saddr,
+                            .daddr = context->daddr,
+                            .sport = context->sport,
+                            .dport = context->dport,
+                            .l4_proto = context->l4_protocol,
+                        };
+                        struct route_conn_value new_conn = {
+                            .mark_value = flow_id,
+                            .ifindex = info->ifindex,
+                        };
+                        bpf_map_update_elem(conn_inner, &conn_key, &new_conn, BPF_ANY);
+                    }
                 }
-                bpf_map_update_elem(lan_cache, &cache_key, &new_entry, BPF_ANY);
+            } else {
+                u32 lan_key = LAN_CACHE;
+                void *lan_cache = bpf_map_lookup_elem(&rt4_cache_map, &lan_key);
+                if (lan_cache) {
+                    struct route4_cache_value new_entry = {};
+                    new_entry.mark_value = flow_id;
+                    if (!is_five_tuple) {
+                        new_entry.ifindex = info->ifindex;
+                        new_entry.has_mac = info->has_mac;
+                        new_entry.is_docker = info->is_docker;
+                        new_entry.xdp_redirect_able =
+                            xdp_redirect_target_able(info->ifindex) ? 1 : 0;
+                        new_entry.gate_addr = info->gate_addr;
+                        __builtin_memcpy(new_entry.mac, info->mac, 6);
+                        new_entry.link_chain_id = info->link_chain_id;
+                    }
+                    bpf_map_update_elem(lan_cache, &cache_key, &new_entry, BPF_ANY);
+                }
             }
         }
     }
@@ -372,8 +446,8 @@ xdp_route6_pick_wan_target(struct xdp_md *ctx, struct route6_context *context, u
             .dport = context->dport,
             .l4_proto = context->l4_protocol,
         };
-        u32 zero = 0;
-        void *conn_inner = bpf_map_lookup_elem(&rt6_conn_map, &zero);
+        u32 conn_slot = CONN_PIN_CACHE;
+        void *conn_inner = bpf_map_lookup_elem(&rt6_conn_map, &conn_slot);
         if (conn_inner != NULL) {
             struct route_conn_value *conn_val = bpf_map_lookup_elem(conn_inner, &conn_key);
             if (conn_val != NULL) {
@@ -481,22 +555,44 @@ static __always_inline int xdp_route6_cache_pick_wan(struct xdp_md *ctx,
 
         if (!already_cached) {
             const bool is_five_tuple = route_flow_is_five_tuple(resolved_flow_id);
-            u32 lan_key = LAN_CACHE;
-            void *lan_cache = bpf_map_lookup_elem(&rt6_cache_map, &lan_key);
-            if (lan_cache) {
-                struct route6_cache_value new_entry = {};
-                new_entry.mark_value = flow_id;
-                if (!is_five_tuple) {
-                    new_entry.ifindex = info->ifindex;
-                    new_entry.has_mac = info->has_mac;
-                    new_entry.is_docker = info->is_docker;
-                    new_entry.xdp_redirect_able = xdp_redirect_target_able(info->ifindex) ? 1 : 0;
-                    __builtin_memcpy(new_entry.gate_addr.in6_u.u6_addr8,
-                                     info->gate_addr.in6_u.u6_addr8, 16);
-                    __builtin_memcpy(new_entry.mac, info->mac, 6);
-                    new_entry.link_chain_id = info->link_chain_id;
+            if (unlikely(context->skip_2tuple_cache)) {
+                if (!is_five_tuple && context->has_ports) {
+                    u32 l4_slot = L4_VERDICT_CACHE;
+                    void *conn_inner = bpf_map_lookup_elem(&rt6_conn_map, &l4_slot);
+                    if (conn_inner != NULL) {
+                        struct route6_conn_key conn_key = {
+                            .saddr = context->saddr,
+                            .daddr = context->daddr,
+                            .sport = context->sport,
+                            .dport = context->dport,
+                            .l4_proto = context->l4_protocol,
+                        };
+                        struct route_conn_value new_conn = {
+                            .mark_value = flow_id,
+                            .ifindex = info->ifindex,
+                        };
+                        bpf_map_update_elem(conn_inner, &conn_key, &new_conn, BPF_ANY);
+                    }
                 }
-                bpf_map_update_elem(lan_cache, &cache_key, &new_entry, BPF_ANY);
+            } else {
+                u32 lan_key = LAN_CACHE;
+                void *lan_cache = bpf_map_lookup_elem(&rt6_cache_map, &lan_key);
+                if (lan_cache) {
+                    struct route6_cache_value new_entry = {};
+                    new_entry.mark_value = flow_id;
+                    if (!is_five_tuple) {
+                        new_entry.ifindex = info->ifindex;
+                        new_entry.has_mac = info->has_mac;
+                        new_entry.is_docker = info->is_docker;
+                        new_entry.xdp_redirect_able =
+                            xdp_redirect_target_able(info->ifindex) ? 1 : 0;
+                        __builtin_memcpy(new_entry.gate_addr.in6_u.u6_addr8,
+                                         info->gate_addr.in6_u.u6_addr8, 16);
+                        __builtin_memcpy(new_entry.mac, info->mac, 6);
+                        new_entry.link_chain_id = info->link_chain_id;
+                    }
+                    bpf_map_update_elem(lan_cache, &cache_key, &new_entry, BPF_ANY);
+                }
             }
         }
     }
@@ -739,6 +835,43 @@ xdp_route4_search_cache_in_lan(struct xdp_md *ctx, struct route4_context *contex
             return xdp_route4_cache_pick_wan(ctx, context, target->mark_value, false);
         }
     }
+
+    if (unlikely(any_flow_has_l4_rules())) {
+        route4_ensure_l4_ports_xdp(ctx, sizeof(struct ethhdr), context);
+        if (context->has_ports) {
+            struct route4_conn_key conn_key = {
+                .saddr = context->saddr,
+                .daddr = context->daddr,
+                .sport = context->sport,
+                .dport = context->dport,
+                .l4_proto = context->l4_protocol,
+            };
+            struct route_conn_value *conn_val = NULL;
+            u32 conn_slot = CONN_PIN_CACHE;
+            void *conn_inner = bpf_map_lookup_elem(&rt4_conn_map, &conn_slot);
+            if (conn_inner != NULL) {
+                conn_val = bpf_map_lookup_elem(conn_inner, &conn_key);
+            }
+            if (conn_val == NULL) {
+                conn_slot = L4_VERDICT_CACHE;
+                conn_inner = bpf_map_lookup_elem(&rt4_conn_map, &conn_slot);
+                if (conn_inner != NULL) {
+                    conn_val = bpf_map_lookup_elem(conn_inner, &conn_key);
+                }
+            }
+            if (conn_val != NULL) {
+                struct route_flow_target_key ft_key = {
+                    .flow_id = get_flow_id(conn_val->mark_value),
+                    .ifindex = conn_val->ifindex,
+                };
+                struct route4_target_info *pinned = bpf_map_lookup_elem(&rt4_flow_targets, &ft_key);
+                if (pinned != NULL) {
+                    *flow_mark = conn_val->mark_value;
+                    return xdp_route4_send_to_target(ctx, pinned, conn_val->mark_value);
+                }
+            }
+        }
+    }
     return 0;
 }
 
@@ -845,6 +978,43 @@ xdp_route6_search_cache_in_lan(struct xdp_md *ctx, struct route6_context *contex
                 return XDP_DROP;
             }
             return xdp_route6_cache_pick_wan(ctx, context, target->mark_value, false);
+        }
+    }
+
+    if (unlikely(any_flow_has_l4_rules())) {
+        route6_ensure_l4_ports_xdp(ctx, sizeof(struct ethhdr), context);
+        if (context->has_ports) {
+            struct route6_conn_key conn_key = {
+                .saddr = context->saddr,
+                .daddr = context->daddr,
+                .sport = context->sport,
+                .dport = context->dport,
+                .l4_proto = context->l4_protocol,
+            };
+            struct route_conn_value *conn_val = NULL;
+            u32 conn_slot = CONN_PIN_CACHE;
+            void *conn_inner = bpf_map_lookup_elem(&rt6_conn_map, &conn_slot);
+            if (conn_inner != NULL) {
+                conn_val = bpf_map_lookup_elem(conn_inner, &conn_key);
+            }
+            if (conn_val == NULL) {
+                conn_slot = L4_VERDICT_CACHE;
+                conn_inner = bpf_map_lookup_elem(&rt6_conn_map, &conn_slot);
+                if (conn_inner != NULL) {
+                    conn_val = bpf_map_lookup_elem(conn_inner, &conn_key);
+                }
+            }
+            if (conn_val != NULL) {
+                struct route_flow_target_key ft_key = {
+                    .flow_id = get_flow_id(conn_val->mark_value),
+                    .ifindex = conn_val->ifindex,
+                };
+                struct route6_target_info *pinned = bpf_map_lookup_elem(&rt6_flow_targets, &ft_key);
+                if (pinned != NULL) {
+                    *flow_mark = conn_val->mark_value;
+                    return xdp_route6_send_to_target(ctx, pinned, conn_val->mark_value);
+                }
+            }
         }
     }
     return 0;
