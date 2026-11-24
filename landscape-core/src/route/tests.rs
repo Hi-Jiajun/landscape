@@ -603,6 +603,7 @@ fn flow_config(flow_id: u32, enable: bool, targets: Vec<WeightedFlowTarget>) -> 
         flow_id,
         flow_match_rules: vec![],
         flow_targets: targets,
+        balance_mode: Default::default(),
         name: String::new(),
         remark: String::new(),
         update_at: 0.0,
@@ -803,12 +804,17 @@ fn collect_refresh_multiple_flows_independent() {
 #[derive(Default)]
 struct RecordingRouteDataplane {
     calls: std::sync::Mutex<Vec<Vec<RouteTargetInfo>>>,
+    flow_modes: std::sync::Mutex<Vec<(FlowId, landscape_common::flow::FlowBalanceMode)>>,
     fail_next: std::sync::atomic::AtomicBool,
 }
 
 impl RecordingRouteDataplane {
     fn calls(&self) -> Vec<Vec<RouteTargetInfo>> {
         self.calls.lock().unwrap().clone()
+    }
+
+    fn flow_modes(&self) -> Vec<(FlowId, landscape_common::flow::FlowBalanceMode)> {
+        self.flow_modes.lock().unwrap().clone()
     }
 
     fn set_fail_next(&self) {
@@ -831,6 +837,14 @@ impl landscape_common::sys_service::route_service::dataplane::RouteTableDataplan
     fn del_wan_slots_v4(&self, _flow_id: FlowId) {}
 
     fn del_wan_slots_v6(&self, _flow_id: FlowId) {}
+
+    fn set_flow_balance_mode(
+        &self,
+        flow_id: FlowId,
+        mode: landscape_common::flow::FlowBalanceMode,
+    ) {
+        self.flow_modes.lock().unwrap().push((flow_id, mode));
+    }
 
     async fn sync_kernel_default_ipv4(&self, nexthops: &[RouteTargetInfo]) -> bool {
         self.calls.lock().unwrap().push(nexthops.to_vec());
@@ -1003,5 +1017,36 @@ fn kernel_default_burst_converges_in_single_reconcile() {
 
         assert_eq!(dataplane.calls().len(), 1);
         assert_eq!(dataplane.calls()[0].len(), 2);
+    });
+}
+
+#[test]
+fn sync_and_clear_flow_wan_targets_propagate_balance_mode() {
+    run_async_test(async {
+        use landscape_common::flow::FlowBalanceMode;
+
+        let dataplane = std::sync::Arc::new(RecordingRouteDataplane::default());
+        let service = IpRouteService::new(dataplane.clone());
+        service
+            .insert_ipv4_wan_route(
+                &link_owner("wan0"),
+                ipv4_wan_route("wan0", Ipv4Addr::new(198, 51, 100, 1)),
+            )
+            .await;
+
+        let mut enabled_five_tuple = flow_config(5, true, vec![iface_target("wan0", 1)]);
+        enabled_five_tuple.balance_mode = FlowBalanceMode::FiveTuple;
+
+        let mut disabled_five_tuple = flow_config(6, false, vec![iface_target("wan0", 1)]);
+        disabled_five_tuple.balance_mode = FlowBalanceMode::FiveTuple;
+
+        service.sync_flow_wan_targets(&[enabled_five_tuple, disabled_five_tuple]).await;
+
+        let modes = dataplane.flow_modes();
+        assert_eq!(modes, vec![(5, FlowBalanceMode::FiveTuple), (6, FlowBalanceMode::DstIp)]);
+
+        service.clear_flow_wan_targets(5);
+        let modes = dataplane.flow_modes();
+        assert_eq!(modes.last(), Some(&(5, FlowBalanceMode::DstIp)));
     });
 }

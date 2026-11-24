@@ -9,7 +9,10 @@ use std::collections::HashMap;
 
 use landscape_common::{
     config::FlowId,
-    flow::{FlowTarget, config::FlowConfig},
+    flow::{
+        FlowTarget,
+        config::{FlowBalanceMode, FlowConfig},
+    },
     sys_service::route_service::{RouteOwner, WanRouteTarget, dataplane::RouteTableDataplane},
 };
 
@@ -117,6 +120,12 @@ impl IpRouteService {
 
         warn_fully_unresolved_flows(flow_configs, &ipv4_result, &ipv6_result);
 
+        for flow_config in flow_configs {
+            let mode =
+                if flow_config.enable { flow_config.balance_mode } else { FlowBalanceMode::DstIp };
+            self.dataplane.set_flow_balance_mode(flow_config.flow_id, mode);
+        }
+
         apply_ipv4_target_refresh_result(&*self.dataplane, ipv4_result);
         apply_ipv6_target_refresh_result(&*self.dataplane, ipv6_result);
 
@@ -126,6 +135,7 @@ impl IpRouteService {
     /// Drop all WAN target slots of `flow_id` (e.g. after the flow config is
     /// deleted).
     pub fn clear_flow_wan_targets(&self, flow_id: FlowId) {
+        self.dataplane.set_flow_balance_mode(flow_id, FlowBalanceMode::DstIp);
         self.dataplane.del_wan_slots_v4(flow_id);
         self.dataplane.del_wan_slots_v6(flow_id);
         self.dataplane.invalidate_lan_cache();

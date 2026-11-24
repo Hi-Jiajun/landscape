@@ -51,7 +51,8 @@ use crate::{
     tests::{
         helper::map::{
             LAN_CACHE, LAN_ROUTE_TYPE, WAN_CACHE, as_bytes, create_route4_cache_inner_map,
-            create_route6_cache_inner_map, insert_ip_mac_v4, insert_ip_mac_v6,
+            create_route4_conn_inner_map, create_route6_cache_inner_map,
+            create_route6_conn_inner_map, insert_ip_mac_v4, insert_ip_mac_v6,
             insert_route4_lan_entry, insert_route6_lan_entry, put_rt4_cache_full,
             put_rt4_cache_value, put_rt6_cache_full, put_rt6_cache_value, seed_flow_match_mac,
         },
@@ -415,11 +416,21 @@ fn seed_ecmp_slots_v4(skel: &BenchRouteSkel<'_>) {
 
     for flow_id in [0u32, 2, 3, 4] {
         let single = [(WanRouteTarget::link(2, wan1.clone()), 1u32)];
-        replace_wan_route_slots_v4_with_map(&skel.maps.rt4_slot_map, flow_id, &single);
+        replace_wan_route_slots_v4_with_map(
+            &skel.maps.rt4_slot_map,
+            &skel.maps.rt4_flow_targets,
+            flow_id,
+            &single,
+        );
     }
-    // Dual-WAN ECMP 1:1 across 16 slots on Flow 5.
+    // Dual-WAN ECMP 1:1 across 256 slots on Flow 5.
     let dual = [(WanRouteTarget::link(2, wan1), 1u32), (WanRouteTarget::link(3, wan2), 1u32)];
-    replace_wan_route_slots_v4_with_map(&skel.maps.rt4_slot_map, 5, &dual);
+    replace_wan_route_slots_v4_with_map(
+        &skel.maps.rt4_slot_map,
+        &skel.maps.rt4_flow_targets,
+        5,
+        &dual,
+    );
 }
 
 fn seed_ecmp_slots_v6(skel: &BenchRouteSkel<'_>) {
@@ -435,10 +446,20 @@ fn seed_ecmp_slots_v6(skel: &BenchRouteSkel<'_>) {
 
     for flow_id in [0u32, 2, 3, 4] {
         let single = [(WanRouteTarget::link(2, wan1.clone()), 1u32)];
-        replace_wan_route_slots_v6_with_map(&skel.maps.rt6_slot_map, flow_id, &single);
+        replace_wan_route_slots_v6_with_map(
+            &skel.maps.rt6_slot_map,
+            &skel.maps.rt6_flow_targets,
+            flow_id,
+            &single,
+        );
     }
     let dual = [(WanRouteTarget::link(2, wan1), 1u32), (WanRouteTarget::link(3, wan2), 1u32)];
-    replace_wan_route_slots_v6_with_map(&skel.maps.rt6_slot_map, 5, &dual);
+    replace_wan_route_slots_v6_with_map(
+        &skel.maps.rt6_slot_map,
+        &skel.maps.rt6_flow_targets,
+        5,
+        &dual,
+    );
 }
 
 #[test]
@@ -455,6 +476,7 @@ fn route_v4_lookup_cost() {
     //    and LAN_CACHE (hot PPPoE L3 entry + hot Ethernet L2 entry + distractors).
     create_route4_cache_inner_map(&skel.maps.rt4_cache_map, WAN_CACHE);
     create_route4_cache_inner_map(&skel.maps.rt4_cache_map, LAN_CACHE);
+    create_route4_conn_inner_map(&skel.maps.rt4_conn_map);
     for i in 0..16u8 {
         put_rt4_cache_value(
             &skel.maps.rt4_cache_map,
@@ -651,6 +673,7 @@ fn route_v6_lookup_cost() {
     // 1. Seed WAN_CACHE + LAN_CACHE for IPv6.
     create_route6_cache_inner_map(&skel.maps.rt6_cache_map, WAN_CACHE);
     create_route6_cache_inner_map(&skel.maps.rt6_cache_map, LAN_CACHE);
+    create_route6_conn_inner_map(&skel.maps.rt6_conn_map);
     for i in 0..16u16 {
         put_rt6_cache_value(
             &skel.maps.rt6_cache_map,
