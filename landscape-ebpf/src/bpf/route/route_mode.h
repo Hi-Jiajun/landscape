@@ -6,6 +6,9 @@
 #define ROUTE_BALANCE_DST_IP 0
 #define ROUTE_BALANCE_FIVE_TUPLE 1
 
+#define CONN_PIN_CACHE 0
+#define L4_VERDICT_CACHE 1
+
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __type(key, u32);

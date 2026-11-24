@@ -12,7 +12,7 @@ use crate::maps::{
     Route4LanInfo, Route4LanKey, Route6CacheKey, Route6CacheValue, Route6ConnKey, Route6LanInfo,
     Route6LanKey, RouteConnValue,
     flow::types::FlowMatchKey,
-    route::cache::{CONN_CACHE_SLOT, create_inner_map_generic_with_outer},
+    route::cache::{CONN_PIN_CACHE, L4_VERDICT_CACHE, create_inner_map_generic_with_outer},
 };
 
 pub(crate) use crate::maps::route::cache::{LAN_CACHE, WAN_CACHE};
@@ -104,18 +104,30 @@ pub(crate) fn create_route4_conn_inner_map<T: MapCore>(outer_map: &T) {
     create_inner_map_generic_with_outer::<_, Route4ConnKey, RouteConnValue>(
         outer_map,
         "route_test_rt4_conn".to_string(),
-        CONN_CACHE_SLOT,
+        CONN_PIN_CACHE,
     );
-    lookup_inner_map_id(outer_map, CONN_CACHE_SLOT);
+    lookup_inner_map_id(outer_map, CONN_PIN_CACHE);
+    create_inner_map_generic_with_outer::<_, Route4ConnKey, RouteConnValue>(
+        outer_map,
+        "route_test_rt4_l4".to_string(),
+        L4_VERDICT_CACHE,
+    );
+    lookup_inner_map_id(outer_map, L4_VERDICT_CACHE);
 }
 
 pub(crate) fn create_route6_conn_inner_map<T: MapCore>(outer_map: &T) {
     create_inner_map_generic_with_outer::<_, Route6ConnKey, RouteConnValue>(
         outer_map,
         "route_test_rt6_conn".to_string(),
-        CONN_CACHE_SLOT,
+        CONN_PIN_CACHE,
     );
-    lookup_inner_map_id(outer_map, CONN_CACHE_SLOT);
+    lookup_inner_map_id(outer_map, CONN_PIN_CACHE);
+    create_inner_map_generic_with_outer::<_, Route6ConnKey, RouteConnValue>(
+        outer_map,
+        "route_test_rt6_l4".to_string(),
+        L4_VERDICT_CACHE,
+    );
+    lookup_inner_map_id(outer_map, L4_VERDICT_CACHE);
 }
 
 pub(crate) fn make_rt6_cache_key(local: Ipv6Addr, remote: Ipv6Addr) -> Route6CacheKey {
@@ -485,6 +497,8 @@ pub(crate) struct TestSharedMaps {
     pub rt6_cache_map: libbpf_rs::MapHandle,
     pub rt4_conn_map: libbpf_rs::MapHandle,
     pub rt6_conn_map: libbpf_rs::MapHandle,
+    pub flow_l4_rule_map: libbpf_rs::MapHandle,
+    pub flow_l4_meta_map: libbpf_rs::MapHandle,
 }
 
 impl TestSharedMaps {
@@ -506,6 +520,8 @@ impl TestSharedMaps {
             rt6_cache_map: pin(&paths.rt6_cache_map),
             rt4_conn_map: pin(&paths.rt4_conn_map),
             rt6_conn_map: pin(&paths.rt6_conn_map),
+            flow_l4_rule_map: pin(&paths.flow_l4_rule_map),
+            flow_l4_meta_map: pin(&paths.flow_l4_meta_map),
         }
     }
 }

@@ -14,11 +14,18 @@
  *  - lan_cold_resolve_v4 / lan_cold_resolve_v6:
  *      route4/6_flow_verdict (match_flow_id MAC + IP LPM + flow_ip_map LPM +
  *      flow_dns_map LRU hash + priority arbitration) followed by
- *      route4/6_pick_wan_and_send_by_flow_id (16-slot ECMP hash lookup)
+ *      route4/6_pick_wan_and_send_by_flow_id (256-slot ECMP hash lookup)
  *  - lan_cold_full_v4 / lan_cold_full_v6:
  *      complete uncached LAN-ingress lookup sequence: cache search miss +
  *      rt4/6_lan_map LPM check miss + flow_verdict + slot pick (omitting
  *      cache insertion so every kernel-side repeat stays cold)
+ *  - lan_five_tuple_hit_v4 / lan_five_tuple_hit_v6:
+ *      steady-state FiveTuple ECMP packet hitting LAN_CACHE (ifindex == 0) +
+ *      lazy L4 port parse + rt4/6_conn_map LRU lookup + rt4/6_flow_targets
+ *      pinned target lookup + redirect
+ *  - lan_l4_port_cold_v4 / lan_l4_port_cold_v6:
+ *      cold packet on a flow with active L4 port-range rules (flow_l4_meta_map
+ *      + flow_l4_rule_map bounded scan overriding destination IP prefix mark)
  *
  * Every entrypoint returns TC_ACT_OK so BPF_PROG_TEST_RUN never attempts a
  * live netdev redirect, while bench_sink accumulates the resolved flow_mark
@@ -143,6 +150,38 @@ int bench_route4_lan_cold_full(struct __sk_buff *skb) {
     return TC_ACT_OK;
 }
 
+SEC("tc")
+int bench_route4_lan_five_tuple_hit(struct __sk_buff *skb) {
+    struct route4_context context = {0};
+    u32 flow_mark = 0;
+
+    if (!bench_read4(skb, &context)) {
+        bench_sink_add(BENCH_FAIL);
+        return TC_ACT_OK;
+    }
+    int rc = route4_search_cache_in_lan(skb, current_l3_offset, &context, &flow_mark);
+    bench_sink_add(rc == TC_ACT_REDIRECT && flow_mark != 0 ? (u64)flow_mark : BENCH_FAIL);
+    return TC_ACT_OK;
+}
+
+SEC("tc")
+int bench_route4_lan_l4_port_cold(struct __sk_buff *skb) {
+    struct route4_context context = {0};
+    u32 flow_mark = 0;
+
+    if (!bench_read4(skb, &context)) {
+        bench_sink_add(BENCH_FAIL);
+        return TC_ACT_OK;
+    }
+    if (route4_flow_verdict(skb, current_l3_offset, &context, &flow_mark) != TC_ACT_OK) {
+        bench_sink_add(BENCH_FAIL);
+        return TC_ACT_OK;
+    }
+    int rc = route4_pick_wan_and_send_by_flow_id(skb, current_l3_offset, &context, flow_mark);
+    bench_sink_add(rc == TC_ACT_REDIRECT && flow_mark != 0 ? (u64)flow_mark : BENCH_FAIL);
+    return TC_ACT_OK;
+}
+
 /* -- IPv6 benchmarks ------------------------------------------------------ */
 
 SEC("tc")
@@ -203,6 +242,38 @@ int bench_route6_lan_cold_full(struct __sk_buff *skb) {
         return TC_ACT_OK;
     }
     if (tc_route6_lan_redirect_check_in_lan(skb, current_l3_offset, &context) != TC_ACT_OK) {
+        bench_sink_add(BENCH_FAIL);
+        return TC_ACT_OK;
+    }
+    if (route6_flow_verdict(skb, current_l3_offset, &context, &flow_mark) != TC_ACT_OK) {
+        bench_sink_add(BENCH_FAIL);
+        return TC_ACT_OK;
+    }
+    int rc = route6_pick_wan_and_send_by_flow_id(skb, current_l3_offset, &context, flow_mark);
+    bench_sink_add(rc == TC_ACT_REDIRECT && flow_mark != 0 ? (u64)flow_mark : BENCH_FAIL);
+    return TC_ACT_OK;
+}
+
+SEC("tc")
+int bench_route6_lan_five_tuple_hit(struct __sk_buff *skb) {
+    struct route6_context context = {0};
+    u32 flow_mark = 0;
+
+    if (!bench_read6(skb, &context)) {
+        bench_sink_add(BENCH_FAIL);
+        return TC_ACT_OK;
+    }
+    int rc = route6_search_cache_in_lan(skb, current_l3_offset, &context, &flow_mark);
+    bench_sink_add(rc == TC_ACT_REDIRECT && flow_mark != 0 ? (u64)flow_mark : BENCH_FAIL);
+    return TC_ACT_OK;
+}
+
+SEC("tc")
+int bench_route6_lan_l4_port_cold(struct __sk_buff *skb) {
+    struct route6_context context = {0};
+    u32 flow_mark = 0;
+
+    if (!bench_read6(skb, &context)) {
         bench_sink_add(BENCH_FAIL);
         return TC_ACT_OK;
     }
