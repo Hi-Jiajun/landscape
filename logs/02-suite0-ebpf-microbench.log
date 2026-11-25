@@ -1,0 +1,125 @@
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+=== Host Info ===
+Linux bench-dut 6.12.113+deb13-cloud-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.113-1 (2026-10-15) x86_64 GNU/Linux
+CPU(s):                                  2
+On-line CPU(s) list:                     0,1
+Model name:                              Intel(R) Core(TM) i7-14700HX
+NUMA node0 CPU(s):                       0,1
+=== Available bench tests ===
+bench::nat4_lookup::nat4_lookup_cost: test
+bench::nat4_v4::nat4_v4_steady_state_cost: test
+bench::nat6::nat6_steady_state_cost: test
+bench::route::route_v4_lookup_cost: test
+bench::route::route_v6_lookup_cost: test
+bench::wan_dispatch::wan_dispatch_lookup_cost: test
+
+6 tests, 0 benchmarks
+
+============================================================
+=== RUNNING bench::route:: (taskset -c 0, --test-threads=1) ===
+============================================================
+
+running 2 tests
+test bench::route::route_v4_lookup_cost ... --- Route IPv4 baseline (kernel repeat=256) ---
+baseline_v4                  per-pkt(min/med)    5.00/   6.00 ns
+--- Route IPv4 lookup cost (kernel repeat=256, baseline-subtracted) ---
+lan_cache_hit_v4(pppoe)      per-pkt(min/med)   12.00/  12.00 ns
+lan_cache_hit_v4(eth_mac)    per-pkt(min/med)   24.00/  23.00 ns
+lan_five_tuple_hit_v4        per-pkt(min/med)   32.00/  32.00 ns
+lan_cold_resolve_v4(8,ip)    per-pkt(min/med)   64.00/  63.00 ns
+lan_cold_resolve_v4(8,dns)   per-pkt(min/med)   65.00/  65.00 ns
+lan_cold_resolve_v4(1k,ip)   per-pkt(min/med)   68.00/  68.00 ns
+lan_cold_resolve_v4(1k,dns)  per-pkt(min/med)   69.00/  69.00 ns
+lan_cold_full_v4(1k,dns)     per-pkt(min/med)   82.00/  81.00 ns
+lan_l4_port_cold_v4(8,tcp)   per-pkt(min/med)   76.00/  75.00 ns
+ok
+test bench::route::route_v6_lookup_cost ... --- Route IPv6 baseline (kernel repeat=256) ---
+baseline_v6                  per-pkt(min/med)    7.00/   7.00 ns
+--- Route IPv6 lookup cost (kernel repeat=256, baseline-subtracted) ---
+lan_cache_hit_v6(pppoe)      per-pkt(min/med)   21.00/  21.00 ns
+lan_cache_hit_v6(eth_mac)    per-pkt(min/med)   36.00/  36.00 ns
+lan_five_tuple_hit_v6        per-pkt(min/med)   41.00/  43.00 ns
+lan_cold_resolve_v6(8,ip)    per-pkt(min/med)   67.00/  68.00 ns
+lan_cold_resolve_v6(8,dns)   per-pkt(min/med)   68.00/  68.00 ns
+lan_cold_resolve_v6(1k,ip)   per-pkt(min/med)   67.00/  68.00 ns
+lan_cold_resolve_v6(1k,dns)  per-pkt(min/med)   68.00/  68.00 ns
+lan_cold_full_v6(1k,dns)     per-pkt(min/med)   90.00/  91.00 ns
+lan_l4_port_cold_v6(8,tcp)   per-pkt(min/med)   74.00/  75.00 ns
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 618 filtered out; finished in 0.38s
+
+SUITE_EXIT_CODE(bench::route::)=0
+============================================================
+=== RUNNING bench::nat4_v4:: (taskset -c 0, --test-threads=1) ===
+============================================================
+
+running 1 test
+test bench::nat4_v4::nat4_v4_steady_state_cost ... --- NAT4 v4 reader baseline (kernel repeat=256) ---
+reader_baseline    per-run(min/med)   10.00/  10.00 ns
+--- NAT4 v4 state phase (kernel repeat=256, baseline-subtracted) ---
+lan_steady         per-run(min/med)   37.00/  37.00 ns
+wan_steady         per-run(min/med)   24.00/  24.00 ns
+lan_miss           per-run(min/med)   19.00/  19.00 ns
+wan_miss           per-run(min/med)    2.00/   2.00 ns
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 619 filtered out; finished in 0.04s
+
+SUITE_EXIT_CODE(bench::nat4_v4::)=0
+============================================================
+=== RUNNING bench::nat6:: (taskset -c 0, --test-threads=1) ===
+============================================================
+
+running 1 test
+test bench::nat6::nat6_steady_state_cost ... --- NAT6 XDP reader baseline (kernel repeat=256) ---
+baseline             per-run(min/med)    9.00/  10.00 ns
+--- NAT6 XDP stateful NPTv6 (kernel repeat=256, baseline-subtracted) ---
+egress_steady        per-run(min/med)   33.00/  42.00 ns
+egress_state_only    per-run(min/med)   28.00/  47.00 ns
+ingress_steady       per-run(min/med)   31.00/  51.00 ns
+egress_miss          per-run(min/med)   33.00/  35.00 ns
+ingress_miss         per-run(min/med)   33.00/  32.00 ns
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 619 filtered out; finished in 10.79s
+
+SUITE_EXIT_CODE(bench::nat6::)=0
+============================================================
+=== RUNNING bench::wan_dispatch:: (taskset -c 0, --test-threads=1) ===
+============================================================
+
+running 1 test
+test bench::wan_dispatch::wan_dispatch_lookup_cost ... --- tagged namespaces (v4 /24 = 4 hops, ppp (ifindex,session) = 7 hops) ---
+ttrie v4(2) total(min/med)      846/     853 ns   per-lookup(min/med)   2.96/  2.97 ns
+ttrie ppp(1) total(min/med)     1541/    1552 ns   per-lookup(min/med)   5.67/  5.70 ns
+baseline   total(min/med) 89/92 ns over 256 iters
+hash       total(min/med)     1244/    1250 ns   per-lookup(min/med)   4.51/  4.52 ns
+lpm(3)     total(min/med)     1703/    1716 ns   per-lookup(min/med)   6.30/  6.34 ns
+lpm(16)    total(min/med)     2778/    2797 ns   per-lookup(min/med)  10.50/ 10.57 ns
+lpm(32)    total(min/med)     2097/    2124 ns   per-lookup(min/med)   7.84/  7.94 ns
+lpm(48)    total(min/med)     2769/    2786 ns   per-lookup(min/med)  10.47/ 10.52 ns
+array(3)   total(min/med)      616/     623 ns   per-lookup(min/med)   2.06/  2.07 ns
+array(16)  total(min/med)     2322/    2331 ns   per-lookup(min/med)   8.72/  8.75 ns
+array(32)  total(min/med)     4355/    5339 ns   per-lookup(min/med)  16.66/ 20.50 ns
+arena(3)   total(min/med)      443/     446 ns   per-lookup(min/med)   1.38/  1.38 ns
+arena(16)  total(min/med)     2159/    2547 ns   per-lookup(min/med)   8.09/  9.59 ns
+arena(32)  total(min/med)     6205/    6231 ns   per-lookup(min/med)  23.89/ 23.98 ns
+--- trie section (dst under nested /56, walk depth 7) ---
+klpm(3)    total(min/med)     1702/    1719 ns   per-lookup(min/med)   6.30/  6.36 ns
+atrie(3)   total(min/med)     1539/    1554 ns   per-lookup(min/med)   5.66/  5.71 ns
+klpm(16)   total(min/med)     2334/    2365 ns   per-lookup(min/med)   8.77/  8.88 ns
+atrie(16)  total(min/med)     1535/    1553 ns   per-lookup(min/med)   5.65/  5.71 ns
+klpm(32)   total(min/med)     2330/    2366 ns   per-lookup(min/med)   8.75/  8.88 ns
+atrie(32)  total(min/med)     1542/    1553 ns   per-lookup(min/med)   5.68/  5.71 ns
+klpm(64)   total(min/med)     2326/    2361 ns   per-lookup(min/med)   8.74/  8.86 ns
+atrie(64)  total(min/med)     1541/    1552 ns   per-lookup(min/med)   5.67/  5.70 ns
+klpm(256)  total(min/med)     2324/    2363 ns   per-lookup(min/med)   8.73/  8.87 ns
+atrie(256) total(min/med)     1541/    1553 ns   per-lookup(min/med)   5.67/  5.71 ns
+klpm(1024) total(min/med)     2329/    2367 ns   per-lookup(min/med)   8.75/  8.89 ns
+atrie(1024) total(min/med)     1532/    1554 ns   per-lookup(min/med)   5.64/  5.71 ns
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 619 filtered out; finished in 0.28s
+
+SUITE_EXIT_CODE(bench::wan_dispatch::)=0

@@ -1,0 +1,240 @@
+=== [1] Configure require-pap on tg-vm BRAS (matching real ISP BRAS LCP auth) ===
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+911 pppoe-server -k -I enp2s0.4091 -L 198.18.20.2 -R 198.18.20.1 -N 4 -m 1492 -C bench-bras
+=== [2] Contestant A: Landscape Native eBPF PPPoE (1492B + VLAN 4091, tx off) ===
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Waiting for Landscape Native PPPoE IPCP...
+LANDSCAPE_PPPOE_UP on attempt 2
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+eth0             UP             192.0.2.201/24 2001:db8:ffff:0:200:ff:fe00:201/64 fe80::200:ff:fe00:201/64 
+enp1s0           UP             198.18.10.1/24 
+enp2s0           UP             fe80::ff:fe00:1b/64 
+enp2s0.4091@enp2s0 UP             198.18.20.1 peer 198.18.20.2/32 fe80::ff:fe00:1b/64 
+xdp:
+
+tc:
+enp1s0(3) clsact/ingress tc_lan_ingress_:[208] id 208
+enp2s0.4091(7) clsact/ingress tc_wan_ingress_:[196] id 196
+enp2s0.4091(7) clsact/egress tc_wan_egress_r:[204] id 204
+
+flow_dissector:
+
+netfilter:
+
+[2m2026-11-24T21:27:09.318+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"service.manager.spawn" [3mresource[0m[2m=[0m11111111-1111-4111-8111-111111111111[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m [2mlandscape::wan_service::pppoe_client::lcp[0m[2m:[0m sending PADI [3miface[0m[2m=[0menp2s0.4091 [3mhost_uniq[0m[2m=[0m2013528064
+[2m2026-11-24T21:27:09.318+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"service.manager.spawn" [3mresource[0m[2m=[0m11111111-1111-4111-8111-111111111111[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m [2mlandscape::wan_service::pppoe_client::lcp[0m[2m:[0m received matching PADO [3miface[0m[2m=[0menp2s0.4091
+[2m2026-11-24T21:27:09.318+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"service.manager.spawn" [3mresource[0m[2m=[0m11111111-1111-4111-8111-111111111111[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m [2mlandscape::wan_service::pppoe_client::lcp[0m[2m:[0m sending PADR [3miface[0m[2m=[0menp2s0.4091 [3mhost_uniq[0m[2m=[0m2013528064
+[2m2026-11-24T21:27:09.319+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"service.manager.spawn" [3mresource[0m[2m=[0m11111111-1111-4111-8111-111111111111[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m [2mlandscape::wan_service::pppoe_client::lcp[0m[2m:[0m received matching PADS, session established [3miface[0m[2m=[0menp2s0.4091 [3msession_id[0m[2m=[0m1
+[2m2026-11-24T21:27:09.402+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"service.manager.spawn" [3mresource[0m[2m=[0m11111111-1111-4111-8111-111111111111[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m [2mlandscape::wan_service::pppoe_client::lcp[0m[2m:[0m acknowledged peer LCP Config-Request [3miface[0m[2m=[0menp2s0.4091 [3mmru[0m[2m=[0m1492 [3mmagic[0m[2m=[0m3248964411 [3mauth_type[0m[2m=[0m"0xc023"
+[2m2026-11-24T21:27:09.403+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"service.manager.spawn" [3mresource[0m[2m=[0m11111111-1111-4111-8111-111111111111[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m [2mlandscape::wan_service::pppoe_client::lcp[0m[2m:[0m our LCP config acknowledged by peer [3miface[0m[2m=[0menp2s0.4091 [3mmru[0m[2m=[0m1492 [3mmagic[0m[2m=[0m1795555629
+[2m2026-11-24T21:27:09.403+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"service.manager.spawn" [3mresource[0m[2m=[0m11111111-1111-4111-8111-111111111111[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m [2mlandscape::wan_service::pppoe_client::runtime[0m[2m:[0m LCP phase completed [3miface_name[0m[2m=[0menp2s0.4091 [3msession_id[0m[2m=[0m1 [3mserver_mac[0m[2m=[0m[0, 128, 0, 0, 0, 28] [3mour_mru[0m[2m=[0m1492 [3mour_magic[0m[2m=[0m0x6b06012d [3mpeer_mru[0m[2m=[0m1492 [3mpeer_magic[0m[2m=[0m0xc1a7433b [3mauth_type[0m[2m=[0m0xc023
+[2m2026-11-24T21:27:09.404+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"service.manager.spawn" [3mresource[0m[2m=[0m11111111-1111-4111-8111-111111111111[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m [2mlandscape::wan_service::pppoe_client::negotiation[0m[2m:[0m authentication succeeded [3miface[0m[2m=[0menp2s0.4091
+[2m2026-11-24T21:27:09.404+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"service.manager.spawn" [3mresource[0m[2m=[0m11111111-1111-4111-8111-111111111111[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m [2mlandscape::wan_service::pppoe_client::negotiation[0m[2m:[0m IPCP: peer announced remote IPv4 address [3miface[0m[2m=[0menp2s0.4091 [3mip[0m[2m=[0m198.18.20.2
+[2m2026-11-24T21:27:09.404+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"service.manager.spawn" [3mresource[0m[2m=[0m11111111-1111-4111-8111-111111111111[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m [2mlandscape::wan_service::pppoe_client::negotiation[0m[2m:[0m IPv6CP: peer announced remote interface identifier [3miface[0m[2m=[0menp2s0.4091
+[2m2026-11-24T21:27:09.404+00:00[0m [33m WARN[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"service.manager.spawn" [3mresource[0m[2m=[0m11111111-1111-4111-8111-111111111111[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m [2mlandscape::wan_service::pppoe_client::negotiation[0m[2m:[0m IPCP: peer suggested a different IPv4 address [3miface[0m[2m=[0menp2s0.4091 [3mip[0m[2m=[0m198.18.20.1
+[2m2026-11-24T21:27:09.404+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"service.manager.spawn" [3mresource[0m[2m=[0m11111111-1111-4111-8111-111111111111[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m [2mlandscape::wan_service::pppoe_client::negotiation[0m[2m:[0m IPv6CP: our interface identifier acknowledged [3miface[0m[2m=[0menp2s0.4091
+[2m2026-11-24T21:27:09.405+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"service.manager.spawn" [3mresource[0m[2m=[0m11111111-1111-4111-8111-111111111111[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m [2mlandscape::wan_service::pppoe_client::negotiation[0m[2m:[0m IPCP: our IPv4 address acknowledged [3miface[0m[2m=[0menp2s0.4091 [3mip[0m[2m=[0m198.18.20.1
+[2m2026-11-24T21:27:09.405+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"service.manager.spawn" [3mresource[0m[2m=[0m11111111-1111-4111-8111-111111111111[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m [2mlandscape::wan_service::pppoe_client::runtime[0m[2m:[0m PPPoE session established, negotiation phase completed [3miface_name[0m[2m=[0menp2s0.4091 [3mclient_ip[0m[2m=[0m198.18.20.1 [3mserver_ip[0m[2m=[0m198.18.20.2 [3mipv6cp_client_id[0m[2m=[0mSome([0, 128, 0, 255, 254, 0, 0, 27]) [3mipv6cp_server_id[0m[2m=[0mSome([68, 14, 230, 35, 38, 188, 146, 18]) [3msession_id[0m[2m=[0m1
+[2m2026-11-24T21:27:09.405+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"service.manager.spawn" [3mresource[0m[2m=[0m11111111-1111-4111-8111-111111111111[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m[1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"wan.link.v4.supervisor" [3mresource[0m[2m=[0menp2s0.4091[1m}[0m[2m:[0m [2mlandscape::wan_service::pppoe_client::system[0m[2m:[0m applying native PPPoE system state iface=enp2s0.4091 client_ip=198.18.20.1 peer_ip=198.18.20.2 mru=1492 session_id=1
+--- Verify Landscape Native PPPoE connectivity & 1492B MTU ---
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+PING 198.18.20.2 (198.18.20.2) 1464(1492) bytes of data.
+1472 bytes from 198.18.20.2: icmp_seq=2 ttl=64 time=0.669 ms
+1472 bytes from 198.18.20.2: icmp_seq=3 ttl=64 time=0.588 ms
+
+--- 198.18.20.2 ping statistics ---
+3 packets transmitted, 2 received, 33.3333% packet loss, time 2050ms
+rtt min/avg/max/mdev = 0.588/0.628/0.669/0.040 ms
+--- M2-B PPPoE LANDSCAPE_NATIVE_PPPOE (1 P-core, 16 TCP streams = 2x8, 1492B PPPoE + VLAN 4091) ---
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LANDSCAPE_NATIVE_PPPOE_1C_RUN1: gbps_total=12.361 (inst1=2.498, inst2=9.863) retransmits=3343
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LANDSCAPE_NATIVE_PPPOE_1C_RUN2: gbps_total=14.979 (inst1=0.233, inst2=14.745) retransmits=3392
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+M2B_LANDSCAPE_NATIVE_PPPOE_1C_RUN3: gbps_total=14.886 (inst1=0.165, inst2=14.721) retransmits=3536
+M2B_LANDSCAPE_NATIVE_PPPOE_1C_MPSTAT:
+21:27:43       0    0.00    0.00    0.00    0.00    0.00   97.03    0.00    0.00    0.00    2.97
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.00    0.00    0.14    0.00    0.00   97.31    0.00    0.00    0.00    2.55
+Average:       0    0.00    0.00    0.14    0.00    0.00   97.31    0.00    0.00    0.00    2.55
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+--- M2-B PPPoE LANDSCAPE_NATIVE_PPPOE (2 P-core, 16 TCP streams = 2x8, 1492B PPPoE + VLAN 4091) ---
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LANDSCAPE_NATIVE_PPPOE_2C_RUN1: gbps_total=13.793 (inst1=0.221, inst2=13.572) retransmits=1710
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LANDSCAPE_NATIVE_PPPOE_2C_RUN2: gbps_total=13.724 (inst1=0.131, inst2=13.593) retransmits=2191
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+M2B_LANDSCAPE_NATIVE_PPPOE_2C_RUN3: gbps_total=14.212 (inst1=0.133, inst2=14.079) retransmits=2660
+M2B_LANDSCAPE_NATIVE_PPPOE_2C_MPSTAT:
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.00    0.00    0.21    0.00    0.00   51.49    0.07    0.00    0.00   48.22
+Average:       0    0.00    0.00    0.15    0.00    0.00   30.37    0.00    0.00    0.00   69.48
+Average:       1    0.00    0.00    0.27    0.00    0.00   71.00    0.14    0.00    0.00   28.59
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+--- M4 Landscape Native PPPoE Live eBPF Stats (1 P-core) ---
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+ID    TYPE           NAME                           DELTA_RUNS   NS/PKT   EST_CYC@5.3G
+196   sched_cls      tc_wan_ingress_intro           305470        258.54   1370.3
+204   sched_cls      tc_wan_egress_route            7168152       136.09    721.3
+208   sched_cls      tc_lan_ingress_route           7165272        63.56    336.9
+217   socket_filter  pppoe_pnet_filter              7472873        38.41    203.6
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+=== [3] Contestant B: Linux pppd + rp-pppoe + nftables (1492B + VLAN 4091) ===
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Actual changes:
+tx-checksum-ipv4: off [requested on]
+tx-checksum-ip-generic: on
+tx-checksum-ipv6: off [requested on]
+tx-tcp-segmentation: on [not requested]
+tx-tcp-mangleid-segmentation: on [not requested]
+tx-tcp6-segmentation: on [not requested]
+tx-udp-segmentation: on [not requested]
+tx-checksum-fcoe-crc: off [requested on]
+tx-checksum-sctp: off [requested on]
+Plugin rp-pppoe.so loaded.
+LINUX_PPPD_UP on attempt 5
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+eth0             UP             192.0.2.201/24 2001:db8:ffff:0:200:ff:fe00:201/64 fe80::200:ff:fe00:201/64 
+enp1s0           UP             198.18.10.1/24 
+enp2s0           UP             
+enp2s0.4091@enp2s0 UP             fe80::ff:fe00:1b/64 
+ppp0             UNKNOWN        198.18.20.2/32 fe80::b539:f317:43c1:61db peer fe80::48c6:2d12:e1:4554/128 
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+PING 198.18.20.2 (198.18.20.2) 1464(1492) bytes of data.
+1472 bytes from 198.18.20.2: icmp_seq=1 ttl=64 time=0.539 ms
+1472 bytes from 198.18.20.2: icmp_seq=2 ttl=64 time=0.385 ms
+1472 bytes from 198.18.20.2: icmp_seq=3 ttl=64 time=0.429 ms
+
+--- 198.18.20.2 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2054ms
+rtt min/avg/max/mdev = 0.385/0.451/0.539/0.064 ms
+--- M2-B PPPoE LINUX_PPPD_NFTABLES (1 P-core, 16 TCP streams = 2x8, 1492B PPPoE + VLAN 4091) ---
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_NFTABLES_1C_RUN1: gbps_total=0.000 (inst1=0.000, inst2=0.000) retransmits=0 err=(unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused,unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused)
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_NFTABLES_1C_RUN2: gbps_total=0.000 (inst1=0.000, inst2=0.000) retransmits=0 err=(unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused,unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused)
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_NFTABLES_1C_RUN3: gbps_total=0.000 (inst1=0.000, inst2=0.000) retransmits=0 err=(unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused,unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused)
+M2B_LINUX_PPPD_NFTABLES_1C_MPSTAT:
+21:28:50       0    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.00    0.00    0.14    0.14    0.00    0.00    0.00    0.00    0.00   99.71
+Average:       0    0.00    0.00    0.14    0.14    0.00    0.00    0.00    0.00    0.00   99.71
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+--- M2-B PPPoE LINUX_PPPD_NFTABLES (2 P-core, 16 TCP streams = 2x8, 1492B PPPoE + VLAN 4091) ---
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_NFTABLES_2C_RUN1: gbps_total=0.000 (inst1=0.000, inst2=0.000) retransmits=0 err=(unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused,unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused)
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_NFTABLES_2C_RUN2: gbps_total=0.000 (inst1=0.000, inst2=0.000) retransmits=0 err=(unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused,unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused)
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_NFTABLES_2C_RUN3: gbps_total=0.000 (inst1=0.000, inst2=0.000) retransmits=0 err=(unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused,unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused)
+M2B_LINUX_PPPD_NFTABLES_2C_MPSTAT:
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+Average:       0    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+Average:       1    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+=== [4] Contestant C: Linux pppd + nftables + flowtable (1492B + VLAN 4091) ===
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+table inet bench_fw {
+	flowtable f {
+		hook ingress priority filter
+		devices = { enp1s0, enp2s0 }
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+		tcp flags syn tcp option maxseg size set rt mtu
+		ip protocol { tcp, udp } flow add @f
+		ct state established,related accept
+		iifname "enp1s0" oifname "ppp0" accept
+	}
+
+	chain input {
+		type filter hook input priority filter; policy accept;
+		iifname "ppp0" ct state established,related accept
+		iifname "ppp0" drop
+	}
+}
+table ip bench_nat {
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		oifname "ppp0" masquerade
+	}
+}
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+PING 198.18.20.2 (198.18.20.2) 1464(1492) bytes of data.
+1472 bytes from 198.18.20.2: icmp_seq=1 ttl=64 time=0.367 ms
+1472 bytes from 198.18.20.2: icmp_seq=2 ttl=64 time=0.561 ms
+1472 bytes from 198.18.20.2: icmp_seq=3 ttl=64 time=0.456 ms
+
+--- 198.18.20.2 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2047ms
+rtt min/avg/max/mdev = 0.367/0.461/0.561/0.079 ms
+--- M2-B PPPoE LINUX_PPPD_FLOWTABLE (1 P-core, 16 TCP streams = 2x8, 1492B PPPoE + VLAN 4091) ---
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_FLOWTABLE_1C_RUN1: gbps_total=0.000 (inst1=0.000, inst2=0.000) retransmits=0 err=(unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused,unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused)
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_FLOWTABLE_1C_RUN2: gbps_total=0.000 (inst1=0.000, inst2=0.000) retransmits=0 err=(unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused,unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused)
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_FLOWTABLE_1C_RUN3: gbps_total=0.000 (inst1=0.000, inst2=0.000) retransmits=0 err=(unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused,unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused)
+M2B_LINUX_PPPD_FLOWTABLE_1C_MPSTAT:
+21:29:15       0    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+Average:       0    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+PPPOE_FLOWTABLE_OFFLOAD_COUNT=0
+--- M2-B PPPoE LINUX_PPPD_FLOWTABLE (2 P-core, 16 TCP streams = 2x8, 1492B PPPoE + VLAN 4091) ---
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_FLOWTABLE_2C_RUN1: gbps_total=0.000 (inst1=0.000, inst2=0.000) retransmits=0 err=(unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused,unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused)
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_FLOWTABLE_2C_RUN2: gbps_total=0.000 (inst1=0.000, inst2=0.000) retransmits=0 err=(unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused,unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused)
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_FLOWTABLE_2C_RUN3: gbps_total=0.000 (inst1=0.000, inst2=0.000) retransmits=0 err=(unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused,unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused)
+M2B_LINUX_PPPD_FLOWTABLE_2C_MPSTAT:
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.00    0.00    0.00    0.07    0.00    0.00    0.00    0.00    0.00   99.93
+Average:       0    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+Average:       1    0.00    0.00    0.00    0.14    0.00    0.00    0.00    0.00    0.00   99.86
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+=== [5] Cleanup PPPoE & restore vf 11 & vf 12 HW VLAN 4091 for VPP Arena ===
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Actual changes:
+tx-checksum-ipv4: off [requested on]
+tx-checksum-ipv6: off [requested on]
+tx-checksum-fcoe-crc: off [requested on]
+tx-checksum-sctp: off [requested on]
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+    vf 9     link/ether 02:00:00:00:00:19 brd ff:ff:ff:ff:ff:ff, vlan 4092, spoof checking off, link-state auto, trust on, query_rss off
+    vf 10     link/ether 02:00:00:00:00:1a brd ff:ff:ff:ff:ff:ff, vlan 4092, spoof checking off, link-state auto, trust on, query_rss off
+    vf 11     link/ether 02:00:00:00:00:1b brd ff:ff:ff:ff:ff:ff, vlan 4091, spoof checking off, link-state auto, trust on, query_rss off
+    vf 12     link/ether 02:00:00:00:00:1c brd ff:ff:ff:ff:ff:ff, vlan 4091, spoof checking off, link-state auto, trust on, query_rss off
+=== M2-B 3-WAY PPPoE SUITE COMPLETE ===

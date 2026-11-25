@@ -1,0 +1,88 @@
+=== ADDENDUM nftables-flowtable ===
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+PRIMED 1024/1024 bidirectional UDP flows
+M1_PEAK_CHECK: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+target_kpps=0 dt=10.015s tx_pkts=113219961 rx_pkts=24337069 tx_mpps=11.3055 rx_mpps=2.4302 loss_pct=78.5046%
+--- PERF HOTSPOTS (nftables-flowtable) ---
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 6K of event 'cpu-clock'
+# Event count (approx.): 6006006000
+#
+# Overhead  Command          Shared Object      Symbol                                              
+# ........  ...............  .................  ....................................................
+#
+    18.60%  ksoftirqd/0      [kernel.kallsyms]  [k] __raw_callee_save___pv_queued_spin_unlock
+     6.83%  ksoftirqd/0      [kernel.kallsyms]  [k] eth_type_trans
+     3.48%  ksoftirqd/0      [kernel.kallsyms]  [k] pvclock_clocksource_read_nowd
+     2.88%  ksoftirqd/0      [kernel.kallsyms]  [k] ctnetlink_init
+     2.67%  ksoftirqd/0      [kernel.kallsyms]  [k] _raw_spin_lock
+     2.12%  ksoftirqd/0      [kernel.kallsyms]  [k] mlx5e_skb_from_cqe_linear
+     2.05%  ksoftirqd/0      [kernel.kallsyms]  [k] nf_flow_offload_ip_hook
+     1.98%  kworker/0:1-eve  [kernel.kallsyms]  [k] __raw_callee_save___pv_queued_spin_unlock
+     1.98%  kworker/0:3-eve  [kernel.kallsyms]  [k] __raw_callee_save___pv_queued_spin_unlock
+     1.90%  ksoftirqd/0      [kernel.kallsyms]  [k] flow_offload_lookup
+     1.85%  ksoftirqd/0      [kernel.kallsyms]  [k] __dev_queue_xmit
+     1.78%  ksoftirqd/0      [kernel.kallsyms]  [k] __netif_receive_skb_core.constprop.0
+     1.73%  ksoftirqd/0      [kernel.kallsyms]  [k] mlx5e_txwqe_complete
+     1.48%  ksoftirqd/0      [kernel.kallsyms]  [k] mlx5e_xmit
+     1.33%  ksoftirqd/0      [kernel.kallsyms]  [k] mlx5e_poll_tx_cq
+     1.23%  ksoftirqd/0      [kernel.kallsyms]  [k] kmem_cache_alloc_bulk_noprof
+     1.10%  ksoftirqd/0      [kernel.kallsyms]  [k] memcmp
+     1.08%  ksoftirqd/0      [kernel.kallsyms]  [k] napi_build_skb
+     1.03%  ksoftirqd/0      [kernel.kallsyms]  [k] napi_pp_put_page
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE step=1 target_kpps=1550: target_kpps=1550 dt=6.016s tx_pkts=68269650 rx_pkts=15173919 tx_mpps=11.3482 rx_mpps=2.5223 loss_pct=77.7736%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE step=2 target_kpps=874: target_kpps=874 dt=6.020s tx_pkts=68255117 rx_pkts=15293440 tx_mpps=11.3376 rx_mpps=2.5403 loss_pct=77.5937%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE step=3 target_kpps=536: target_kpps=536 dt=6.015s tx_pkts=68177629 rx_pkts=15281348 tx_mpps=11.3351 rx_mpps=2.5407 loss_pct=77.5860%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE step=4 target_kpps=367: target_kpps=367 dt=6.022s tx_pkts=68210660 rx_pkts=15215871 tx_mpps=11.3270 rx_mpps=2.5267 loss_pct=77.6928%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE step=5 target_kpps=283: target_kpps=283 dt=6.016s tx_pkts=54517766 rx_pkts=15035158 tx_mpps=9.0620 rx_mpps=2.4992 loss_pct=72.4215%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE step=6 target_kpps=241: target_kpps=241 dt=6.016s tx_pkts=46376292 rx_pkts=15101760 tx_mpps=7.7089 rx_mpps=2.5103 loss_pct=67.4365%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE step=7 target_kpps=220: target_kpps=220 dt=6.016s tx_pkts=42345282 rx_pkts=14936752 tx_mpps=7.0389 rx_mpps=2.4829 loss_pct=64.7263%
+--- NDR VERIFY (nftables-flowtable) at target_kpps=200 (3x 10s) ---
+M1_NDR_RUN1: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+target_kpps=200 dt=10.021s tx_pkts=64124224 rx_pkts=25067745 tx_mpps=6.3991 rx_mpps=2.5016 loss_pct=60.9075%
+M1_NDR_RUN2: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+target_kpps=200 dt=10.015s tx_pkts=62153636 rx_pkts=25506411 tx_mpps=6.2060 rx_mpps=2.5468 loss_pct=58.9623%
+M1_NDR_RUN3: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+target_kpps=200 dt=10.016s tx_pkts=64118242 rx_pkts=25251331 tx_mpps=6.4017 rx_mpps=2.5212 loss_pct=60.6176%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+M3A_8PORT_1C_RUN1: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+threads=2 conc=128 dt=10.001s ok=666259 err=0 cps=66620.1
+M3A_8PORT_1C_RUN2: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+threads=2 conc=128 dt=10.002s ok=663121 err=0 cps=66301.3
+M3A_8PORT_1C_RUN3: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+threads=2 conc=128 dt=10.001s ok=655136 err=0 cps=65507.5
+20:51:59       0    0.00    0.00    6.59    0.00    0.00   71.43    0.00    0.00    0.00   21.98
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.00    0.00    5.94    0.00    0.00   70.79    0.00    0.00    0.00   23.27
+Average:       0    0.00    0.00    5.94    0.00    0.00   70.79    0.00    0.00    0.00   23.27
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+M3A_8PORT_2C_RUN1: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+threads=2 conc=128 dt=10.001s ok=651523 err=0 cps=65146.7
+M3A_8PORT_2C_RUN2: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+threads=2 conc=128 dt=10.001s ok=650886 err=0 cps=65082.8
+M3A_8PORT_2C_RUN3: Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+threads=2 conc=128 dt=10.001s ok=651017 err=0 cps=65093.8
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.00    0.00    2.59    0.07    0.00   40.56    0.22    0.00    0.00   56.56
+Average:       0    0.00    0.00    4.51    0.15    0.00   40.12    0.15    0.00    0.00   55.09
+Average:       1    0.00    0.00    0.71    0.00    0.00   41.00    0.29    0.00    0.00   58.00
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.

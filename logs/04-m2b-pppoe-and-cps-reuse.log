@@ -1,0 +1,77 @@
+========================================================================
+PART 1: Landscape allow_reuse_port=true CPS Root-Cause Verification
+========================================================================
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+6388
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+LANDSCAPE_REUSEPORT_1C_RUN1: threads=2 conc=128 dt=10.048s ok=16204 err=0 cps=1612.7
+LANDSCAPE_REUSEPORT_1C_RUN2: threads=2 conc=128 dt=10.037s ok=11314 err=0 cps=1127.2
+LANDSCAPE_REUSEPORT_1C_RUN3: threads=2 conc=128 dt=10.031s ok=11406 err=0 cps=1137.1
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+Average:       0    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+========================================================================
+PART 2: M2-B (1492B PPPoE + 802.1Q VLAN 4091) 3-Way Arena
+========================================================================
+--- [2.1] Set vf 11 & vf 12 HW VLAN to 0 on hypervisor-host for Guest 802.1Q .4091 ---
+    vf 9     link/ether 02:00:00:00:00:19 brd ff:ff:ff:ff:ff:ff, vlan 4092, spoof checking off, link-state auto, trust on, query_rss off
+    vf 10     link/ether 02:00:00:00:00:1a brd ff:ff:ff:ff:ff:ff, vlan 4092, spoof checking off, link-state auto, trust on, query_rss off
+    vf 11     link/ether 02:00:00:00:00:1b brd ff:ff:ff:ff:ff:ff, spoof checking off, link-state auto, trust on, query_rss off
+    vf 12     link/ether 02:00:00:00:00:1c brd ff:ff:ff:ff:ff:ff, spoof checking off, link-state auto, trust on, query_rss off
+--- [2.2] Setup tg-vm tg_wan BRAS (enp2s0.4091 + pppoe-server, MTU/MRU 1492) ---
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+11018 pppoe-server -k -I enp2s0.4091 -L 198.18.20.2 -R 198.18.20.1 -N 4 -m 1492 -C bench-bras -S bench-svc
+=== [2.3] Contestant A: Landscape Native eBPF PPPoE (1492B + VLAN 4091, tx off) ===
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Actual changes:
+tx-checksum-ip-generic: off
+tx-tcp-segmentation: off [not requested]
+tx-tcp-mangleid-segmentation: off [not requested]
+tx-tcp6-segmentation: off [not requested]
+tx-udp-segmentation: off [not requested]
+Waiting for Landscape Native PPPoE IPCP...
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+eth0             UP             192.0.2.201/24 2001:db8:ffff:0:200:ff:fe00:201/64 fe80::200:ff:fe00:201/64 
+enp1s0           UP             198.18.10.1/24 
+enp2s0           UP             2001:db8:ffff:0:0:ff:fe00:1b/64 fe80::ff:fe00:1b/64 
+enp2s0.4091@enp2s0 UP             fe80::ff:fe00:1b/64 
+xdp:
+
+tc:
+enp1s0(3) clsact/ingress tc_lan_ingress_:[1068] id 1068
+enp2s0.4091(5) clsact/ingress tc_wan_ingress_:[1052] id 1052
+enp2s0.4091(5) clsact/egress tc_wan_egress_r:[1060] id 1060
+
+flow_dissector:
+
+netfilter:
+
+[2m2026-11-24T21:20:28.350+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"dns.service.observer"[1m}[0m[2m:[0m [2mlandscape_dns::coordinator::refresh[0m[2m:[0m refresh dns rule: flow_id: 0
+[2m2026-11-24T21:20:28.350+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"dns.service.observer"[1m}[0m[2m:[0m [2mlandscape_core::geo_cache::matcher[0m[2m:[0m dns match rule load time: 0s
+[2m2026-11-24T21:20:28.350+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"dns.service.observer"[1m}[0m[2m:[0m [2mlandscape_core::geo_cache::matcher[0m[2m:[0m dns match rule load time: 0s
+[2m2026-11-24T21:20:28.353+00:00[0m [31mERROR[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"dns.service.observer"[1m}[0m[2m:[0m [2mlandscape_dns::listener[0m[2m:[0m [flow: 0]: create udp socket error
+[2m2026-11-24T21:20:28.353+00:00[0m [31mERROR[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"dns.service.observer"[1m}[0m[2m:[0m [2mlandscape_dns::server::service[0m[2m:[0m DNS server start failed, runtime not registered [3mflow_id[0m[2m=[0m0 [3merror[0m[2m=[0m"failed to start DNS listener"
+[2m2026-11-24T21:20:28.353+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"dns.service.observer"[1m}[0m[2m:[0m [2mlandscape_dns::coordinator::refresh[0m[2m:[0m [flow_id: 0] build and refresh DNS runtime: 3ms
+[2m2026-11-24T21:20:32.354+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"dns.service.observer"[1m}[0m[2m:[0m [2mlandscape_dns::coordinator::refresh[0m[2m:[0m refresh dns rule: flow_id: 0
+[2m2026-11-24T21:20:32.354+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"dns.service.observer"[1m}[0m[2m:[0m [2mlandscape_core::geo_cache::matcher[0m[2m:[0m dns match rule load time: 0s
+[2m2026-11-24T21:20:32.354+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"dns.service.observer"[1m}[0m[2m:[0m [2mlandscape_core::geo_cache::matcher[0m[2m:[0m dns match rule load time: 0s
+[2m2026-11-24T21:20:32.357+00:00[0m [31mERROR[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"dns.service.observer"[1m}[0m[2m:[0m [2mlandscape_dns::listener[0m[2m:[0m [flow: 0]: create udp socket error
+[2m2026-11-24T21:20:32.357+00:00[0m [31mERROR[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"dns.service.observer"[1m}[0m[2m:[0m [2mlandscape_dns::server::service[0m[2m:[0m DNS server start failed, runtime not registered [3mflow_id[0m[2m=[0m0 [3merror[0m[2m=[0m"failed to start DNS listener"
+[2m2026-11-24T21:20:32.357+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"dns.service.observer"[1m}[0m[2m:[0m [2mlandscape_dns::coordinator::refresh[0m[2m:[0m [flow_id: 0] build and refresh DNS runtime: 3ms
+[2m2026-11-24T21:20:35.527+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"ebpf.neigh_update"[1m}[0m[2m:[0m [2mlandscape_ebpf::maps::mac::setting[0m[2m:[0m sync current arp info
+[2m2026-11-24T21:20:35.527+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"ebpf.neigh_update"[1m}[0m[2m:[0m [2mlandscape_ebpf::maps::mac::setting[0m[2m:[0m sync current ipv6 neigh info
+[2m2026-11-24T21:20:40.358+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"dns.service.observer"[1m}[0m[2m:[0m [2mlandscape_dns::coordinator::refresh[0m[2m:[0m refresh dns rule: flow_id: 0
+[2m2026-11-24T21:20:40.358+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"dns.service.observer"[1m}[0m[2m:[0m [2mlandscape_core::geo_cache::matcher[0m[2m:[0m dns match rule load time: 0s
+[2m2026-11-24T21:20:40.358+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"dns.service.observer"[1m}[0m[2m:[0m [2mlandscape_core::geo_cache::matcher[0m[2m:[0m dns match rule load time: 0s
+[2m2026-11-24T21:20:40.361+00:00[0m [31mERROR[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"dns.service.observer"[1m}[0m[2m:[0m [2mlandscape_dns::listener[0m[2m:[0m [flow: 0]: create udp socket error
+[2m2026-11-24T21:20:40.361+00:00[0m [31mERROR[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"dns.service.observer"[1m}[0m[2m:[0m [2mlandscape_dns::server::service[0m[2m:[0m DNS server start failed, runtime not registered [3mflow_id[0m[2m=[0m0 [3merror[0m[2m=[0m"failed to start DNS listener"
+[2m2026-11-24T21:20:40.361+00:00[0m [32m INFO[0m [1mtask[0m[1m{[0m[3mtask[0m[2m=[0m"dns.service.observer"[1m}[0m[2m:[0m [2mlandscape_dns::coordinator::refresh[0m[2m:[0m [flow_id: 0] build and refresh DNS runtime: 3ms
+--- Verify Landscape PPPoE connectivity & SNAT ---
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+PING 198.18.20.2 (198.18.20.2) 56(84) bytes of data.
+
+--- 198.18.20.2 ping statistics ---
+3 packets transmitted, 0 received, 100% packet loss, time 2046ms
+

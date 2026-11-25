@@ -1,0 +1,282 @@
+========================================================================
+CONTESTANT: nftables (mode=linux)  START: 2026-11-25T04:35:16+08:00
+========================================================================
+=== [0] Equivalence Verification (Stateful SNAT + WAN Drop Firewall) ===
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+sent=5 ok=5 lost=0 min_us=465.11 p50_us=753.07 p95_us=1004.67 p99_us=1004.67 p999_us=1004.67 max_us=1314.05 avg_us=820.90
+20:35:17.325907 IP 198.18.20.1.47469 > 198.18.20.2.9000: UDP, length 32
+EQUIV_PASS: Stateful SNAT + Unsolicited WAN->LAN DROP verified
+=== [M4-IDLE] 1 P-core Idle CPU% Footprint ===
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+ONLINE_CPUS=0
+Current hardware settings:
+RX:		n/a
+TX:		n/a
+Other:		n/a
+Combined:	1
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+20:35:24     all    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+20:35:24       0    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+
+20:35:24     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+20:35:25     all    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+20:35:25       0    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.00    0.00    0.00    0.20    0.00    0.00    0.00    0.00    0.00   99.80
+Average:       0    0.00    0.00    0.00    0.20    0.00    0.00    0.00    0.00    0.00   99.80
+=== [M1] 64B Small-Packet 1-P-core Throughput (1024 Stateful UDP Flows) ===
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+PRIMED 1024/1024 bidirectional UDP flows
+--- M1 Peak Forwarded (delay_ns=0, 3x 10s) ---
+M1_PEAK_RUN1: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+delay_ns=0 dt=10.015s tx_pkts=119759254 rx_pkts=14161522 tx_mpps=11.9574 rx_mpps=1.4140 loss_pct=88.1750%
+M1_PEAK_RUN2: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+delay_ns=0 dt=10.012s tx_pkts=119813929 rx_pkts=14167872 tx_mpps=11.9669 rx_mpps=1.4151 loss_pct=88.1751%
+M1_PEAK_RUN3: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+delay_ns=0 dt=10.013s tx_pkts=119667053 rx_pkts=14203771 tx_mpps=11.9507 rx_mpps=1.4185 loss_pct=88.1306%
+--- M1 Peak Run 3 DUT mpstat ---
+20:36:01       0    0.00    0.00    0.00    0.00    0.00  100.00    0.00    0.00    0.00    0.00
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.00    0.00    0.12    0.00    0.00   99.88    0.00    0.00    0.00    0.00
+Average:       0    0.00    0.00    0.12    0.00    0.00   99.88    0.00    0.00    0.00    0.00
+--- M1 Peak Run 3 DUT perf stat (1 P-core) ---
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+
+ Performance counter stats for 'CPU(s) 0':
+
+   <not supported>      cycles                                                                
+   <not supported>      instructions                                                          
+   <not supported>      LLC-loads                                                             
+   <not supported>      LLC-load-misses                                                       
+   <not supported>      branches                                                              
+   <not supported>      branch-misses                                                         
+
+       8.006420197 seconds time elapsed
+
+--- M1 NDR Binary Search (target loss <= 0.05%) ---
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE delay=0: delay_ns=0 dt=6.011s tx_pkts=71912004 rx_pkts=8432261 tx_mpps=11.9628 rx_mpps=1.4027 loss_pct=88.2742%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE step=1 delay=2000: delay_ns=2000 dt=6.009s tx_pkts=71909624 rx_pkts=8477165 tx_mpps=11.9667 rx_mpps=1.4107 loss_pct=88.2114%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE step=2 delay=3000: delay_ns=3000 dt=6.008s tx_pkts=71884251 rx_pkts=8472269 tx_mpps=11.9650 rx_mpps=1.4102 loss_pct=88.2140%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE step=3 delay=3500: delay_ns=3500 dt=6.011s tx_pkts=71832941 rx_pkts=8598171 tx_mpps=11.9493 rx_mpps=1.4303 loss_pct=88.0303%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE step=4 delay=3750: delay_ns=3750 dt=6.006s tx_pkts=71838612 rx_pkts=8539298 tx_mpps=11.9603 rx_mpps=1.4217 loss_pct=88.1132%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE step=5 delay=3875: delay_ns=3875 dt=6.012s tx_pkts=71935515 rx_pkts=8486160 tx_mpps=11.9656 rx_mpps=1.4116 loss_pct=88.2031%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE step=6 delay=3938: delay_ns=3938 dt=6.009s tx_pkts=71945496 rx_pkts=8475445 tx_mpps=11.9739 rx_mpps=1.4106 loss_pct=88.2196%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE step=7 delay=3969: delay_ns=3969 dt=6.013s tx_pkts=71936208 rx_pkts=8482733 tx_mpps=11.9642 rx_mpps=1.4108 loss_pct=88.2080%
+--- M1 NDR Verification at delay_ns=4000 (3x 10s) ---
+M1_NDR_RUN1: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+delay_ns=4000 dt=10.012s tx_pkts=119726830 rx_pkts=14118221 tx_mpps=11.9583 rx_mpps=1.4101 loss_pct=88.2080%
+M1_NDR_RUN2: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+delay_ns=4000 dt=10.010s tx_pkts=119589386 rx_pkts=14353879 tx_mpps=11.9466 rx_mpps=1.4339 loss_pct=87.9974%
+M1_NDR_RUN3: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+delay_ns=4000 dt=10.016s tx_pkts=119682190 rx_pkts=14278414 tx_mpps=11.9489 rx_mpps=1.4255 loss_pct=88.0697%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+=== [M2-A] 1500B Ethernet Stateful NAT44 Multi-Stream Throughput ===
+--- M2-A 1C_OFFLOAD_ON (cores=1, gro/gso/tso=on, 16 TCP streams = 2x8) ---
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Actual changes:
+tx-tcp-ecn-segmentation: off [requested on]
+tx-tcp-mangleid-segmentation: on
+Actual changes:
+tx-tcp-ecn-segmentation: off [requested on]
+tx-tcp-mangleid-segmentation: on
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2A_1C_OFFLOAD_ON_RUN1: gbps_total=21.654 (inst1=10.570, inst2=11.084) retransmits=8872
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2A_1C_OFFLOAD_ON_RUN2: gbps_total=22.040 (inst1=11.227, inst2=10.814) retransmits=10390
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+M2A_1C_OFFLOAD_ON_RUN3: gbps_total=21.454 (inst1=10.895, inst2=10.559) retransmits=9621
+M2A_1C_OFFLOAD_ON_MPSTAT:
+20:38:19       0    0.00    0.00    0.00    0.00    0.00  100.00    0.00    0.00    0.00    0.00
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.00    0.00    0.00    0.00    0.00   99.72    0.00    0.00    0.00    0.28
+Average:       0    0.00    0.00    0.00    0.00    0.00   99.72    0.00    0.00    0.00    0.28
+M2A_1C_OFFLOAD_ON_PERF:
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+
+ Performance counter stats for 'CPU(s) 0':
+
+   <not supported>      cycles                                                                
+   <not supported>      instructions                                                          
+   <not supported>      LLC-loads                                                             
+   <not supported>      LLC-load-misses                                                       
+
+       6.999872473 seconds time elapsed
+
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+--- M2-A 1C_OFFLOAD_OFF (cores=1, gro/gso/tso=off, 16 TCP streams = 2x8) ---
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2A_1C_OFFLOAD_OFF_RUN1: gbps_total=14.785 (inst1=6.958, inst2=7.827) retransmits=5491
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2A_1C_OFFLOAD_OFF_RUN2: gbps_total=14.871 (inst1=7.193, inst2=7.678) retransmits=5174
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+M2A_1C_OFFLOAD_OFF_RUN3: gbps_total=14.662 (inst1=7.364, inst2=7.297) retransmits=5945
+M2A_1C_OFFLOAD_OFF_MPSTAT:
+20:38:50       0    0.00    0.00    0.00    0.00    0.00  100.00    0.00    0.00    0.00    0.00
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.14    0.00    0.00    0.00    0.00   99.71    0.00    0.00    0.00    0.14
+Average:       0    0.14    0.00    0.00    0.00    0.00   99.71    0.00    0.00    0.00    0.14
+M2A_1C_OFFLOAD_OFF_PERF:
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+
+ Performance counter stats for 'CPU(s) 0':
+
+   <not supported>      cycles                                                                
+   <not supported>      instructions                                                          
+   <not supported>      LLC-loads                                                             
+   <not supported>      LLC-load-misses                                                       
+
+       7.009964565 seconds time elapsed
+
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+--- M2-A 2C_OFFLOAD_ON (cores=2, gro/gso/tso=on, 16 TCP streams = 2x8) ---
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Actual changes:
+tx-generic-segmentation: on
+rx-gro: on
+tx-tcp-segmentation: on
+tx-tcp-ecn-segmentation: off [requested on]
+tx-tcp-mangleid-segmentation: on
+tx-tcp6-segmentation: on
+Actual changes:
+tx-generic-segmentation: on
+rx-gro: on
+tx-tcp-segmentation: on
+tx-tcp-ecn-segmentation: off [requested on]
+tx-tcp-mangleid-segmentation: on
+tx-tcp6-segmentation: on
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2A_2C_OFFLOAD_ON_RUN1: gbps_total=12.815 (inst1=6.334, inst2=6.481) retransmits=25837
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2A_2C_OFFLOAD_ON_RUN2: gbps_total=21.977 (inst1=10.843, inst2=11.134) retransmits=43858
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+M2A_2C_OFFLOAD_ON_RUN3: gbps_total=21.367 (inst1=10.693, inst2=10.674) retransmits=154642
+M2A_2C_OFFLOAD_ON_MPSTAT:
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.00    0.00    0.28    0.00    0.00   61.67    0.07    0.00    0.00   37.98
+Average:       0    0.00    0.00    0.28    0.00    0.00   45.59    0.00    0.00    0.00   54.13
+Average:       1    0.00    0.00    0.28    0.00    0.00   77.81    0.14    0.00    0.00   21.77
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+--- M2-A 2C_OFFLOAD_OFF (cores=2, gro/gso/tso=off, 16 TCP streams = 2x8) ---
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2A_2C_OFFLOAD_OFF_RUN1: gbps_total=15.900 (inst1=7.973, inst2=7.928) retransmits=102072
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2A_2C_OFFLOAD_OFF_RUN2: gbps_total=15.231 (inst1=7.786, inst2=7.444) retransmits=112288
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2A_2C_OFFLOAD_OFF_RUN3: gbps_total=15.070 (inst1=7.557, inst2=7.513) retransmits=110960
+M2A_2C_OFFLOAD_OFF_MPSTAT:
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.00    0.00    0.21    0.00    0.00   64.70    0.14    0.00    0.00   34.95
+Average:       0    0.00    0.00    0.28    0.00    0.00   57.61    0.14    0.00    0.00   41.97
+Average:       1    0.00    0.00    0.14    0.00    0.00   71.77    0.14    0.00    0.00   27.95
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Actual changes:
+tx-generic-segmentation: on
+rx-gro: on
+tx-tcp-segmentation: on
+tx-tcp-ecn-segmentation: off [requested on]
+tx-tcp-mangleid-segmentation: on
+tx-tcp6-segmentation: on
+Actual changes:
+tx-generic-segmentation: on
+rx-gro: on
+tx-tcp-segmentation: on
+tx-tcp-ecn-segmentation: off [requested on]
+tx-tcp-mangleid-segmentation: on
+tx-tcp6-segmentation: on
+=== [M3-A] Stateful NAT CPS (Short-Lived HTTP Connection: close, 16 Source IPs) ===
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NGINX_CPS_READY
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+--- M3-A CPS (1 P-core, 3x 10s) ---
+M3A_1C_RUN1: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+threads=2 conc=128 dt=10.001s ok=154115 err=0 cps=15410.5
+M3A_1C_RUN2: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+threads=2 conc=128 dt=10.001s ok=83872 err=0 cps=8386.7
+M3A_1C_RUN3: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+threads=2 conc=128 dt=10.006s ok=79407 err=0 cps=7935.5
+20:40:24       0    0.00    0.00    0.00    1.02    0.00   21.43    0.00    0.00    0.00   77.55
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.00    0.00    0.15    0.15    0.00   17.05    0.00    0.00    0.00   82.64
+Average:       0    0.00    0.00    0.15    0.15    0.00   17.05    0.00    0.00    0.00   82.64
+--- M3-A wrk cross-check (1 P-core, 10s) ---
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Running 10s test @ http://198.18.20.2:8080/
+  2 threads and 64 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency   138.02us   80.17us   1.05ms   84.74%
+    Req/Sec     2.44k     1.97k   13.59k    82.94%
+  41807 requests in 10.02s, 5.74MB read
+Requests/sec:   4171.86
+Transfer/sec:    586.67KB
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+--- M3-A CPS (2 P-core, 3x 10s) ---
+M3A_2C_RUN1: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+threads=2 conc=128 dt=10.001s ok=82631 err=0 cps=8262.6
+M3A_2C_RUN2: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+threads=2 conc=128 dt=10.001s ok=77995 err=0 cps=7799.1
+M3A_2C_RUN3: Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+threads=2 conc=128 dt=10.003s ok=82515 err=0 cps=8249.2
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.00    0.00    0.21    0.07    0.00   16.13    0.07    0.00    0.00   83.52
+Average:       0    0.00    0.00    0.14    0.14    0.00   15.46    0.00    0.00    0.00   84.26
+Average:       1    0.00    0.00    0.28    0.00    0.00   16.78    0.14    0.00    0.00   82.80
+--- M3-A wrk cross-check (2 P-core, 10s) ---
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Running 10s test @ http://198.18.20.2:8080/
+  2 threads and 64 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency   136.24us   68.96us   1.30ms   76.45%
+    Req/Sec     2.30k     1.96k   15.32k    82.58%
+  41962 requests in 10.02s, 5.76MB read
+Requests/sec:   4185.94
+Transfer/sec:    588.65KB
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+=== [M3-B] Latency & Jitter Under Load (1 P-core, 5000 UDP probes @ 500 pps) ===
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M3B_IDLE: sent=5000 ok=5000 lost=0 min_us=54.40 p50_us=382.76 p95_us=600.08 p99_us=663.14 p999_us=765.44 max_us=1466.08 avg_us=391.52
+M3B_SATURATED: sent=5000 ok=4999 lost=1 min_us=145.64 p50_us=2092.83 p95_us=2608.47 p99_us=3078.91 p999_us=9290.00 max_us=16264.20 avg_us=1619.99
+M3B_BG_LOAD_GBPS=21.508
+========================================================================
+CONTESTANT: nftables  END: 2026-11-25T04:41:50+08:00
+========================================================================

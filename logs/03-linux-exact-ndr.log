@@ -1,0 +1,51 @@
+--- EXACT NDR: nftables ---
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+PRIMED 1024/1024 bidirectional UDP flows
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE(nftables) step=1 target=900: target_kpps=900 dt=5.012s tx_pkts=4508862 rx_pkts=4511269 tx_mpps=0.8996 rx_mpps=0.9001 loss_pct=-0.0534%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE(nftables) step=2 target=1250: target_kpps=1250 dt=5.011s tx_pkts=6262640 rx_pkts=6260077 tx_mpps=1.2497 rx_mpps=1.2492 loss_pct=0.0409%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE(nftables) step=3 target=1425: target_kpps=1425 dt=5.010s tx_pkts=7143018 rx_pkts=6900290 tx_mpps=1.4258 rx_mpps=1.3773 loss_pct=3.3981%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE(nftables) step=4 target=1337: target_kpps=1337 dt=5.016s tx_pkts=6700536 rx_pkts=6703056 tx_mpps=1.3358 rx_mpps=1.3363 loss_pct=-0.0376%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE(nftables) step=5 target=1381: target_kpps=1381 dt=5.005s tx_pkts=6929752 rx_pkts=6919545 tx_mpps=1.3844 rx_mpps=1.3824 loss_pct=0.1473%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE(nftables) step=6 target=1359: target_kpps=1359 dt=5.006s tx_pkts=6814320 rx_pkts=6807991 tx_mpps=1.3613 rx_mpps=1.3600 loss_pct=0.0929%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE(nftables) step=7 target=1348: target_kpps=1348 dt=5.012s tx_pkts=6753088 rx_pkts=6757848 tx_mpps=1.3474 rx_mpps=1.3484 loss_pct=-0.0705%
+NDR_VERIFY(nftables)_RUN1: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+target_kpps=1348 dt=10.010s tx_pkts=13494464 rx_pkts=13485440 tx_mpps=1.3481 rx_mpps=1.3472 loss_pct=0.0669%
+NDR_VERIFY(nftables)_RUN2: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+target_kpps=1348 dt=10.012s tx_pkts=13497712 rx_pkts=13489676 tx_mpps=1.3481 rx_mpps=1.3473 loss_pct=0.0595%
+NDR_VERIFY(nftables)_RUN3: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+target_kpps=1348 dt=10.012s tx_pkts=13488924 rx_pkts=13495330 tx_mpps=1.3473 rx_mpps=1.3479 loss_pct=-0.0475%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+--- EXACT NDR: nftables-flowtable ---
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+PRIMED 1024/1024 bidirectional UDP flows
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE(nftables-flowtable) step=1 target=1500: target_kpps=1500 dt=5.008s tx_pkts=7515764 rx_pkts=7516019 tx_mpps=1.5009 rx_mpps=1.5009 loss_pct=-0.0034%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE(nftables-flowtable) step=2 target=2150: target_kpps=2150 dt=5.010s tx_pkts=10780556 rx_pkts=10770965 tx_mpps=2.1518 rx_mpps=2.1498 loss_pct=0.0890%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE(nftables-flowtable) step=3 target=1825: target_kpps=1825 dt=5.017s tx_pkts=9162904 rx_pkts=9151432 tx_mpps=1.8265 rx_mpps=1.8242 loss_pct=0.1252%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE(nftables-flowtable) step=4 target=1662: target_kpps=1662 dt=5.009s tx_pkts=8326376 rx_pkts=8331277 tx_mpps=1.6623 rx_mpps=1.6633 loss_pct=-0.0589%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE(nftables-flowtable) step=5 target=1743: target_kpps=1743 dt=5.011s tx_pkts=8731602 rx_pkts=8697768 tx_mpps=1.7426 rx_mpps=1.7358 loss_pct=0.3875%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE(nftables-flowtable) step=6 target=1702: target_kpps=1702 dt=5.008s tx_pkts=8519178 rx_pkts=8521430 tx_mpps=1.7010 rx_mpps=1.7014 loss_pct=-0.0264%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+NDR_PROBE(nftables-flowtable) step=7 target=1722: target_kpps=1722 dt=5.011s tx_pkts=8623592 rx_pkts=8629912 tx_mpps=1.7210 rx_mpps=1.7223 loss_pct=-0.0733%
+NDR_VERIFY(nftables-flowtable)_RUN1: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+target_kpps=1722 dt=10.012s tx_pkts=17245912 rx_pkts=17242025 tx_mpps=1.7225 rx_mpps=1.7221 loss_pct=0.0225%
+NDR_VERIFY(nftables-flowtable)_RUN2: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+target_kpps=1722 dt=10.011s tx_pkts=17234580 rx_pkts=17242395 tx_mpps=1.7216 rx_mpps=1.7224 loss_pct=-0.0453%
+NDR_VERIFY(nftables-flowtable)_RUN3: Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+target_kpps=1722 dt=10.012s tx_pkts=17239020 rx_pkts=17247302 tx_mpps=1.7218 rx_mpps=1.7226 loss_pct=-0.0480%
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.

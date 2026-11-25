@@ -1,0 +1,111 @@
+=== [1] Set vf 11 & vf 12 HW VLAN 0 & start tg-vm BRAS with -R 198.18.20.10 ===
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+=== [2] Contestant B: Linux pppd + rp-pppoe + nftables ===
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Actual changes:
+tx-checksum-ipv4: off [requested on]
+tx-checksum-ipv6: off [requested on]
+tx-checksum-fcoe-crc: off [requested on]
+tx-checksum-sctp: off [requested on]
+Plugin rp-pppoe.so loaded.
+LINUX_PPPD_UP on attempt 5
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+eth0             UP             192.0.2.201/24 2001:db8:ffff:0:200:ff:fe00:201/64 fe80::200:ff:fe00:201/64 
+enp1s0           UP             198.18.10.1/24 
+enp2s0           UP             
+enp2s0.4091@enp2s0 UP             fe80::ff:fe00:1b/64 
+ppp0             UNKNOWN        198.18.20.10 peer 198.18.20.2/32 fe80::b0d1:ed24:482c:2a8e peer fe80::690f:727c:e776:52b3/128 
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+PING 198.18.20.2 (198.18.20.2) 1464(1492) bytes of data.
+1472 bytes from 198.18.20.2: icmp_seq=1 ttl=63 time=0.960 ms
+1472 bytes from 198.18.20.2: icmp_seq=2 ttl=63 time=0.953 ms
+1472 bytes from 198.18.20.2: icmp_seq=3 ttl=63 time=0.920 ms
+
+--- 198.18.20.2 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2002ms
+rtt min/avg/max/mdev = 0.920/0.944/0.960/0.017 ms
+--- M2-B PPPoE LINUX_PPPD_NFTABLES (1 P-core, 16 TCP streams = 2x8, 1492B PPPoE + VLAN 4091) ---
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_NFTABLES_1C_RUN1: gbps_total=12.314 (inst1=5.972, inst2=6.342) retransmits=7261
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_NFTABLES_1C_RUN2: gbps_total=12.199 (inst1=6.043, inst2=6.156) retransmits=6036
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_NFTABLES_1C_RUN3: gbps_total=12.197 (inst1=5.962, inst2=6.235) retransmits=6441
+M2B_LINUX_PPPD_NFTABLES_1C_MPSTAT:
+21:30:50       0    0.00    0.00    0.00    0.00    0.00  100.00    0.00    0.00    0.00    0.00
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.00    0.00    0.14    0.00    0.00   99.86    0.00    0.00    0.00    0.00
+Average:       0    0.00    0.00    0.14    0.00    0.00   99.86    0.00    0.00    0.00    0.00
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+--- M2-B PPPoE LINUX_PPPD_NFTABLES (2 P-core, 16 TCP streams = 2x8, 1492B PPPoE + VLAN 4091) ---
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_NFTABLES_2C_RUN1: gbps_total=13.924 (inst1=0.248, inst2=13.676) retransmits=1613
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_NFTABLES_2C_RUN2: gbps_total=13.980 (inst1=0.163, inst2=13.817) retransmits=2131
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_NFTABLES_2C_RUN3: gbps_total=13.375 (inst1=0.134, inst2=13.242) retransmits=3443
+M2B_LINUX_PPPD_NFTABLES_2C_MPSTAT:
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.00    0.00    0.08    0.00    0.00   69.99    0.15    0.00    0.00   29.78
+Average:       0    0.00    0.00    0.14    0.00    0.00   99.00    0.14    0.00    0.00    0.71
+Average:       1    0.00    0.00    0.00    0.00    0.00   37.82    0.16    0.00    0.00   62.03
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+=== [3] Contestant C: Linux pppd + nftables + flowtable ===
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+--- M2-B PPPoE LINUX_PPPD_FLOWTABLE (1 P-core, 16 TCP streams = 2x8, 1492B PPPoE + VLAN 4091) ---
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_FLOWTABLE_1C_RUN1: gbps_total=12.883 (inst1=5.588, inst2=7.295) retransmits=10386
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_FLOWTABLE_1C_RUN2: gbps_total=12.902 (inst1=5.263, inst2=7.639) retransmits=9655
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_FLOWTABLE_1C_RUN3: gbps_total=12.839 (inst1=5.282, inst2=7.557) retransmits=9555
+M2B_LINUX_PPPD_FLOWTABLE_1C_MPSTAT:
+21:31:55       0    0.00    0.00    0.00    0.00    0.00  100.00    0.00    0.00    0.00    0.00
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.00    0.00    0.14    0.00    0.00   99.86    0.00    0.00    0.00    0.00
+Average:       0    0.00    0.00    0.14    0.00    0.00   99.86    0.00    0.00    0.00    0.00
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+PPPOE_FLOWTABLE_OFFLOAD_COUNT=0
+--- M2-B PPPoE LINUX_PPPD_FLOWTABLE (2 P-core, 16 TCP streams = 2x8, 1492B PPPoE + VLAN 4091) ---
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_FLOWTABLE_2C_RUN1: gbps_total=13.789 (inst1=0.294, inst2=13.495) retransmits=1994
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_FLOWTABLE_2C_RUN2: gbps_total=13.999 (inst1=0.158, inst2=13.842) retransmits=1865
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+M2B_LINUX_PPPD_FLOWTABLE_2C_RUN3: gbps_total=13.780 (inst1=0.313, inst2=13.468) retransmits=1553
+M2B_LINUX_PPPD_FLOWTABLE_2C_MPSTAT:
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    0.00    0.00    0.14    0.00    0.00   69.63    0.07    0.00    0.00   30.16
+Average:       0    0.00    0.00    0.28    0.00    0.00   84.14    0.00    0.00    0.00   15.59
+Average:       1    0.00    0.00    0.00    0.00    0.00   53.95    0.15    0.00    0.00   45.90
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+=== [4] Cleanup PPPoE & restore vf 11/12 HW VLAN 4091 ===
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+Actual changes:
+tx-checksum-ipv4: off [requested on]
+tx-checksum-ipv6: off [requested on]
+tx-checksum-fcoe-crc: off [requested on]
+tx-checksum-sctp: off [requested on]
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+    vf 9     link/ether 02:00:00:00:00:19 brd ff:ff:ff:ff:ff:ff, vlan 4092, spoof checking off, link-state auto, trust on, query_rss off
+    vf 10     link/ether 02:00:00:00:00:1a brd ff:ff:ff:ff:ff:ff, vlan 4092, spoof checking off, link-state auto, trust on, query_rss off
+    vf 11     link/ether 02:00:00:00:00:1b brd ff:ff:ff:ff:ff:ff, vlan 4091, spoof checking off, link-state auto, trust on, query_rss off
+    vf 12     link/ether 02:00:00:00:00:1c brd ff:ff:ff:ff:ff:ff, vlan 4091, spoof checking off, link-state auto, trust on, query_rss off
+=== LINUX PPPD M2-B COMPLETE ===

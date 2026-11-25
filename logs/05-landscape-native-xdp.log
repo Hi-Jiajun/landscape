@@ -1,0 +1,44 @@
+=== [1] Warm ARP on dut-vm & tg-vm and verify native XDP (--try-xdp) forwarding ===
+Warning: Permanently added '192.0.2.201' (ED25519) to the list of known hosts.
+PING 198.18.10.2 (198.18.10.2) 56(84) bytes of data.
+64 bytes from 198.18.10.2: icmp_seq=1 ttl=64 time=0.384 ms
+64 bytes from 198.18.10.2: icmp_seq=2 ttl=64 time=0.345 ms
+
+--- 198.18.10.2 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1013ms
+rtt min/avg/max/mdev = 0.345/0.364/0.384/0.019 ms
+PING 198.18.20.2 (198.18.20.2) 56(84) bytes of data.
+64 bytes from 198.18.20.2: icmp_seq=1 ttl=64 time=0.910 ms
+64 bytes from 198.18.20.2: icmp_seq=2 ttl=64 time=0.476 ms
+
+--- 198.18.20.2 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1023ms
+rtt min/avg/max/mdev = 0.476/0.693/0.910/0.217 ms
+198.18.10.2 dev enp1s0 lladdr 02:00:00:00:00:19 DELAY 
+192.0.2.10 dev eth0 lladdr 02:00:00:00:ff:01 DELAY 
+192.0.2.1 dev eth0 lladdr 02:00:00:00:00:14 STALE 
+198.18.20.2 dev enp2s0 lladdr 02:00:00:00:00:1c REACHABLE 
+fe80::ff:fe00:14 dev eth0 lladdr 02:00:00:00:00:14 router REACHABLE 
+2001:db8:ffff::1 dev eth0 lladdr 02:00:00:00:00:14 router REACHABLE 
+xdp:
+enp1s0(3) driver id 321
+enp2s0(4) driver id 304
+
+tc:
+enp1s0(3) clsact/ingress tc_lan_ingress_:[329] id 329
+enp2s0(4) clsact/ingress tc_wan_ingress_:[339] id 339
+enp2s0(4) clsact/egress tc_wan_egress_r:[345] id 345
+
+flow_dissector:
+
+netfilter:
+
+304: xdp  name xdp_wan_intro  tag 2914f32446c4200b  gpl
+321: xdp  name xdp_lan_route  tag 601b33559f80c0a2  gpl
+329: sched_cls  name tc_lan_ingress_route  tag 1fd70e661233b246  gpl
+339: sched_cls  name tc_wan_ingress_intro  tag f880e18c81f6aed8  gpl
+345: sched_cls  name tc_wan_egress_route  tag c7054727e7d8df81  gpl
+Warning: Permanently added '192.0.2.202' (ED25519) to the list of known hosts.
+sent=10 ok=0 lost=10
+
+EQUIV_PASS: Landscape Native XDP (--try-xdp) Stateful SNAT + WAN DROP verified!
