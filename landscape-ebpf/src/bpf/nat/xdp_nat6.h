@@ -281,12 +281,14 @@ static __always_inline int xdp_ipv6_ingress_prefix_check_and_replace(
 
     bool is_icmpx_error = xdp_nat6_is_icmp_error(off);
     bool allow_create = nat6_allows_create_pkt(ct_proto, off->tcp_phase, is_icmpx_error);
+    bool is_static = false;
     bool need_prefix_replace = false;
     int map_ret = 0;
 
     struct nat6_timer_value *ct_value = xdp_lookup_ct6_ingress(off, dst_addr, dport, npt_id_mask);
     if (ct_value) {
         bool ct_is_static = ct_value->is_static != 0;
+        is_static = ct_is_static;
         *out_is_static = ct_is_static;
 
         if (!ct_is_static) {
@@ -314,7 +316,7 @@ static __always_inline int xdp_ipv6_ingress_prefix_check_and_replace(
     }
 
     map_ret = nat6_check_ingress_static(ct_proto, dst_addr, dport, &local_client_prefix);
-    bool is_static = (map_ret != NAT6_STATIC_MISS);
+    is_static = (map_ret != NAT6_STATIC_MISS);
     need_prefix_replace = (map_ret == NAT6_STATIC_REPLACE);
     *out_is_static = is_static;
 
@@ -344,7 +346,7 @@ do_xdp_ingress_nptv6:
         return 1;
     }
 
-    if (!need_prefix_replace) return 2;
+    if (!need_prefix_replace) return is_static ? 1 : 2;
 
     if (is_icmpx_error) {
         u32 inner_src_off = xdp_nat6_icmp_error_l3_offset(off) + offsetof(struct ipv6hdr, saddr);
@@ -411,7 +413,7 @@ do_xdp_ingress_nptv6:
         *csum_ptr = xdp_csum_apply(*csum_ptr, delta);
     }
 
-    return 0;
+    return is_static ? 1 : 0;
 }
 
 #endif /* __LD_XDP_NAT6_H__ */

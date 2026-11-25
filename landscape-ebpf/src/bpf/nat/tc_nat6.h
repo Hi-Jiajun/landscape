@@ -322,11 +322,13 @@ static __always_inline int ipv6_ingress_prefix_check_and_replace(
 
     bool is_icmpx = nat6_is_icmp_error(off);
     bool allow_create = nat6_allows_create_pkt(ct_proto, off->tcp_phase, is_icmpx);
+    bool is_static = false;
     bool need_prefix_replace = false;
 
     struct nat6_timer_value *ct_value = lookup_ct6_ingress(off, dst_addr, dport, npt_id_mask);
     if (ct_value) {
         bool ct_is_static = ct_value->is_static != 0;
+        is_static = ct_is_static;
 
         if (!ct_is_static) {
             if (ct_value->is_allow_reuse == 0 && ct_proto != NEXTHDR_ICMP) {
@@ -362,7 +364,7 @@ static __always_inline int ipv6_ingress_prefix_check_and_replace(
     }
 
     ret = nat6_check_ingress_static(ct_proto, dst_addr, dport, &local_client_prefix);
-    bool is_static = (ret != NAT6_STATIC_MISS);
+    is_static = (ret != NAT6_STATIC_MISS);
     need_prefix_replace = (ret == NAT6_STATIC_REPLACE);
 
     __be64 client_prefix_hint = 0;
@@ -398,6 +400,11 @@ do_ingress_nptv6:
     }
 
     if (!need_prefix_replace) {
+        if (is_static) {
+            u32 mark = skb->mark;
+            barrier_var(mark);
+            skb->mark = replace_cache_mask(mark, INGRESS_STATIC_MARK);
+        }
         return TC_ACT_UNSPEC;
     }
 
@@ -477,6 +484,12 @@ do_ingress_nptv6:
 
         L4_CSUM_REPLACE_U64_OR_SHOT(ld_from_wan_log, skb, l4_checksum_offset, old_ip_prefix,
                                     local_client_prefix, BPF_F_PSEUDO_HDR);
+    }
+
+    if (is_static) {
+        u32 mark = skb->mark;
+        barrier_var(mark);
+        skb->mark = replace_cache_mask(mark, INGRESS_STATIC_MARK);
     }
 
     return TC_ACT_UNSPEC;
