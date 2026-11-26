@@ -4,6 +4,7 @@
 #include "base/printk.h"
 #include "base/tcp_phase.h"
 #include "base/ipv6.h"
+#include "frag/tc_frag6.h"
 #include "nat/nat_common.h"
 #include "nat/nat6_map_ops.h"
 #include "nat/nat6_ct_timer.h"
@@ -139,6 +140,7 @@ static __always_inline int ipv6_egress_prefix_check_and_replace(
             nat6_metric_accumulate(skb, false, ct_value);
         }
         if (!ct_value->need_prefix_replace) {
+            frag6_cache_store_first(off, src_addr, dst_addr, sport, dport, LAND_FRAG_FROM_LAN);
             return TC_ACT_UNSPEC;
         }
         goto do_nptv6;
@@ -154,6 +156,7 @@ static __always_inline int ipv6_egress_prefix_check_and_replace(
             return TC_ACT_SHOT;
         }
         if (!nat6_static_needs_prefix_replace(static_val)) {
+            frag6_cache_store_first(off, src_addr, dst_addr, sport, dport, LAND_FRAG_FROM_LAN);
             return TC_ACT_UNSPEC;
         }
         goto do_nptv6;
@@ -169,6 +172,7 @@ static __always_inline int ipv6_egress_prefix_check_and_replace(
     nat6_ct_advance_pkt(ct_proto, off->tcp_phase, NAT_MAPPING_EGRESS, ct_value);
     nat6_metric_accumulate(skb, false, ct_value);
     if (!need_prefix_replace) {
+        frag6_cache_store_first(off, src_addr, dst_addr, sport, dport, LAND_FRAG_FROM_LAN);
         return TC_ACT_UNSPEC;
     }
 
@@ -247,21 +251,27 @@ do_nptv6:
                                     new_sender_ip_prefix, BPF_F_PSEUDO_HDR);
 
     } else {
-        u32 l4_checksum_offset = 0;
-        if (nat6_l4_checksum(off->l4_offset, outer_proto, &l4_checksum_offset)) {
-            return TC_ACT_SHOT;
-        }
-
         u32 ip_src_offset = l3_offset + offsetof(struct ipv6hdr, saddr);
 
         __be64 old_ip_prefix, new_ip_prefix;
         COPY_ADDR_FROM(&old_ip_prefix, src_addr->in6_u.u6_addr32);
         new_ip_prefix = (old_ip_prefix & wan_ro_npt_mask) | (wan_ro_prefix6.q & ~wan_ro_npt_mask);
-        bpf_skb_store_bytes(skb, ip_src_offset, &new_ip_prefix, 8, 0);
-        L4_CSUM_REPLACE_U64_OR_SHOT(ld_from_lan_log, skb, l4_checksum_offset, old_ip_prefix,
-                                    new_ip_prefix, BPF_F_PSEUDO_HDR);
+        u64 store_flags = off->frag_code == LAND_FRAG_NON_INITIAL ? BPF_F_RECOMPUTE_CSUM : 0;
+        if (bpf_skb_store_bytes(skb, ip_src_offset, &new_ip_prefix, 8, store_flags)) {
+            return TC_ACT_SHOT;
+        }
+
+        if (off->frag_code != LAND_FRAG_NON_INITIAL) {
+            u32 l4_checksum_offset = 0;
+            if (nat6_l4_checksum(off->l4_offset, outer_proto, &l4_checksum_offset)) {
+                return TC_ACT_SHOT;
+            }
+            L4_CSUM_REPLACE_U64_OR_SHOT(ld_from_lan_log, skb, l4_checksum_offset, old_ip_prefix,
+                                        new_ip_prefix, BPF_F_PSEUDO_HDR);
+        }
     }
 
+    frag6_cache_store_first(off, src_addr, dst_addr, sport, dport, LAND_FRAG_FROM_LAN);
     return TC_ACT_UNSPEC;
 }
 
@@ -352,6 +362,7 @@ static __always_inline int ipv6_ingress_prefix_check_and_replace(
         __be64 dst_prefix;
         COPY_ADDR_FROM(&dst_prefix, dst_addr->in6_u.u6_addr8);
         if (!ct_value->need_prefix_replace || local_client_prefix == dst_prefix) {
+            frag6_cache_store_first(off, src_addr, dst_addr, sport, dport, LAND_FRAG_FROM_WAN);
             if (ct_is_static) {
                 u32 mark = skb->mark;
                 barrier_var(mark);
@@ -393,6 +404,7 @@ static __always_inline int ipv6_ingress_prefix_check_and_replace(
 
 do_ingress_nptv6:
     if (ret == NAT6_STATIC_PASS) {
+        frag6_cache_store_first(off, src_addr, dst_addr, sport, dport, LAND_FRAG_FROM_WAN);
         u32 mark = skb->mark;
         barrier_var(mark);
         skb->mark = replace_cache_mask(mark, INGRESS_STATIC_MARK);
@@ -400,6 +412,7 @@ do_ingress_nptv6:
     }
 
     if (!need_prefix_replace) {
+        frag6_cache_store_first(off, src_addr, dst_addr, sport, dport, LAND_FRAG_FROM_WAN);
         if (is_static) {
             u32 mark = skb->mark;
             barrier_var(mark);
@@ -471,21 +484,26 @@ do_ingress_nptv6:
         L4_CSUM_REPLACE_U64_OR_SHOT(ld_from_wan_log, skb, l4_checksum_offset, old_inner_ip_prefix,
                                     local_client_prefix, BPF_F_PSEUDO_HDR);
     } else {
-        u32 l4_checksum_offset = 0;
-        if (nat6_l4_checksum(off->l4_offset, outer_proto, &l4_checksum_offset)) {
-            return TC_ACT_SHOT;
-        }
-
         u32 dst_ip_offset = l3_offset + offsetof(struct ipv6hdr, daddr);
 
         __be64 old_ip_prefix;
         COPY_ADDR_FROM(&old_ip_prefix, dst_addr->in6_u.u6_addr32);
-        bpf_skb_store_bytes(skb, dst_ip_offset, &local_client_prefix, 8, 0);
+        u64 store_flags = off->frag_code == LAND_FRAG_NON_INITIAL ? BPF_F_RECOMPUTE_CSUM : 0;
+        if (bpf_skb_store_bytes(skb, dst_ip_offset, &local_client_prefix, 8, store_flags)) {
+            return TC_ACT_SHOT;
+        }
 
-        L4_CSUM_REPLACE_U64_OR_SHOT(ld_from_wan_log, skb, l4_checksum_offset, old_ip_prefix,
-                                    local_client_prefix, BPF_F_PSEUDO_HDR);
+        if (off->frag_code != LAND_FRAG_NON_INITIAL) {
+            u32 l4_checksum_offset = 0;
+            if (nat6_l4_checksum(off->l4_offset, outer_proto, &l4_checksum_offset)) {
+                return TC_ACT_SHOT;
+            }
+            L4_CSUM_REPLACE_U64_OR_SHOT(ld_from_wan_log, skb, l4_checksum_offset, old_ip_prefix,
+                                        local_client_prefix, BPF_F_PSEUDO_HDR);
+        }
     }
 
+    frag6_cache_store_first(off, src_addr, dst_addr, sport, dport, LAND_FRAG_FROM_WAN);
     if (is_static) {
         u32 mark = skb->mark;
         barrier_var(mark);

@@ -7,6 +7,7 @@
 
 #include "base/ipv6.h"
 #include "base/tcp_phase.h"
+#include "frag/tc_frag6.h"
 #include "nat/nat_common.h"
 #include "nat/nat6_map_ops.h"
 #include "nat/nat6_ct_timer.h"
@@ -163,7 +164,10 @@ static __always_inline int xdp_ipv6_egress_prefix_check_and_replace(
             nat6_ct_advance_pkt(ct_proto, off->tcp_phase, NAT_MAPPING_EGRESS, ct_value);
             xdp_nat6_metric_accumulate(data, data_end, false, ct_value);
         }
-        if (!ct_value->need_prefix_replace) return 0;
+        if (!ct_value->need_prefix_replace) {
+            frag6_cache_store_first(off, src_addr, dst_addr, sport, dport, LAND_FRAG_FROM_LAN);
+            return 0;
+        }
         goto do_xdp_nptv6;
     }
 
@@ -174,7 +178,10 @@ static __always_inline int xdp_ipv6_egress_prefix_check_and_replace(
 
     if (!allow_create) {
         if (!static_val) return -1;
-        if (!nat6_static_needs_prefix_replace(static_val)) return 0;
+        if (!nat6_static_needs_prefix_replace(static_val)) {
+            frag6_cache_store_first(off, src_addr, dst_addr, sport, dport, LAND_FRAG_FROM_LAN);
+            return 0;
+        }
         goto do_xdp_nptv6;
     }
 
@@ -185,7 +192,10 @@ static __always_inline int xdp_ipv6_egress_prefix_check_and_replace(
     if (!ct_value) return -1;
     nat6_ct_advance_pkt(ct_proto, off->tcp_phase, NAT_MAPPING_EGRESS, ct_value);
     xdp_nat6_metric_accumulate(data, data_end, false, ct_value);
-    if (!need_prefix_replace) return 0;
+    if (!need_prefix_replace) {
+        frag6_cache_store_first(off, src_addr, dst_addr, sport, dport, LAND_FRAG_FROM_LAN);
+        return 0;
+    }
 
 do_xdp_nptv6:
     if (is_icmpx_error) {
@@ -242,9 +252,6 @@ do_xdp_nptv6:
         outer_csum = xdp_csum_apply(outer_csum, sender_delta);
         if (bpf_xdp_store_bytes(ctx, l4_csum_off, &outer_csum, sizeof(outer_csum))) return -1;
     } else {
-        u32 l4_csum_off = 0;
-        if (nat6_l4_checksum(off->l4_offset, outer_proto, &l4_csum_off)) return -1;
-
         u32 ip_src_off = l3_offset + offsetof(struct ipv6hdr, saddr);
         void *src_ptr = data + ip_src_off;
         if (src_ptr + 8 > data_end) return -1;
@@ -257,12 +264,18 @@ do_xdp_nptv6:
 
         __builtin_memcpy(src_ptr, &new_ip_prefix, 8);
 
-        __be16 *csum_ptr = data + l4_csum_off;
-        if ((void *)(csum_ptr + 1) > data_end) return -1;
-        __wsum delta = bpf_csum_diff((__u32 *)&old_ip_prefix, 8, (__u32 *)&new_ip_prefix, 8, 0);
-        *csum_ptr = xdp_csum_apply(*csum_ptr, delta);
+        if (off->frag_code != LAND_FRAG_NON_INITIAL) {
+            u32 l4_csum_off = 0;
+            if (nat6_l4_checksum(off->l4_offset, outer_proto, &l4_csum_off)) return -1;
+
+            __be16 *csum_ptr = data + l4_csum_off;
+            if ((void *)(csum_ptr + 1) > data_end) return -1;
+            __wsum delta = bpf_csum_diff((__u32 *)&old_ip_prefix, 8, (__u32 *)&new_ip_prefix, 8, 0);
+            *csum_ptr = xdp_csum_apply(*csum_ptr, delta);
+        }
     }
 
+    frag6_cache_store_first(off, src_addr, dst_addr, sport, dport, LAND_FRAG_FROM_LAN);
     return 0;
 }
 
@@ -309,6 +322,7 @@ static __always_inline int xdp_ipv6_ingress_prefix_check_and_replace(
         __be64 dst_prefix;
         __builtin_memcpy(&dst_prefix, dst_addr->in6_u.u6_addr32, 8);
         if (!ct_value->need_prefix_replace || local_client_prefix == dst_prefix) {
+            frag6_cache_store_first(off, src_addr, dst_addr, sport, dport, LAND_FRAG_FROM_WAN);
             return ct_is_static ? 1 : 0;
         }
         need_prefix_replace = true;
@@ -343,10 +357,14 @@ static __always_inline int xdp_ipv6_ingress_prefix_check_and_replace(
 
 do_xdp_ingress_nptv6:
     if (map_ret == NAT6_STATIC_PASS) {
+        frag6_cache_store_first(off, src_addr, dst_addr, sport, dport, LAND_FRAG_FROM_WAN);
         return 1;
     }
 
-    if (!need_prefix_replace) return is_static ? 1 : 2;
+    if (!need_prefix_replace) {
+        frag6_cache_store_first(off, src_addr, dst_addr, sport, dport, LAND_FRAG_FROM_WAN);
+        return is_static ? 1 : 2;
+    }
 
     if (is_icmpx_error) {
         u32 inner_src_off = xdp_nat6_icmp_error_l3_offset(off) + offsetof(struct ipv6hdr, saddr);
@@ -394,9 +412,6 @@ do_xdp_ingress_nptv6:
         outer_csum = xdp_csum_apply(outer_csum, addr_delta);
         if (bpf_xdp_store_bytes(ctx, l4_csum_off, &outer_csum, sizeof(outer_csum))) return -1;
     } else {
-        u32 l4_csum_off = 0;
-        if (nat6_l4_checksum(off->l4_offset, outer_proto, &l4_csum_off)) return -1;
-
         u32 dst_ip_off = l3_offset + offsetof(struct ipv6hdr, daddr);
         void *dst_ptr = data + dst_ip_off;
         if (dst_ptr + 8 > data_end) return -1;
@@ -406,13 +421,19 @@ do_xdp_ingress_nptv6:
 
         __builtin_memcpy(dst_ptr, &local_client_prefix, 8);
 
-        __be16 *csum_ptr = data + l4_csum_off;
-        if ((void *)(csum_ptr + 1) > data_end) return -1;
-        __wsum delta =
-            bpf_csum_diff((__u32 *)&old_ip_prefix, 8, (__u32 *)&local_client_prefix, 8, 0);
-        *csum_ptr = xdp_csum_apply(*csum_ptr, delta);
+        if (off->frag_code != LAND_FRAG_NON_INITIAL) {
+            u32 l4_csum_off = 0;
+            if (nat6_l4_checksum(off->l4_offset, outer_proto, &l4_csum_off)) return -1;
+
+            __be16 *csum_ptr = data + l4_csum_off;
+            if ((void *)(csum_ptr + 1) > data_end) return -1;
+            __wsum delta =
+                bpf_csum_diff((__u32 *)&old_ip_prefix, 8, (__u32 *)&local_client_prefix, 8, 0);
+            *csum_ptr = xdp_csum_apply(*csum_ptr, delta);
+        }
     }
 
+    frag6_cache_store_first(off, src_addr, dst_addr, sport, dport, LAND_FRAG_FROM_WAN);
     return is_static ? 1 : 0;
 }
 
